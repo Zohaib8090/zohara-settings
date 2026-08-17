@@ -1,0 +1,14 @@
+/home/zohaib/Documents/my/zohara/zohara-settings-rs/target/debug/deps/serde-4a89f6ed0c1177a3.d: /home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /home/zohaib/Documents/my/zohara/zohara-settings-rs/target/debug/build/serde-aae00067ca4a6475/out/private.rs
+
+/home/zohaib/Documents/my/zohara/zohara-settings-rs/target/debug/deps/libserde-4a89f6ed0c1177a3.rlib: /home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /home/zohaib/Documents/my/zohara/zohara-settings-rs/target/debug/build/serde-aae00067ca4a6475/out/private.rs
+
+/home/zohaib/Documents/my/zohara/zohara-settings-rs/target/debug/deps/libserde-4a89f6ed0c1177a3.rmeta: /home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /home/zohaib/Documents/my/zohara/zohara-settings-rs/target/debug/build/serde-aae00067ca4a6475/out/private.rs
+
+/home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs:
+/home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs:
+/home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs:
+/home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs:
+/home/zohaib/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs:
+/home/zohaib/Documents/my/zohara/zohara-settings-rs/target/debug/build/serde-aae00067ca4a6475/out/private.rs:
+
+# env-dep:OUT_DIR=/home/zohaib/Documents/my/zohara/zohara-settings-rs/target/debug/build/serde-aae00067ca4a6475/out

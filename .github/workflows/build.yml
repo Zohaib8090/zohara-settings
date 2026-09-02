@@ -43,16 +43,27 @@ jobs:
         run: |
           pacman -Syu --noconfirm
           pacman -S --noconfirm --needed \
-            base-devel git rust gtk4 libadwaita dbus pkgconf
+            base-devel git rust gtk4 libadwaita dbus pkgconf sudo
+          # makepkg refuses to run as root, so create a build user. The
+          # build artifacts (target/release/zohara-settings) live in the
+          # container's /root, which is the user builder, so the user
+          # must be able to read them.
+          useradd -m -G wheel builder || true
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          chown -R builder:builder /workspace 2>/dev/null || true
+          # Mirror /root's target dir under the builder user so makepkg
+          # can see the prebuilt binary at $srcdir/../target/release/.
+          mkdir -p /home/builder/.cargo /home/builder/target
+          chown -R builder:builder /home/builder
 
       - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Check Code
-        run: cargo check --release
+        run: sudo -u builder cargo check --release
 
       - name: Build Release Binary
-        run: cargo build --release
+        run: sudo -u builder cargo build --release
 
       - name: Determine channel
         id: channel
@@ -87,12 +98,15 @@ jobs:
           # The PKGBUILD expects the prebuilt binary at
           # $srcdir/../target/release/zohara-settings, which is exactly
           # where `cargo build --release` put it in the previous step.
-          # We pass --asroot because the CI container's default user is
-          # root and makepkg otherwise refuses to run; this is a build
-          # container that exists for the lifetime of the workflow and
-          # is then thrown away, so the usual "don't run makepkg as
-          # root" warning doesn't apply.
-          _PKGVER="${{ steps.version.outputs.version }}" makepkg --nocheck --skippgpcheck --asroot
+          # We can't run as root, so use the `builder` user created in
+          # the dependency-install step.
+          #
+          # The PKGBUILD's pkgver() reads from the env var _PKGVER
+          # (falling back to Cargo.toml) so the same string is used for
+          # both the file name and the package's internal version.
+          chown -R builder:builder .
+          sudo -u builder env _PKGVER="${{ steps.version.outputs.version }}" \
+            makepkg --nocheck --skippgpcheck
           ls -lh *.pkg.tar.zst
           PKG_FILE=$(ls *.pkg.tar.zst | head -1)
           echo "package_file=$PKG_FILE" >> "$GITHUB_ENV"

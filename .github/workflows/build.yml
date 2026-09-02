@@ -125,24 +125,26 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CHANNEL: ${{ steps.channel.outputs.channel }}
         run: |
+          pacman -S --noconfirm --needed github-cli
           if [ "$CHANNEL" = "stable" ]; then
             TAG="stable"
           else
             TAG="channel-$CHANNEL"
           fi
-          # We can't use gh release from inside the container without gh
-          # installed. Install it.
-          pacman -S --noconfirm --needed github-cli
-
           REL_ID=$(gh release view "$TAG" --repo "$PACKAGES_REPO" --json id -q '.id' 2>/dev/null || true)
           if [ -z "$REL_ID" ]; then
-            echo "Creating $TAG release in $PACKAGES_REPO"
             PRE=$([ "$CHANNEL" != "stable" ] && echo "--prerelease" || echo "")
-            gh release create "$TAG" \
+            if gh release create "$TAG" \
               --repo "$PACKAGES_REPO" \
               --title "Zohara Packages — $CHANNEL" \
               --notes "Auto-managed Arch package repository for the **$CHANNEL** channel. Files here are the source of truth for \`pacman -Syu\` on Zohara OS systems on this channel." \
-              $PRE
+              $PRE; then
+              echo "Created channel release $TAG"
+            else
+              echo "::warning::Could not create the channel release in $PACKAGES_REPO (no cross-repo access)."
+              echo "::warning::The .pkg.tar.zst is in the build artifacts; install it manually or add"
+              echo "::warning::a PACKAGES_DISPATCH_TOKEN secret to make this step succeed."
+            fi
           else
             echo "Channel release $TAG already exists (id=$REL_ID)"
           fi
@@ -156,12 +158,20 @@ jobs:
           # The package filename is something like
           # zohara-settings-0.1.0-1-x86_64.pkg.tar.zst. Upload under that
           # exact name (clobbering if a previous build was at the same
-          # version).
+          # version). If the release wasn't created in the previous step
+          # (no cross-repo access), this will fail with a warning; we
+          # treat that as a soft failure so the rest of the pipeline
+          # can still complete and the binary ends up in the run's
+          # artifacts.
           PKG="${{ env.package_file }}"
-          gh release upload "$TAG" "$PKG" \
-            --repo "$PACKAGES_REPO" \
-            --clobber
-          echo "Uploaded $PKG to $TAG in $PACKAGES_REPO"
+          if gh release upload "$TAG" "$PKG" --repo "$PACKAGES_REPO" --clobber 2>&1; then
+            echo "Uploaded $PKG to $TAG in $PACKAGES_REPO"
+          else
+            echo "::warning::Could not upload $PKG to $TAG. The build artifact"
+            echo "::warning::(zohara-settings-arch-x86_64 below) still contains the"
+            echo "::warning::.pkg.tar.zst; install it manually or add a"
+            echo "::warning::PACKAGES_DISPATCH_TOKEN secret to make this step succeed."
+          fi
 
       - name: Dispatch to zohara-packages publish workflow
         env:
@@ -175,8 +185,9 @@ jobs:
           CHANNEL: ${{ steps.channel.outputs.channel }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "::warning::PACKAGES_DISPATCH_TOKEN not set; skipping repository_dispatch."
-            echo "The .pkg.tar.zst is uploaded to the channel release, but"
+            echo "::notice::PACKAGES_DISPATCH_TOKEN not set; skipping repository_dispatch."
+            echo "The .pkg.tar.zst is uploaded to the channel release (or in the"
+            echo "build artifact if the cross-repo upload also failed), but"
             echo "zohara-db / apps.json will not be auto-updated until someone"
             echo "runs the publish workflow manually:"
             echo "  gh workflow run publish.yml --repo $PACKAGES_REPO \\"
@@ -187,7 +198,7 @@ jobs:
           fi
           ARTIFACT_URL="https://github.com/$PACKAGES_REPO/releases/download/${{ env.release_tag }}/${{ env.package_file }}"
           echo "Dispatching to $PACKAGES_REPO: package=$PKG version=$VER channel=$CHANNEL url=$ARTIFACT_URL"
-          curl -X POST \
+          if curl -fsSL -X POST \
             -H "Authorization: token $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/$PACKAGES_REPO/dispatches" \
@@ -199,8 +210,14 @@ jobs:
                 \"artifact_url\": \"$ARTIFACT_URL\",
                 \"channel\": \"$CHANNEL\"
               }
-            }"
-          echo "Dispatch sent. The zohara-packages publish.yml will pick it up."
+            }"; then
+            echo "Dispatch sent. The zohara-packages publish.yml will pick it up."
+          else
+            echo "::warning::Cross-repo dispatch failed (token probably lacks"
+            echo "::warning::'repo' scope on $PACKAGES_REPO). The .pkg.tar.zst is"
+            echo "::warning::in the build artifact; install it manually."
+            exit 0
+          fi
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4

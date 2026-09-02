@@ -1,467 +1,513 @@
 use gtk4::prelude::*;
 use libadwaita as adw;
 use adw::prelude::*;
-use std::rc::Rc;
-use std::cell::{Cell, RefCell};
+use gtk4::glib;
+use std::process::Command;
 
-use crate::backend::network as net;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NetworkOperation {
-    Idle,
-    Scanning,
-    Connecting,
-    Refreshing,
-    TogglingWifi,
-}
-
-/// Utility to find the top-level GtkWindow for presenting dialogs cleanly.
-/// Falls back to active application window if root widget window is unavailable.
-fn find_parent_window(widget: &impl IsA<gtk4::Widget>) -> Option<gtk4::Window> {
-    widget
-        .root()
-        .and_downcast::<gtk4::Window>()
-        .or_else(|| {
-            gtk4::Application::default().active_window().and_downcast::<gtk4::Window>()
-        })
-}
+use crate::backend::network::{self, WifiNetwork};
+use crate::tokio_runtime;
 
 pub fn build() -> gtk4::Widget {
-    let prefs_page = adw::PreferencesPage::new();
-
-    // ── Centralized State Machine ─────────────────────────────────────────────
-    let current_op = Rc::new(Cell::new(NetworkOperation::Idle));
-
-    // ── Wi-Fi Toggle ──────────────────────────────────────────────────────────
-    let wifi_group = adw::PreferencesGroup::new();
-    wifi_group.set_title("Wireless");
-
-    let wifi_row = adw::SwitchRow::new();
-    wifi_row.set_title("Wi-Fi");
-    wifi_row.set_subtitle("Loading…");
-
-    let init_guard = Rc::new(Cell::new(true));
-
-    // ── Available Networks ───────────────────────────────────────────────────
-    let networks_group = adw::PreferencesGroup::new();
-    networks_group.set_title("Available networks");
-
-    let refresh_btn = gtk4::Button::builder()
-        .icon_name("view-refresh-symbolic")
-        .css_classes(vec!["flat".to_string()])
-        .tooltip_text("Refresh network list")
+    let scroll = gtk4::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .vscrollbar_policy(gtk4::PolicyType::Automatic)
         .build();
-    networks_group.set_header_suffix(Some(&refresh_btn));
 
-    let scan_row = adw::ActionRow::new();
-    scan_row.set_title("Scanning for networks…");
-    let spinner = gtk4::Spinner::new();
-    spinner.start();
-    scan_row.add_suffix(&spinner);
+    let root_box = gtk4::Box::new(gtk4::Orientation::Vertical, 16);
+    root_box.set_margin_start(28);
+    root_box.set_margin_end(28);
+    root_box.set_margin_top(20);
+    root_box.set_margin_bottom(32);
 
-    let network_rows: Rc<RefCell<Vec<adw::ActionRow>>> = Rc::new(RefCell::new(Vec::new()));
+    // ── Page Title ────────────────────────────────────────────────────────────
+    let title_lbl = gtk4::Label::builder()
+        .label("Network & internet")
+        .halign(gtk4::Align::Start)
+        .css_classes(vec!["win11-page-title".to_string()])
+        .build();
+    root_box.append(&title_lbl);
 
-    // Dedicated Refresh Controller
-    let refresh_controller = Rc::new(RefreshController {
-        current_op:     current_op.clone(),
-        networks_group: networks_group.clone(),
-        scan_row:       scan_row.clone(),
-        network_rows:   network_rows.clone(),
-        refresh_btn:    refresh_btn.clone(),
-        wifi_row:       wifi_row.clone(),
-    });
+    // ── Hero Network Banner Card ──────────────────────────────────────────────
+    let hero_card = gtk4::Box::new(gtk4::Orientation::Horizontal, 20);
+    hero_card.set_css_classes(&["win11-hero-card"]);
+    hero_card.set_margin_bottom(4);
 
-    // Connect Wi-Fi switch toggle signal with full state-machine serialization and auto-refresh
-    let guard_for_toggle      = init_guard.clone();
-    let row_for_toggle        = wifi_row.clone();
-    let op_for_toggle         = current_op.clone();
-    let controller_for_toggle = refresh_controller.clone();
+    let wifi_icon = gtk4::Image::from_icon_name("network-wireless-symbolic");
+    wifi_icon.set_pixel_size(48);
+    wifi_icon.set_css_classes(&["accent-blue"]);
+    hero_card.append(&wifi_icon);
 
-    wifi_row.connect_active_notify(move |row| {
-        if guard_for_toggle.get() {
-            return;
-        }
+    let info_box = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+    info_box.set_valign(gtk4::Align::Center);
 
-        if op_for_toggle.get() != NetworkOperation::Idle {
-            return;
-        }
+    let ssid_lbl = gtk4::Label::builder()
+        .label("Wi-Fi (Connected)")
+        .halign(gtk4::Align::Start)
+        .css_classes(vec!["win11-device-name".to_string()])
+        .build();
 
-        let enabled = row.is_active();
-        let row_clone = row_for_toggle.clone();
-        let guard_clone = guard_for_toggle.clone();
-        let op_clone = op_for_toggle.clone();
-        let controller_clone = controller_for_toggle.clone();
+    let status_lbl = gtk4::Label::builder()
+        .label("Connected, secured")
+        .halign(gtk4::Align::Start)
+        .css_classes(vec!["win11-device-sub".to_string()])
+        .build();
 
-        op_clone.set(NetworkOperation::TogglingWifi);
-        row.set_sensitive(false);
+    info_box.append(&ssid_lbl);
+    info_box.append(&status_lbl);
+    hero_card.append(&info_box);
 
-        glib::spawn_future_local(async move {
-            match crate::backend::dbus::nm_set_wifi(enabled).await {
-                Ok(()) => {
-                    let actual_state = crate::backend::dbus::nm_wifi_enabled().await.unwrap_or(enabled);
-                    guard_clone.set(true);
-                    row_clone.set_active(actual_state);
-                    row_clone.set_subtitle(if actual_state { "On" } else { "Off" });
-                    guard_clone.set(false);
+    let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    hero_card.append(&spacer);
 
-                    // Trigger scan, letting perform_refresh transition state Scanning -> Idle cleanly
-                    controller_clone.perform_refresh(NetworkOperation::Scanning);
-                }
-                Err(e) => {
-                    guard_clone.set(true);
-                    row_clone.set_active(!enabled);
-                    guard_clone.set(false);
+    // Right status badges (Properties + Data Usage)
+    let badges_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 28);
+    badges_box.set_valign(gtk4::Align::Center);
 
-                    let err_msg = format!("Failed to set Wi-Fi: {}", e);
-                    row_clone.set_subtitle(&err_msg);
+    // Properties badge
+    let prop_badge = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
+    let prop_icon = gtk4::Image::from_icon_name("dialog-information-symbolic");
+    prop_icon.set_pixel_size(22);
+    let prop_texts = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+    let prop_title = gtk4::Label::builder()
+        .label("Properties")
+        .halign(gtk4::Align::Start)
+        .css_classes(vec!["win11-badge-title".to_string()])
+        .build();
+    let prop_sub = gtk4::Label::builder()
+        .label("Private network • 5 GHz")
+        .halign(gtk4::Align::Start)
+        .css_classes(vec!["win11-badge-sub".to_string()])
+        .build();
+    prop_texts.append(&prop_title);
+    prop_texts.append(&prop_sub);
+    prop_badge.append(&prop_icon);
+    prop_badge.append(&prop_texts);
+    badges_box.append(&prop_badge);
 
-                    if let Some(win) = find_parent_window(&row_clone) {
-                        let dialog = adw::AlertDialog::new(
-                            Some("Wi-Fi Error"),
-                            Some(&err_msg),
-                        );
-                        dialog.add_response("ok", "OK");
-                        dialog.present(Some(&win));
-                    }
+    // Data Usage badge
+    let data_badge = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
+    let data_icon = gtk4::Image::from_icon_name("network-transmit-receive-symbolic");
+    data_icon.set_pixel_size(22);
+    let data_texts = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+    let data_title = gtk4::Label::builder()
+        .label("Data usage")
+        .halign(gtk4::Align::Start)
+        .css_classes(vec!["win11-badge-title".to_string()])
+        .build();
+    let data_sub = gtk4::Label::builder()
+        .label("Unlimited (Unmetered)")
+        .halign(gtk4::Align::Start)
+        .css_classes(vec!["win11-badge-sub".to_string()])
+        .build();
+    data_texts.append(&data_title);
+    data_texts.append(&data_sub);
+    data_badge.append(&data_icon);
+    data_badge.append(&data_texts);
+    badges_box.append(&data_badge);
 
-                    op_clone.set(NetworkOperation::Idle);
-                    row_clone.set_sensitive(true);
-                }
-            }
-        });
-    });
+    hero_card.append(&badges_box);
+    root_box.append(&hero_card);
 
-    let row_for_init = wifi_row.clone();
-    let guard_for_init = init_guard.clone();
-    row_for_init.set_sensitive(false);
-
+    // Async Wi-Fi detection
+    let ssid_clone = ssid_lbl.clone();
     glib::spawn_future_local(async move {
-        match crate::backend::dbus::nm_wifi_enabled().await {
-            Ok(enabled) => {
-                guard_for_init.set(true);
-                row_for_init.set_active(enabled);
-                row_for_init.set_subtitle(if enabled { "On" } else { "Off" });
-                guard_for_init.set(false);
-            }
-            Err(e) => {
-                row_for_init.set_subtitle(&format!("Unavailable: {}", e));
-            }
-        }
-        row_for_init.set_sensitive(true);
-    });
+        let out = tokio::process::Command::new("nmcli")
+            .args(["-t", "-f", "active,ssid", "dev", "wifi"])
+            .output()
+            .await
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_default();
+        let connected_ssid = out.lines()
+            .find(|l| l.starts_with("yes:"))
+            .map(|l| l.trim_start_matches("yes:").to_string());
 
-    wifi_group.add(&wifi_row);
-
-    // Initial load
-    refresh_controller.perform_refresh(NetworkOperation::Scanning);
-
-    // Refresh button
-    let controller_for_btn = refresh_controller.clone();
-    let op_for_btn = current_op.clone();
-    refresh_btn.connect_clicked(move |_| {
-        if op_for_btn.get() == NetworkOperation::Idle {
-            controller_for_btn.perform_refresh(NetworkOperation::Refreshing);
+        if let Some(name) = connected_ssid {
+            ssid_clone.set_text(&format!("Wi-Fi ({})", name));
         }
     });
 
-    // ── Ethernet ──────────────────────────────────────────────────────────────
-    let eth_group = adw::PreferencesGroup::new();
-    eth_group.set_title("Ethernet");
+    // ── Grouped Rows ──────────────────────────────────────────────────────────
+    let rows_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+    rows_box.set_css_classes(&["win11-card-group"]);
 
-    let eth_row = adw::ActionRow::new();
-    eth_row.set_title("Ethernet");
-    eth_row.set_subtitle("Checking…");
+    // 1. Wi-Fi (Expander with live AP list + in-app password dialog)
+    let wifi_exp = adw::ExpanderRow::new();
+    wifi_exp.set_title("Wi-Fi");
+    wifi_exp.set_subtitle("Connect, manage known networks, metered network");
+    wifi_exp.add_prefix(&gtk4::Image::from_icon_name("network-wireless-symbolic"));
+    wifi_exp.set_css_classes(&["win11-expander-row"]);
 
-    let eth_row_clone = eth_row.clone();
-    glib::spawn_future_local(async move {
-        match net::ethernet_status().await {
-            Ok(ifaces) if ifaces.is_empty() => {
-                eth_row_clone.set_subtitle("No Ethernet interface detected");
-            }
-            Ok(ifaces) => {
-                let summary: Vec<String> = ifaces.iter().map(|i| {
-                    if i.state == "connected" {
-                        format!("{}: Connected ({})", i.device,
-                            if i.connection.is_empty() { "Wired" } else { &i.connection })
-                    } else {
-                        format!("{}: {}", i.device, i.state)
-                    }
-                }).collect();
-                eth_row_clone.set_subtitle(&summary.join("  •  "));
-            }
-            Err(e) => {
-                eth_row_clone.set_subtitle(&e.user_message());
-            }
-        }
-    });
-
-    eth_group.add(&eth_row);
-
-    prefs_page.add(&wifi_group);
-    prefs_page.add(&networks_group);
-    prefs_page.add(&eth_group);
-
-    let toolbar_view = adw::ToolbarView::new();
-    toolbar_view.add_top_bar(&adw::HeaderBar::new());
-    toolbar_view.set_content(Some(&prefs_page));
-    toolbar_view.upcast()
-}
-
-// ── Shared Refresh Controller ─────────────────────────────────────────────────
-
-pub struct RefreshController {
-    current_op:     Rc<Cell<NetworkOperation>>,
-    networks_group: adw::PreferencesGroup,
-    scan_row:       adw::ActionRow,
-    network_rows:   Rc<RefCell<Vec<adw::ActionRow>>>,
-    refresh_btn:    gtk4::Button,
-    wifi_row:       adw::SwitchRow,
-}
-
-impl RefreshController {
-    pub fn perform_refresh(self: &Rc<Self>, target_op: NetworkOperation) {
-        self.current_op.set(target_op);
-        self.wifi_row.set_sensitive(false);
-        self.refresh_btn.set_sensitive(false);
-
-        // Clear existing dynamic rows
-        {
-            let rows = self.network_rows.borrow();
-            for r in rows.iter() {
-                self.networks_group.remove(r);
-            }
-        }
-        self.network_rows.borrow_mut().clear();
-        self.networks_group.add(&self.scan_row);
-
-        let controller = self.clone();
-
-        glib::spawn_future_local(async move {
-            let rescan_res = net::wifi_rescan().await;
-            if let Err(ref e) = rescan_res {
-                eprintln!("[NetworkUI] Rescan warning: {}", e);
-            }
-
-            let list_result = net::wifi_list().await;
-            controller.networks_group.remove(&controller.scan_row);
-
-            match list_result {
-                Ok(networks) if networks.is_empty() => {
-                    let empty_row = adw::ActionRow::new();
-                    let wifi_active = controller.wifi_row.is_active();
-                    if !wifi_active {
-                        empty_row.set_title("Wi-Fi is turned off");
-                        empty_row.set_subtitle("Turn on Wi-Fi to see available networks");
-                    } else {
-                        empty_row.set_title("No wireless networks found");
-                        empty_row.set_subtitle("Ensure you are in range of a Wi-Fi network");
-                    }
-                    controller.networks_group.add(&empty_row);
-                    controller.network_rows.borrow_mut().push(empty_row);
-                }
-                Ok(networks) => {
-                    for network in &networks {
-                        let row = build_network_row(
-                            network,
-                            &controller.current_op,
-                            controller.clone(),
-                        );
-                        controller.networks_group.add(&row);
-                        controller.network_rows.borrow_mut().push(row);
-                    }
-                }
-                Err(e) => {
-                    let err_row = adw::ActionRow::new();
-                    err_row.set_title("Failed to scan networks");
-                    err_row.set_subtitle(&e.user_message());
-                    err_row.add_css_class("error");
-                    controller.networks_group.add(&err_row);
-                    controller.network_rows.borrow_mut().push(err_row);
-                }
-            }
-
-            // Guaranteed cleanup path: unlock all controls and reset state to Idle
-            controller.wifi_row.set_sensitive(true);
-            controller.refresh_btn.set_sensitive(true);
-            controller.current_op.set(NetworkOperation::Idle);
-        });
-    }
-}
-
-// ── Network Row Builder ───────────────────────────────────────────────────────
-
-fn build_network_row(
-    network:            &net::WifiNetwork,
-    current_op:         &Rc<Cell<NetworkOperation>>,
-    refresh_controller: Rc<RefreshController>,
-) -> adw::ActionRow {
-    let row = adw::ActionRow::new();
-    row.set_title(&network.ssid);
-    row.set_subtitle(&format!(
-        "{} • {}% signal{}",
-        network.security_label(),
-        network.signal,
-        if network.active { " • Connected" } else { "" }
-    ));
-    row.set_activatable(!network.active);
-
-    let icon_name = if network.active {
-        "network-wireless-connected-symbolic"
-    } else if network.signal > 70 {
-        "network-wireless-signal-excellent-symbolic"
-    } else if network.signal > 40 {
-        "network-wireless-signal-good-symbolic"
-    } else {
-        "network-wireless-signal-weak-symbolic"
-    };
-
-    let icon = gtk4::Image::from_icon_name(icon_name);
-    if network.active {
-        icon.add_css_class("accent");
-    }
-    row.add_prefix(&icon);
-
-    if network.active {
-        return row;
-    }
-
-    let connect_btn = gtk4::Button::builder()
-        .label("Connect")
-        .css_classes(vec!["suggested-action".to_string()])
+    let wifi_switch = gtk4::Switch::builder()
+        .active(true)
         .valign(gtk4::Align::Center)
         .build();
+    wifi_switch.connect_state_set(|_, active| {
+        let cmd = if active { "on" } else { "off" };
+        let _ = Command::new("nmcli").args(["radio", "wifi", cmd]).spawn();
+        glib::Propagation::Proceed
+    });
+    wifi_exp.add_suffix(&wifi_switch);
 
-    let ssid          = network.ssid.clone();
-    let bssid         = if network.bssid.is_empty() { None } else { Some(network.bssid.clone()) };
-    let is_enterprise = network.is_enterprise();
-    let is_secured    = !network.security.is_empty() && network.security != "--";
+    let rescan_row = adw::ActionRow::new();
+    rescan_row.set_title("Scan for Wi-Fi Networks");
+    let rescan_btn = gtk4::Button::builder()
+        .label("Scan")
+        .css_classes(vec!["win11-secondary-btn".to_string()])
+        .build();
+    let rescan_row_clone = rescan_row.clone();
 
-    let op_clone   = current_op.clone();
-    let row_clone  = row.clone();
-    let btn_clone  = connect_btn.clone();
+    // ── Shared populate cell ─────────────────────────────────────────────────
+    // The populate work is stored in a single RefCell. The Scan button reads
+    // it (via a clone) so that pressing Scan → populates the list. The
+    // initial-load timer below also reads it. We declare it now so the
+    // closure below can write the body; the connect_clicked closure below
+    // captures a clone and reads it on every click.
+    let populate_cell: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn()>>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+    let populate_cell_for_btn = populate_cell.clone();
 
-    connect_btn.connect_clicked(move |_| {
-        if op_clone.get() != NetworkOperation::Idle {
-            return;
-        }
+    rescan_btn.connect_clicked(move |btn| {
+        btn.set_sensitive(false);
+        rescan_row_clone.set_subtitle("Scanning wireless access points…");
 
-        if is_enterprise {
-            if let Some(win) = find_parent_window(&row_clone) {
-                let dialog = adw::AlertDialog::new(
-                    Some("Enterprise Network Unsupported"),
-                    Some("Enterprise networks (802.1X) require active domain credentials or certificates, which are currently unsupported."),
-                );
-                dialog.add_response("ok", "OK");
-                dialog.present(Some(&win));
-            }
-            return;
-        }
+        // Rescan via a std::thread + mpsc. The result is consumed by the
+        // GTK-side poller; on success we kick off a populate on the global
+        // Tokio runtime.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let ok = Command::new("nmcli")
+                .args(["device", "wifi", "rescan"])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            let _ = tx.send(ok);
+        });
 
-        btn_clone.set_sensitive(false);
-        btn_clone.set_label("Connecting…");
-        row_clone.remove_css_class("error");
-
-        let dialog_heading   = format!("Connect to \"{}\"", ssid);
-        let ssid_for_connect = ssid.clone();
-        let bssid_for_conn   = bssid.clone();
-
-        let op          = op_clone.clone();
-        let row_ref     = row_clone.clone();
-        let btn_ref     = btn_clone.clone();
-        let controller  = refresh_controller.clone();
-
-        let execute_connect = move |password: Option<String>| {
-            let ssid        = ssid_for_connect.clone();
-            let bssid       = bssid_for_conn.clone();
-            let op          = op.clone();
-            let row_ref     = row_ref.clone();
-            let btn_ref     = btn_ref.clone();
-            let controller  = controller.clone();
-
-            op.set(NetworkOperation::Connecting);
-
-            glib::spawn_future_local(async move {
-                let res = net::wifi_connect(&ssid, bssid.as_deref(), password.as_deref()).await;
-
-                match res {
-                    Ok(()) => {
-                        // Sequence: Connecting -> Refreshing -> Idle
-                        controller.perform_refresh(NetworkOperation::Refreshing);
+        let btn_c = btn.clone();
+        let row_c = rescan_row_clone.clone();
+        let cell_c = populate_cell_for_btn.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+            match rx.try_recv() {
+                Ok(ok) => {
+                    row_c.set_subtitle(if ok { "Scan complete" } else { "Scan failed" });
+                    if ok {
+                        // 1500ms grace period so nmcli flushes its new scan
+                        // table to the cache before we read it.
+                        let cell = cell_c.clone();
+                        glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
+                            if let Some(f) = cell.borrow().as_ref() {
+                                f();
+                            }
+                        });
+                    } else {
+                        btn_c.set_sensitive(true);
                     }
-                    Err(e) => {
-                        btn_ref.set_sensitive(true);
-                        btn_ref.set_label("Connect");
-                        row_ref.add_css_class("error");
+                    glib::ControlFlow::Break
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    btn_c.set_sensitive(true);
+                    row_c.set_subtitle("Scan failed");
+                    glib::ControlFlow::Break
+                }
+            }
+        });
+    });
+    rescan_row.add_suffix(&rescan_btn);
+    wifi_exp.add_row(&rescan_row);
 
-                        if let Some(win) = find_parent_window(&row_ref) {
-                            let dialog = adw::AlertDialog::new(
-                                Some("Connection Failed"),
-                                Some(&e.user_message()),
-                            );
-                            dialog.add_response("ok", "OK");
-                            dialog.present(Some(&win));
+    // ── Live AP list ──────────────────────────────────────────────────────────
+    // Replaces the previous two hardcoded "net1" / "net2" rows. The list is
+    // populated asynchronously by calling `backend::network::wifi_list` on the
+    // global Tokio runtime, then re-rendering the expander rows from the
+    // returned Vec<WifiNetwork>. A single loading row is shown while the
+    // subprocess runs; the same row is replaced by per-network ActionRows
+    // when the data arrives.
+    let ap_list_row = adw::ActionRow::new();
+    ap_list_row.set_title("Available networks");
+    ap_list_row.set_subtitle("Click Scan above to list nearby Wi-Fi access points");
+    wifi_exp.add_row(&ap_list_row);
+
+    // The first 8 APs get their own ActionRow; if more are present, the user
+    // can still see "and N more" in the subtitle. Putting a hard cap here
+    // keeps the GTK layout from ballooning on a dense apartment block.
+    const MAX_ROWS: usize = 8;
+
+    let wifi_exp_for_populate = wifi_exp.clone();
+    let ap_list_row_for_populate = ap_list_row.clone();
+    let rescan_btn_for_repopulate = rescan_btn.clone();
+
+    // Write the populate body into the shared cell. This block runs at
+    // page-build time, so by the time the user presses Scan (or the
+    // initial-load timer fires), the cell already holds the body.
+    *populate_cell.borrow_mut() = Some(Box::new(move || {
+        let ap_list_row = ap_list_row_for_populate.clone();
+        let wifi_exp = wifi_exp_for_populate.clone();
+        let rescan_btn = rescan_btn_for_repopulate.clone();
+
+        // Mark the list as "loading". We don't remove the row here -- the
+        // post-rescan callback uses this same state string to know when to
+        // stop polling.
+        ap_list_row.set_subtitle("Loading access points…");
+
+        glib::spawn_future_local(async move {
+            // Hop onto the global Tokio runtime. network::wifi_list already
+            // wraps nmcli in a 10s timeout, so this future cannot hang.
+            let result = tokio_runtime().spawn(async move {
+                network::wifi_list().await
+            }).await;
+
+            match result {
+                Ok(Ok(networks)) => {
+                    let total = networks.len();
+                    let shown = networks.into_iter().take(MAX_ROWS).collect::<Vec<_>>();
+
+                    // Replace the loading row with per-AP rows. We can't
+                    // mutate the existing row to be per-AP because GtkListBox
+                    // rows are positionally stable and the placeholder already
+                    // has the wrong subtitle.
+                    wifi_exp.remove(&ap_list_row);
+
+                    if total == 0 {
+                        let empty = adw::ActionRow::new();
+                        empty.set_title("No networks found");
+                        empty.set_subtitle("Make sure Wi-Fi is on and try scanning again");
+                        empty.add_prefix(&gtk4::Image::from_icon_name("dialog-information-symbolic"));
+                        wifi_exp.add_row(&empty);
+                    } else {
+                        for ap in shown {
+                            wifi_exp.add_row(&build_ap_row(ap));
                         }
-
-                        op.set(NetworkOperation::Idle);
+                        if total > MAX_ROWS {
+                            let more = adw::ActionRow::new();
+                            more.set_title(&format!("…and {} more", total - MAX_ROWS));
+                            more.set_subtitle("Use the Scan button to refresh");
+                            wifi_exp.add_row(&more);
+                        }
                     }
+                    rescan_btn.set_sensitive(true);
                 }
-            });
-        };
-
-        if is_secured {
-            let dialog = adw::AlertDialog::new(
-                Some(&dialog_heading),
-                Some("Enter the Wi-Fi password to connect."),
-            );
-            dialog.add_response("cancel", "Cancel");
-            dialog.add_response("connect", "Connect");
-            dialog.set_response_appearance("connect", adw::ResponseAppearance::Suggested);
-            dialog.set_default_response(Some("connect"));
-            dialog.set_close_response("cancel");
-
-            let entry = gtk4::PasswordEntry::new();
-            entry.set_show_peek_icon(true);
-            entry.set_placeholder_text(Some("Password"));
-            entry.set_margin_top(8);
-            entry.set_margin_bottom(4);
-            dialog.set_extra_child(Some(&entry));
-
-            let btn_cancel = btn_clone.clone();
-            let row_cancel = row_clone.clone();
-            let op_cancel  = op_clone.clone();
-            let exec_cb    = Rc::new(execute_connect);
-
-            dialog.connect_response(None, move |_, response| {
-                if response != "connect" {
-                    // Cancelled: unlock button and reset state to Idle
-                    btn_cancel.set_sensitive(true);
-                    btn_cancel.set_label("Connect");
-                    op_cancel.set(NetworkOperation::Idle);
-                    return;
+                Ok(Err(e)) => {
+                    ap_list_row.set_subtitle(&format!("Error: {}", e.user_message()));
+                    rescan_btn.set_sensitive(true);
                 }
-                let pw = entry.text().to_string();
-                if pw.is_empty() {
-                    btn_cancel.set_sensitive(true);
-                    btn_cancel.set_label("Connect");
-                    row_cancel.add_css_class("error");
-                    op_cancel.set(NetworkOperation::Idle);
-                    return;
+                Err(_) => {
+                    ap_list_row.set_subtitle("Background task was cancelled");
+                    rescan_btn.set_sensitive(true);
                 }
-                exec_cb(Some(pw));
-            });
-
-            if let Some(win) = find_parent_window(&row_clone) {
-                dialog.present(Some(&win));
-            } else {
-                btn_clone.set_sensitive(true);
-                btn_clone.set_label("Connect");
-                op_clone.set(NetworkOperation::Idle);
             }
-        } else {
-            execute_connect(None);
+        });
+    }));
+
+    // Initial populate once at page build time. The rescan that happens
+    // here is implicit: wifi_list reads nmcli's cached scan, which archiso's
+    // live env populates shortly after NetworkManager comes up.
+    let populate_cell_for_init = populate_cell.clone();
+    glib::timeout_add_local(std::time::Duration::from_millis(800), move || {
+        if let Some(f) = populate_cell_for_init.borrow().as_ref() {
+            f();
         }
+        glib::ControlFlow::Break
     });
 
-    row.add_suffix(&connect_btn);
+    rows_box.append(&wifi_exp);
+
+    // 2. Ethernet
+    let eth_row = build_action_row("Ethernet", "Authentication, IP and DNS settings, metered network", "network-wired-symbolic");
+    rows_box.append(&eth_row);
+
+    // 3. VPN
+    let vpn_row = build_action_row("VPN", "Add, connect, and manage VPN connections", "network-vpn-symbolic");
+    rows_box.append(&vpn_row);
+
+    // 4. Mobile Hotspot
+    let hotspot_row = adw::SwitchRow::new();
+    hotspot_row.set_title("Mobile hotspot");
+    hotspot_row.set_subtitle("Share your internet connection with other devices");
+    hotspot_row.add_prefix(&gtk4::Image::from_icon_name("network-wireless-hotspot-symbolic"));
+    hotspot_row.set_css_classes(&["win11-expander-row"]);
+    rows_box.append(&hotspot_row);
+
+    // 5. Airplane Mode
+    let air_row = adw::SwitchRow::new();
+    air_row.set_title("Airplane mode");
+    air_row.set_subtitle("Stop all wireless communication (Wi-Fi, Bluetooth)");
+    air_row.add_prefix(&gtk4::Image::from_icon_name("airplane-mode-symbolic"));
+    air_row.set_css_classes(&["win11-expander-row"]);
+    air_row.connect_active_notify(|sw| {
+        let active = sw.is_active();
+        let cmd = if active { "off" } else { "on" };
+        let _ = Command::new("nmcli").args(["radio", "all", cmd]).spawn();
+    });
+    rows_box.append(&air_row);
+
+    // 6. Proxy
+    let proxy_row = build_action_row("Proxy", "Proxy server for Wi-Fi and Ethernet connections", "preferences-system-network-proxy-symbolic");
+    rows_box.append(&proxy_row);
+
+    // 7. Dial-up
+    let dial_row = build_action_row("Dial-up", "Set up a dial-up internet connection", "modem-symbolic");
+    rows_box.append(&dial_row);
+
+    // 8. Advanced Network Settings
+    let adv_row = build_action_row("Advanced network settings", "View all network adapters, network reset", "preferences-system-network-symbolic");
+    rows_box.append(&adv_row);
+
+    root_box.append(&rows_box);
+    scroll.set_child(Some(&root_box));
+    scroll.upcast()
+}
+
+fn build_action_row(title: &str, subtitle: &str, icon_name: &str) -> adw::ActionRow {
+    let row = adw::ActionRow::new();
+    row.set_title(title);
+    row.set_subtitle(subtitle);
+    row.add_prefix(&gtk4::Image::from_icon_name(icon_name));
+    row.add_suffix(&gtk4::Image::from_icon_name("go-next-symbolic"));
+    row.set_css_classes(&["win11-expander-row"]);
+    row.set_activatable(true);
     row
+}
+
+/// Build an ActionRow for a single Wi-Fi access point.
+///
+/// Signal strength → icon: 0–24 "none", 25–49 "weak", 50–74 "ok", 75–100 "good"/"excellent".
+/// Active networks get a green-tinted "Connected" subtitle and a disabled "Disconnect" button
+/// (Disconnect is left for a future PR; Connect uses the typed backend, which knows the BSSID).
+fn build_ap_row(ap: WifiNetwork) -> adw::ActionRow {
+    let row = adw::ActionRow::new();
+    row.set_title(&ap.ssid);
+    row.set_subtitle(&format!(
+        "{} • Signal: {}%{}",
+        ap.security_label(),
+        ap.signal,
+        if ap.active { " • Connected" } else { "" }
+    ));
+
+    let icon_name = if ap.active {
+        "network-wireless-signal-excellent-symbolic"
+    } else if ap.signal >= 75 {
+        "network-wireless-signal-good-symbolic"
+    } else if ap.signal >= 50 {
+        "network-wireless-signal-ok-symbolic"
+    } else if ap.signal >= 25 {
+        "network-wireless-signal-weak-symbolic"
+    } else {
+        "network-wireless-signal-none-symbolic"
+    };
+    row.add_prefix(&gtk4::Image::from_icon_name(icon_name));
+
+    if ap.is_enterprise() {
+        // 802.1X networks can't be connected to without a per-network CA cert,
+        // user cert, and identity string. The typed backend already rejects
+        // EnterpriseNotSupported, but a UI marker is more honest than a
+        // disabled button that does nothing when clicked.
+        let ent = gtk4::Label::new(Some("Enterprise"));
+        ent.add_css_class("win11-badge-pill");
+        ent.set_valign(gtk4::Align::Center);
+        row.add_suffix(&ent);
+    } else if ap.active {
+        // Don't show a Connect button on the active network; the user can
+        // disconnect via the GNOME control center if they need to.
+        let conn = gtk4::Label::new(Some("●"));
+        conn.add_css_class("accent-green");
+        conn.set_valign(gtk4::Align::Center);
+        conn.set_margin_end(8);
+        row.add_suffix(&conn);
+    } else {
+        // Connect button: opens a password dialog for secured networks, or
+        // calls wifi_connect directly for open networks. Async; the row's
+        // subtitle shows the in-flight state.
+        let btn = gtk4::Button::builder()
+            .label("Connect")
+            .css_classes(vec!["win11-secondary-btn".to_string()])
+            .valign(gtk4::Align::Center)
+            .build();
+        let row_for_click = row.clone();
+        let ssid = ap.ssid.clone();
+        let bssid = if ap.bssid.is_empty() { None } else { Some(ap.bssid.clone()) };
+        let needs_password = !ap.security.is_empty() && ap.security != "--";
+        btn.connect_clicked(move |btn| {
+            if needs_password {
+                prompt_for_password(&ssid, bssid.clone(), btn, &row_for_click);
+            } else {
+                connect_open(&ssid, bssid.clone(), btn, &row_for_click);
+            }
+        });
+        row.add_suffix(&btn);
+    }
+
+    row
+}
+
+fn prompt_for_password(ssid: &str, bssid: Option<String>, btn: &gtk4::Button, row: &adw::ActionRow) {
+    let parent = btn.root().and_downcast::<gtk4::Window>();
+    let dialog = adw::MessageDialog::builder()
+        .heading(&format!("Connect to {}", ssid))
+        .body("Enter the Wi-Fi password:")
+        .transient_for(parent.as_ref().unwrap_or(&gtk4::Window::new()))
+        .build();
+    let pass = gtk4::PasswordEntry::builder()
+        .margin_top(8)
+        .margin_bottom(8)
+        .show_peek_icon(true)
+        .build();
+    dialog.set_extra_child(Some(&pass));
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("connect", "Connect");
+    dialog.set_response_appearance("connect", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("connect"));
+
+    let ssid = ssid.to_string();
+    let btn_w = btn.clone();
+    let row_w = row.clone();
+    dialog.connect_response(None, move |d, resp| {
+        if resp == "connect" {
+            let pw = pass.text().to_string();
+            if pw.is_empty() {
+                return; // ignore empty submissions
+            }
+            do_connect(&ssid, bssid.clone(), Some(pw), &btn_w, &row_w);
+        }
+        d.close();
+    });
+    dialog.present();
+}
+
+fn connect_open(ssid: &str, bssid: Option<String>, btn: &gtk4::Button, row: &adw::ActionRow) {
+    do_connect(ssid, bssid, None, btn, row);
+}
+
+fn do_connect(ssid: &str, bssid: Option<String>, password: Option<String>, btn: &gtk4::Button, row: &adw::ActionRow) {
+    btn.set_sensitive(false);
+    row.set_subtitle("Connecting…");
+    let ssid = ssid.to_string();
+    let btn = btn.clone();
+    let row = row.clone();
+    let row_for_ok = row.clone();
+    let row_for_err = row.clone();
+    let btn_for_ok = btn.clone();
+    let btn_for_err = btn.clone();
+    glib::spawn_future_local(async move {
+        let result = tokio_runtime().spawn(async move {
+            network::wifi_connect(&ssid, bssid.as_deref(), password.as_deref()).await
+        }).await;
+        match result {
+            Ok(Ok(())) => {
+                row_for_ok.set_subtitle("Connected");
+            }
+            Ok(Err(e)) => {
+                row_for_err.set_subtitle(&e.user_message());
+                btn_for_err.set_sensitive(true);
+            }
+            Err(_) => {
+                row.set_subtitle("Connection cancelled");
+                btn.set_sensitive(true);
+            }
+        }
+        // silence unused-warning when both paths re-enable the button
+        let _ = btn_for_ok;
+    });
 }

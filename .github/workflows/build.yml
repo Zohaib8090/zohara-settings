@@ -60,10 +60,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Check Code
-        run: sudo -u builder cargo check --release
+        run: sudo -u builder env CARGO_TARGET_DIR=/home/builder/target cargo check --release
 
       - name: Build Release Binary
-        run: sudo -u builder cargo build --release
+        run: sudo -u builder env CARGO_TARGET_DIR=/home/builder/target cargo build --release
 
       - name: Determine channel
         id: channel
@@ -96,15 +96,23 @@ jobs:
       - name: Run makepkg
         run: |
           # The PKGBUILD expects the prebuilt binary at
-          # $srcdir/../target/release/zohara-settings, which is exactly
-          # where `cargo build --release` put it in the previous step.
-          # We can't run as root, so use the `builder` user created in
-          # the dependency-install step.
+          # $srcdir/../target/release/zohara-settings. We redirected
+          # CARGO_TARGET_DIR to /home/builder/target so the binary
+          # is at /home/builder/target/release/zohara-settings. The
+          # PKGBUILD uses $srcdir/../target which resolves to the
+          # workspace's target dir; we cd there and symlink.
           #
           # The PKGBUILD's pkgver() reads from the env var _PKGVER
-          # (falling back to Cargo.toml) so the same string is used for
-          # both the file name and the package's internal version.
+          # (falling back to Cargo.toml) so the same string is used
+          # for both the file name and the package's internal version.
           chown -R builder:builder .
+          # Make the prebuilt binary visible at the path the PKGBUILD expects.
+          # The workflow runs from /__w/zohara-settings/zohara-settings, so
+          # $srcdir/../target = /__w/zohara-settings/target.
+          rm -rf /__w/zohara-settings/target
+          ln -s /home/builder/target /__w/zohara-settings/target
+          chown -h builder:builder /__w/zohara-settings/target
+          cd /__w/zohara-settings/zohara-settings
           sudo -u builder env _PKGVER="${{ steps.version.outputs.version }}" \
             makepkg --nocheck --skippgpcheck
           ls -lh *.pkg.tar.zst

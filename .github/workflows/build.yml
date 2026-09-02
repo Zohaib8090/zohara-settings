@@ -98,21 +98,22 @@ jobs:
           # The PKGBUILD expects the prebuilt binary at
           # $srcdir/../target/release/zohara-settings. We redirected
           # CARGO_TARGET_DIR to /home/builder/target so the binary
-          # is at /home/builder/target/release/zohara-settings. The
-          # PKGBUILD uses $srcdir/../target which resolves to the
-          # workspace's target dir; we cd there and symlink.
+          # is at /home/builder/target/release/zohara-settings.
+          #
+          # When makepkg runs, $srcdir = <workdir>/src/<pkgname>-<ver>,
+          # so $srcdir/../target = <workdir>/src/target. The workflow's
+          # workdir is /__w/zohara-settings/zohara-settings/, so the
+          # symlink we need is /__w/zohara-settings/zohara-settings/src/target
+          # -> /home/builder/target.
           #
           # The PKGBUILD's pkgver() reads from the env var _PKGVER
           # (falling back to Cargo.toml) so the same string is used
           # for both the file name and the package's internal version.
           chown -R builder:builder .
-          # Make the prebuilt binary visible at the path the PKGBUILD expects.
-          # The workflow runs from /__w/zohara-settings/zohara-settings, so
-          # $srcdir/../target = /__w/zohara-settings/target.
-          rm -rf /__w/zohara-settings/target
-          ln -s /home/builder/target /__w/zohara-settings/target
-          chown -h builder:builder /__w/zohara-settings/target
-          cd /__w/zohara-settings/zohara-settings
+          mkdir -p src
+          rm -rf src/target
+          ln -s /home/builder/target src/target
+          chown -h builder:builder src/target
           sudo -u builder env _PKGVER="${{ steps.version.outputs.version }}" \
             makepkg --nocheck --skippgpcheck
           ls -lh *.pkg.tar.zst

@@ -100,20 +100,20 @@ jobs:
           # CARGO_TARGET_DIR to /home/builder/target so the binary
           # is at /home/builder/target/release/zohara-settings.
           #
-          # When makepkg runs, $srcdir = <workdir>/src/<pkgname>-<ver>,
-          # so $srcdir/../target = <workdir>/src/target. The workflow's
-          # workdir is /__w/zohara-settings/zohara-settings/, so the
-          # symlink we need is /__w/zohara-settings/zohara-settings/src/target
-          # -> /home/builder/target.
+          # When makepkg runs with no source= tarball (our PKGBUILD
+          # is source-less and reads the prebuilt binary), $srcdir
+          # = <workdir>/src directly, so $srcdir/../target = <workdir>/target.
+          # The workflow's workdir is /__w/zohara-settings/zohara-settings/,
+          # so the symlink we need is
+          #   /__w/zohara-settings/zohara-settings/target -> /home/builder/target
           #
           # The PKGBUILD's pkgver() reads from the env var _PKGVER
           # (falling back to Cargo.toml) so the same string is used
           # for both the file name and the package's internal version.
           chown -R builder:builder .
-          mkdir -p src
-          rm -rf src/target
-          ln -s /home/builder/target src/target
-          chown -h builder:builder src/target
+          rm -rf target
+          ln -s /home/builder/target target
+          chown -h builder:builder target
           sudo -u builder env _PKGVER="${{ steps.version.outputs.version }}" \
             makepkg --nocheck --skippgpcheck
           ls -lh *.pkg.tar.zst

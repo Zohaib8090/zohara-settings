@@ -30,17 +30,6 @@ which is the Arch package repo that Zohara OS systems read with
 | `beta`    | beta    |
 | (manual)  | alpha   |
 
-## CI secrets
-
-The `.github/workflows/build.yml` uses one secret:
-`PACKAGES_DISPATCH_TOKEN` — a GitHub PAT with `repo` scope on
-`Zohaib8090/zohara-packages`, used to dispatch a `repository_dispatch`
-event that triggers the publish workflow in that repo.
-
-Without it, the .pkg.tar.zst is still uploaded to the channel release,
-but the auto-update of `zohara.db` and `apps.json` is skipped. The
-publish.yml in zohara-packages can be run manually as a fallback.
-
 ## Layout
 
 ```

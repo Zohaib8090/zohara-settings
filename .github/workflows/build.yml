@@ -87,7 +87,12 @@ jobs:
           # The PKGBUILD expects the prebuilt binary at
           # $srcdir/../target/release/zohara-settings, which is exactly
           # where `cargo build --release` put it in the previous step.
-          _PKGVER="${{ steps.version.outputs.version }}" makepkg --nocheck --skippgpcheck
+          # We pass --asroot because the CI container's default user is
+          # root and makepkg otherwise refuses to run; this is a build
+          # container that exists for the lifetime of the workflow and
+          # is then thrown away, so the usual "don't run makepkg as
+          # root" warning doesn't apply.
+          _PKGVER="${{ steps.version.outputs.version }}" makepkg --nocheck --skippgpcheck --asroot
           ls -lh *.pkg.tar.zst
           PKG_FILE=$(ls *.pkg.tar.zst | head -1)
           echo "package_file=$PKG_FILE" >> "$GITHUB_ENV"

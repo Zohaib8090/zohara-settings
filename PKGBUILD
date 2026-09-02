@@ -56,30 +56,31 @@ build() {
   # Build happens in the workflow before makepkg is invoked; this stub is
   # here so makepkg's tarball-extraction step doesn't fail when there are
   # no sources.
-  if [ ! -f "$srcdir/../target/release/zohara-settings" ]; then
-    echo "ERROR: prebuilt binary not found at $srcdir/../target/release/zohara-settings"
+  if [ ! -f "$startdir/target/release/zohara-settings" ]; then
+    echo "ERROR: prebuilt binary not found at $startdir/target/release/zohara-settings"
     echo "The workflow is supposed to cargo build --release before running makepkg."
     return 1
   fi
 }
 
 package() {
-  # Binary
-  install -Dm755 "$srcdir/../target/release/zohara-settings" \
+  # Binary. startdir is the dir makepkg was invoked from (the workflow's
+  # workspace root), where the prebuilt binary and the data/ directory live.
+  install -Dm755 "$startdir/target/release/zohara-settings" \
     "$pkgdir/usr/bin/zohara-settings"
 
   # Desktop entry
-  install -Dm644 "$srcdir/data/zohara-settings.desktop" \
+  install -Dm644 "$startdir/data/zohara-settings.desktop" \
     "$pkgdir/usr/share/applications/zohara-settings.desktop"
 
   # Optional systemd user service (used by some distros for dbus activation)
-  if [ -f "$srcdir/data/zohara-settings.service" ]; then
-    install -Dm644 "$srcdir/data/zohara-settings.service" \
+  if [ -f "$startdir/data/zohara-settings.service" ]; then
+    install -Dm644 "$startdir/data/zohara-settings.service" \
       "$pkgdir/usr/lib/systemd/user/zohara-settings.service"
   fi
 
   # License
-  if [ -f "$srcdir/LICENSE" ]; then
-    install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  if [ -f "$startdir/LICENSE" ]; then
+    install -Dm644 "$startdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   fi
 }

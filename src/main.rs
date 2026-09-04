@@ -58,6 +58,16 @@ static PAGES: &[PageDef] = &[
     PageDef { label: "Accessibility",        icon: "preferences-desktop-accessibility-symbolic" },
     PageDef { label: "Privacy & security",   icon: "security-high-symbolic" },
     PageDef { label: "Windows Update",       icon: "system-software-update-symbolic" },
+    PageDef { label: "Display",              icon: "video-display-symbolic" },
+    PageDef { label: "Sound",                icon: "audio-speakers-symbolic" },
+    PageDef { label: "Notifications",        icon: "preferences-system-notifications-symbolic" },
+    PageDef { label: "Power & battery",      icon: "battery-level-80-symbolic" },
+    PageDef { label: "Storage",              icon: "drive-harddisk-symbolic" },
+    PageDef { label: "Mouse",                icon: "input-mouse-symbolic" },
+    PageDef { label: "Touchpad",             icon: "input-touchpad-symbolic" },
+    PageDef { label: "Keyboard",             icon: "input-keyboard-symbolic" },
+    PageDef { label: "Default apps",         icon: "preferences-desktop-default-applications-symbolic" },
+    PageDef { label: "About",                icon: "help-about-symbolic" },
 ];
 
 /// Build a page widget by its index into PAGES.
@@ -75,6 +85,16 @@ fn build_page(index: usize) -> gtk4::Widget {
         9  => pages::accessibility::build(),
         10 => pages::privacy::build(),
         11 => pages::updates::build(),
+        12 => pages::display::build(),
+        13 => pages::sound::build(),
+        14 => pages::notifications::build(),
+        15 => pages::power::build(),
+        16 => pages::storage::build(),
+        17 => pages::mouse::build(),
+        18 => pages::touchpad::build(),
+        19 => pages::keyboard::build(),
+        20 => pages::default_apps::build(),
+        21 => pages::advanced::build(),
         _  => unreachable!("Page index {} out of range", index),
     }
 }

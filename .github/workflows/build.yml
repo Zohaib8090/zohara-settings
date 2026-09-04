@@ -189,10 +189,16 @@ jobs:
             echo "    -f channel=$CHANNEL"
             exit 0
           fi
+          # The new zohara-packages/publish.yml reads run_id + source_repo
+          # from the dispatch payload and uses 'gh run download' to fetch
+          # the .pkg.tar.zst directly from this run's artifacts (no
+          # pre-signed URL to leak a token, and the URL doesn't expire).
+          # We still send artifact_url for backward compatibility with the
+          # older workflow_dispatch path.
           ARTIFACT_URL="https://github.com/$PACKAGES_REPO/releases/download/${{ env.release_tag }}/${{ env.package_file }}"
-          echo "Dispatching to $PACKAGES_REPO: package=$PKG version=$VER channel=$CHANNEL url=$ARTIFACT_URL"
+          echo "Dispatching to $PACKAGES_REPO: package=$PKG version=$VER channel=$CHANNEL run_id=${{ github.run_id }}"
           if curl -fsSL -X POST \
-            -H "Authorization: token $GH_TOKEN" \
+            -H "Authorization: token ***" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/$PACKAGES_REPO/dispatches" \
             -d "{
@@ -201,6 +207,8 @@ jobs:
                 \"package_name\": \"$PKG\",
                 \"version\": \"$VER\",
                 \"artifact_url\": \"$ARTIFACT_URL\",
+                \"run_id\": \"${{ github.run_id }}\",
+                \"source_repo\": \"Zohaib8090/zohara-settings\",
                 \"channel\": \"$CHANNEL\"
               }
             }"; then

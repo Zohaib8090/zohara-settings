@@ -8,7 +8,7 @@ use libadwaita as adw;
 use adw::prelude::*;
 use std::process::Command;
 
-fn read_upower() -> Option<(u32, bool, String)> {
+fn read_upower() -> Option<(u32, String)> {
     // upower -i /org/freedesktop/UPower/devices/battery_BAT0 | head -30
     let out = Command::new("upower")
         .args(["-i", "/org/freedesktop/UPower/devices/battery_BAT0"])
@@ -19,7 +19,6 @@ fn read_upower() -> Option<(u32, bool, String)> {
     }
     let s = String::from_utf8_lossy(&out.stdout);
     let mut pct: u32 = 100;
-    let mut charging = false;
     let mut state = String::from("discharging");
     for line in s.lines() {
         let line = line.trim();
@@ -28,15 +27,15 @@ fn read_upower() -> Option<(u32, bool, String)> {
                 pct = num.trim_end_matches('%').parse().unwrap_or(100);
             }
         } else if line.starts_with("state:") {
-            state = line.split_whitespace().nth(1).unwrap_or("discharging").to_string();
-        } else if line.starts_with("icon-name:") {
-            // last
+            state = line
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("discharging")
+                .to_string();
         }
     }
-    charging = state == "charging" || state == "fully-charged";
-    Some((pct, charging, state))
+    Some((pct, state))
 }
-
 fn set_logind(key: &str, value: &str) {
     let _ = Command::new("sudo")
         .args(["-n", "tee", "-a", "/etc/systemd/logind.conf"])

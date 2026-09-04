@@ -28,8 +28,7 @@ fn list_sinks() -> Vec<(String, String)> {
     let out = Command::new(cmd)
         .args(["status"])
         .output()
-        .or_else(|_| Command::new("pactl").args(["list", "short", "sinks"]).output())
-        .ok();
+        .or_else(|_| Command::new("pactl").args(["list", "short", "sinks"]).output());
     let stdout = match out {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
         _ => return Vec::new(),

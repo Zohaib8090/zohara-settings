@@ -61,7 +61,7 @@ pub fn build() -> gtk4::Widget {
     natural.connect_active_notify(|r| gset("natural-scroll", if r.is_active() { "true" } else { "false" }));
     rows.append(&natural);
 
-    let speed = adw::Scale::with_range(gtk4::Orientation::Horizontal, -1.0, 1.0, 0.1);
+    let speed = gtk4::Scale::with_range(gtk4::Orientation::Horizontal, -1.0, 1.0, 0.1);
     if let Some(v) = gget("speed") {
         if let Ok(n) = v.parse::<f64>() { speed.set_value(n); }
     }

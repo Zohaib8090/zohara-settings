@@ -72,12 +72,12 @@ pub fn build() -> gtk4::Widget {
     rows.set_css_classes(&["win11-card-group"]);
 
     // 1. Battery card (only if a battery is present)
-    if let Some((pct, charging, state)) = read_upower() {
+    if let Some((pct, state)) = read_upower() {
         let bat = adw::ActionRow::new();
         bat.set_title(&format!("Battery at {pct}%"));
         bat.set_subtitle(&format!(
             "{} {}",
-            if charging { "Charging" } else { "On battery" },
+            if state == "charging" || state == "fully-charged" { "Charging" } else { "On battery" },
             state
         ));
         bat.set_activatable(false);

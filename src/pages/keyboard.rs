@@ -48,7 +48,7 @@ pub fn build() -> gtk4::Widget {
     rows.set_css_classes(&["win11-card-group"]);
 
     // Repeat delay
-    let delay = adw::Scale::with_range(gtk4::Orientation::Horizontal, 100.0, 1000.0, 25.0);
+    let delay = gtk4::Scale::with_range(gtk4::Orientation::Horizontal, 100.0, 1000.0, 25.0);
     if let Some(v) = gget("delay") {
         if let Ok(n) = v.parse::<f64>() { delay.set_value(n); }
     }
@@ -67,7 +67,7 @@ pub fn build() -> gtk4::Widget {
     rows.append(&delay_exp);
 
     // Repeat rate
-    let rate = adw::Scale::with_range(gtk4::Orientation::Horizontal, 10.0, 100.0, 1.0);
+    let rate = gtk4::Scale::with_range(gtk4::Orientation::Horizontal, 10.0, 100.0, 1.0);
     if let Some(v) = gget("repeat") {
         // stored as fraction: 1/rate seconds; convert to "rate" (chars/sec)
         if let Ok(secs) = v.parse::<f64>() {

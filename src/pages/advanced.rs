@@ -139,7 +139,7 @@ pub fn build() -> gtk4::Widget {
     // 3. Power-user escape hatch: open KDE/Plasma full settings
     let more = adw::PreferencesGroup::builder()
         .title("More settings")
-        .description(Some("For options not covered by Zohara Settings, the desktop's full control panel is also available."))
+        .description("For options not covered by Zohara Settings, the desktop's full control panel is also available.")
         .build();
     let open_row = adw::ActionRow::new();
     open_row.set_title("Open full desktop settings");

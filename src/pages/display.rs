@@ -89,13 +89,15 @@ pub fn build() -> gtk4::Widget {
         let out_name = out.name.clone();
         row.connect_selected_notify(move |r| {
             if let Some(mode) = r.model().and_then(|m| m.downcast::<gtk4::StringList>().ok()) {
-                let sel = mode.string(r.selected());
-                let _ = Command::new("sh")
-                    .args(["-c", &format!(
-                        "command -v wlr-randr >/dev/null && wlr-randr --output {} --mode {} || xrandr --output {} --mode {}",
-                        out_name, sel, out_name, sel,
-                    )])
-                    .spawn();
+                let sel = mode.string(r.selected()).map(|s| s.to_string()).unwrap_or_default();
+                if !sel.is_empty() {
+                    let _ = Command::new("sh")
+                        .args(["-c", &format!(
+                            "command -v wlr-randr >/dev/null && wlr-randr --output {} --mode {} || xrandr --output {} --mode {}",
+                            out_name, sel, out_name, sel,
+                        )])
+                        .spawn();
+                }
             }
         });
         res_exp.add_row(&row);

@@ -122,7 +122,11 @@ jobs:
 
       - name: Get or create channel release in zohara-packages
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The default GITHUB_TOKEN cannot write to other repos. Use
+          # the user-supplied PAT (PACKAGES_DISPATCH_TOKEN) for every
+          # cross-repo step -- release create, release upload, and
+          # the dispatch below.
+          GH_TOKEN: ${{ secrets.PACKAGES_DISPATCH_TOKEN }}
           CHANNEL: ${{ steps.channel.outputs.channel }}
         run: |
           pacman -S --noconfirm --needed github-cli
@@ -141,9 +145,7 @@ jobs:
               $PRE; then
               echo "Created channel release $TAG"
             else
-              echo "::warning::Could not create the channel release in $PACKAGES_REPO (no cross-repo access)."
-              echo "::warning::The .pkg.tar.zst is in the build artifacts; install it manually or add"
-              echo "::warning::a PACKAGES_DISPATCH_TOKEN secret to make this step succeed."
+              echo "::warning::Could not create the channel release in $PACKAGES_REPO. The .pkg.tar.zst is in the build artifacts."
             fi
           else
             echo "Channel release $TAG already exists (id=$REL_ID)"
@@ -152,25 +154,16 @@ jobs:
 
       - name: Upload .pkg.tar.zst to the channel release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PACKAGES_DISPATCH_TOKEN }}
           TAG: ${{ env.release_tag }}
         run: |
-          # The package filename is something like
-          # zohara-settings-0.1.0-1-x86_64.pkg.tar.zst. Upload under that
-          # exact name (clobbering if a previous build was at the same
-          # version). If the release wasn't created in the previous step
-          # (no cross-repo access), this will fail with a warning; we
-          # treat that as a soft failure so the rest of the pipeline
-          # can still complete and the binary ends up in the run's
-          # artifacts.
           PKG="${{ env.package_file }}"
           if gh release upload "$TAG" "$PKG" --repo "$PACKAGES_REPO" --clobber 2>&1; then
             echo "Uploaded $PKG to $TAG in $PACKAGES_REPO"
           else
             echo "::warning::Could not upload $PKG to $TAG. The build artifact"
             echo "::warning::(zohara-settings-arch-x86_64 below) still contains the"
-            echo "::warning::.pkg.tar.zst; install it manually or add a"
-            echo "::warning::PACKAGES_DISPATCH_TOKEN secret to make this step succeed."
+            echo "::warning::.pkg.tar.zst; install it manually."
           fi
 
       - name: Dispatch to zohara-packages publish workflow

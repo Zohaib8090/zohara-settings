@@ -20,3 +20,4 @@ pub mod touchpad;
 pub mod keyboard;
 pub mod default_apps;
 pub mod advanced;
+pub mod zohara_link;

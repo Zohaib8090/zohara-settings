@@ -69,6 +69,7 @@ static PAGES: &[PageDef] = &[
     PageDef { label: "Keyboard",             icon: "input-keyboard-symbolic" },
     PageDef { label: "Default apps",         icon: "preferences-desktop-default-applications-symbolic" },
     PageDef { label: "About",                icon: "help-about-symbolic" },
+    PageDef { label: "Zohara Link",          icon: "phone-symbolic" },
 ];
 
 /// Build a page widget by its index into PAGES.
@@ -96,6 +97,7 @@ fn build_page(index: usize) -> gtk4::Widget {
         19 => pages::keyboard::build(),
         20 => pages::default_apps::build(),
         21 => pages::advanced::build(),
+        22 => pages::zohara_link::build(),
         _  => unreachable!("Page index {} out of range", index),
     }
 }

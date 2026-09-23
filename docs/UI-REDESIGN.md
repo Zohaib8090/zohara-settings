@@ -72,10 +72,14 @@ palette — that's what "OS-level theming" means in practice. Neither
 ## Sequencing (explicit, user-specified order — don't reorder without asking)
 
 1. **Settings app** — theming engine + flat redesign + bundle the
-   functional bugs found in Display/Power. ✅ **Done**, see Status below.
+   functional bugs found in Display/Power. ✅ **Done**.
 2. **Zohara Link page, embedded inside Settings** (not a standalone popover
-   app) — see "Next up" below.
-3. **Welcome app** — last.
+   app). ✅ **Done**.
+3. **Welcome app**. ✅ **Done**.
+
+All three are shipped and confirmed green on real CI — see Status below.
+This initiative's original scope is complete; treat anything not listed
+under "Known related debt" as genuinely finished, not as remaining work.
 
 ## Status
 
@@ -107,47 +111,58 @@ available; see the note at the bottom of this file).
   handling needs a compositor daemon (swayidle/hypridle) integration that
   hasn't been built.
 
-### ⏭ Next up: Zohara Link page inside Settings
+### ✅ Zohara Link page inside Settings — done, verified on real CI
 
-Not started yet. Plan, per the user's explicit direction (pairing UI lives
-*inside* Settings, not as a separate tray/popover app):
+Commit `7dafb27` on `zohara-settings` (pushed to `main`, green CI). New page
+module `src/pages/zohara_link.rs`, registered in `main.rs`'s `PAGES`/
+`build_page` as "Zohara Link".
 
-- New page module `src/pages/zohara_link.rs` (mirror the shape of
-  `display.rs`/`power.rs`), registered in `main.rs`'s `PAGES`/`build_page`
-  under the existing "Ecosystem › Zohara Link" sidebar entry.
-- UI per the reviewed mockup: pairing-request card (PIN confirm/deny),
-  paired-devices list with connection/battery status, quick actions (send
-  clipboard, lock screen) — flat design language, same accent system.
-- **Real IPC client**, not a mockup: connect to `zohara-linkd`'s Unix
-  socket at `/run/user/$UID/zohara.sock` (see
-  `zohara-link/linux-daemon/README.md`'s "Unix Socket IPC Integration"
-  section — newline-delimited JSON, `GET_STATUS` / `SEND_CLIPBOARD` /
-  `LOCK_SCREEN` commands, streaming events). `zohara-link-status` in that
-  repo is a working reference client to copy the protocol handling from.
-- **"A little bit of verification system"** (the user's phrasing) — the
-  page needs to visibly prove it's actually talking to the real daemon,
-  not just rendering the mockup: a live connection-status indicator that
-  attempts the socket connection at page-build time (and on a refresh
-  interval or manual retry), showing a clear "Zohara Link daemon not
-  running" state when the socket doesn't exist — same honest-fallback
-  pattern as the Display/Power fixes above, not a hardcoded "Connected".
-- This page is real GTK+Tokio code that will need the same CI-only
-  verification as everything else in this repo.
+- **Real IPC client**, not a mockup: connects to `zohara-linkd`'s Unix
+  socket at `/run/user/$UID/zohara.sock`, sends `GET_STATUS`, and stays
+  connected to receive live `DEVICE_PAIRED`/`PAIR_REQUEST`/
+  `TELEMETRY_UPDATED` events — mirrors the protocol
+  `zohara-link/linux-daemon/src/bin/status_client.rs` already exercises.
+- **The verification the daemon needed**: the connection-status row
+  reflects whichever of "socket doesn't exist" / "connect failed" /
+  "connected" actually happened, never a hardcoded "Connected" — same
+  honest-fallback pattern as the Display/Power fixes.
+- Send-clipboard and lock-screen buttons fire real one-shot commands over
+  the socket.
+- Implementation note: uses `glib::spawn_future_local` (one long-running
+  local future pinned to the GTK main thread's GLib context) rather than a
+  cross-thread channel, matching the already-proven pattern from
+  `zohara-apps/update`'s pacman calls — Tokio I/O works there because
+  `main.rs` enters the Tokio runtime for the whole process before the GTK
+  main loop starts.
 
-### ⏭ Last: Welcome app (zohara-apps/welcome)
+### ✅ Welcome app (zohara-apps/welcome) — done, verified on real CI
 
-Not started. Known work:
+Commit `1055fcf` on `zohara-apps` (pushed to `main`, green CI after also
+fixing an unrelated CI ordering bug — see below).
 
-- Apply the same flat design language (currently has its own minimal
-  inline CSS, not the shared theme).
-- **Read `~/.config/zohara/theme.json`** at startup for the accent color,
-  matching "OS-level theming."
-- **Fix the silent-failure bug**: `launch()` in `welcome/src/main.rs`
-  treats a successful `Command::spawn()` as success and closes the welcome
-  window, even though `zohara-migrate`/`zohara-usermgr` are stubs that spawn
-  fine and then immediately `exit(1)`. Needs a real exit-status/stderr check
-  and the inline error banner shown in the reviewed mockup ("Migration tool
-  isn't ready yet…") instead of silently closing.
+- **Fixed the silent-failure bug**: `launch()`'s `Ok` case only ever meant
+  "the OS accepted the exec," not "the program did anything" — a stub like
+  `zohara-migrate` spawns fine and immediately `exit(1)`s, and the old code
+  closed the welcome window regardless. Now a background thread waits on
+  the child while a 600ms GTK-main-loop timeout checks the result: still
+  running (the real case, e.g. Calamares) closes as before; already exited
+  with failure keeps the window open and shows the captured stderr in the
+  error dialog.
+  - Also fixed a second latent bug found in the same code path:
+    `show_error_dialog`'s own comment claimed a response handler closed the
+    dialog on "Close" — it never actually did. Now it does.
+- **Design**: replaced the five-color Catppuccin per-button palette and
+  emoji labels with the shared flat design language — one OS accent color
+  (read live from `~/.config/zohara/theme.json`) for primary actions, flat
+  neutral surfaces for the rest.
+- **Unrelated CI bug found and fixed along the way** (`zohara-apps@6ddf1d8`):
+  `.github/workflows/build.yml` `chown`ed the workspace to the `builder`
+  user *before* `actions/checkout` ran, so checkout (running as root)
+  silently undid it. This stayed invisible until a commit actually needed
+  to *write* `Cargo.lock` (this one, adding `serde_json` to welcome's
+  deps) — `cargo check` then failed with "Permission denied," nothing to
+  do with the Rust source. Moved the `chown` to its own step right after
+  checkout.
 
 ## Key decisions worth remembering
 

@@ -1,5 +1,6 @@
 mod pages;
 mod backend;
+mod theme;
 
 use gtk4::prelude::*;
 use libadwaita as adw;
@@ -111,7 +112,10 @@ fn build_ui(app: &adw::Application) {
         // so a future light theme would need to be loaded conditionally.
     }
 
-    // Load custom Windows 11 Dark Acrylic CSS
+    // Load the static stylesheet first (it declares fallback accent/background
+    // named colors), then the theme engine's provider on top of it — that one
+    // is registered at a higher priority, so the user's Personalization
+    // choices (persisted in ~/.config/zohara/theme.json) win.
     let provider = gtk4::CssProvider::new();
     provider.load_from_string(WIN11_CSS);
     if let Some(display) = gtk4::gdk::Display::default() {
@@ -120,6 +124,7 @@ fn build_ui(app: &adw::Application) {
             &provider,
             gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
+        theme::apply(&display);
     }
 
     let page_cache: Rc<RefCell<Vec<Option<gtk4::Widget>>>> =

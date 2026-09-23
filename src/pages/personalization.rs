@@ -4,8 +4,10 @@ use libadwaita as adw;
 use adw::prelude::*;
 use std::process::Command;
 
+use crate::theme;
 
 pub fn build() -> gtk4::Widget {
+    let current = std::rc::Rc::new(std::cell::RefCell::new(theme::load()));
     let scroll = gtk4::ScrolledWindow::builder()
         .hscrollbar_policy(gtk4::PolicyType::Never)
         .vscrollbar_policy(gtk4::PolicyType::Automatic)
@@ -67,15 +69,31 @@ pub fn build() -> gtk4::Widget {
         let thumb = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         thumb.set_size_request(76, 48);
 
+        // Flat preview swatch: solid background with a thin accent-colored
+        // bottom stripe, instead of a gradient blend — the thumbnail should
+        // preview what the flat theme actually looks like.
         let custom_css = format!(
-            "box {{ background: linear-gradient(135deg, {} 0%, #08080c 100%); border-radius: 8px; border: 2px solid {}; }}",
-            bg, accent
+            "box {{ background: {bg}; border-radius: 8px; border: 2px solid transparent; \
+             border-bottom: 4px solid {accent}; }}",
+            bg = bg,
+            accent = accent,
         );
         let provider = gtk4::CssProvider::new();
         provider.load_from_string(&custom_css);
         thumb.style_context().add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
 
         btn.set_child(Some(&thumb));
+
+        let bg_owned = bg.to_string();
+        let accent_owned = accent.to_string();
+        let current_clone = current.clone();
+        btn.connect_clicked(move |_| {
+            let mut cfg = current_clone.borrow_mut();
+            cfg.background = bg_owned.clone();
+            cfg.accent = accent_owned.clone();
+            theme::set_and_apply(&cfg);
+        });
+
         let col = (i % 3) as i32;
         let row = (i / 3) as i32;
         themes_grid.attach(&btn, col, row, 1, 1);
@@ -132,13 +150,41 @@ pub fn build() -> gtk4::Widget {
     mode_row.set_title("Choose your mode");
     let mode_list = gtk4::StringList::new(&["Dark (Recommended)", "Light", "Custom"]);
     mode_row.set_model(Some(&mode_list));
-    mode_row.set_selected(0);
+    mode_row.set_selected(match current.borrow().mode.as_str() {
+        "light" => 1,
+        "custom" => 2,
+        _ => 0,
+    });
+    {
+        let current_clone = current.clone();
+        mode_row.connect_selected_notify(move |row| {
+            let mut cfg = current_clone.borrow_mut();
+            cfg.mode = match row.selected() {
+                1 => "light",
+                2 => "custom",
+                _ => "dark",
+            }
+            .to_string();
+            theme::set_and_apply(&cfg);
+        });
+    }
     colors_exp.add_row(&mode_row);
 
+    // Off by default: a translucent window without real compositor
+    // blur-behind just looks washed out, not premium. See theme.rs for the
+    // KWin blur-behind integration this would need to do properly.
     let trans_row = adw::SwitchRow::new();
     trans_row.set_title("Transparency effects");
     trans_row.set_subtitle("Windows and surfaces appear translucent");
-    trans_row.set_active(true);
+    trans_row.set_active(current.borrow().transparency);
+    {
+        let current_clone = current.clone();
+        trans_row.connect_active_notify(move |row| {
+            let mut cfg = current_clone.borrow_mut();
+            cfg.transparency = row.is_active();
+            theme::set_and_apply(&cfg);
+        });
+    }
     colors_exp.add_row(&trans_row);
 
     rows_box.append(&colors_exp);

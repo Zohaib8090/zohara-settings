@@ -36,16 +36,46 @@ fn read_upower() -> Option<(u32, String)> {
     }
     Some((pct, state))
 }
+/// Writes a `HandleLidSwitch*` key into a logind drop-in and reloads logind
+/// so it takes effect immediately. Reads the drop-in first so setting one
+/// key (e.g. "on battery") doesn't clobber the other ("plugged in").
+/// Writing under /etc requires elevation — pkexec pops the desktop's normal
+/// polkit auth dialog, same as any other privileged settings-app action.
 fn set_logind(key: &str, value: &str) {
-    let _ = Command::new("sudo")
-        .args(["-n", "tee", "-a", "/etc/systemd/logind.conf"])
-        .arg(format!("/dev/stdin"))
-        .spawn();
-    // Simpler: just write to a file under /etc/systemd/logind.conf.d/
-    // which doesn't require sudo at runtime for the read but does for the write.
-    // For now we just log that the user should run `systemctl edit systemd-logind`.
-    log::info!("to change {}, run: sudo systemctl edit systemd-logind", key);
-    let _ = value;
+    const PATH: &str = "/etc/systemd/logind.conf.d/99-zohara.conf";
+
+    let existing = std::fs::read_to_string(PATH).unwrap_or_default();
+    let mut kv: std::collections::BTreeMap<String, String> = existing
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .collect();
+    kv.insert(key.to_string(), value.to_string());
+
+    let mut content = String::from("[Login]\n");
+    for (k, v) in &kv {
+        content.push_str(&format!("{k}={v}\n"));
+    }
+
+    match Command::new("pkexec")
+        .args(["tee", PATH])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(mut child) => {
+            if let Some(stdin) = child.stdin.as_mut() {
+                use std::io::Write;
+                let _ = stdin.write_all(content.as_bytes());
+            }
+            let _ = child.wait();
+            // Re-reads config; does not end existing sessions.
+            let _ = Command::new("systemctl")
+                .args(["restart", "systemd-logind"])
+                .spawn();
+        }
+        Err(e) => log::warn!("pkexec unavailable, could not set {key}: {e}"),
+    }
 }
 
 pub fn build() -> gtk4::Widget {
@@ -118,6 +148,31 @@ pub fn build() -> gtk4::Widget {
     ]);
     screen.set_model(Some(&screen_list));
     screen.set_selected(3);
+    let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
+    if is_wayland {
+        // Honest limitation: DPMS timeout on Wayland is the compositor's
+        // idle daemon (swayidle/hypridle), not something this app can set
+        // directly yet — better to say so than to leave a dropdown that
+        // silently does nothing, which was the original bug here.
+        screen.set_sensitive(false);
+        screen.set_subtitle("Not wired up on Wayland yet — needs swayidle/hypridle integration");
+    } else {
+        screen.connect_selected_notify(|r| {
+            let minutes: Option<u32> = match r.selected() {
+                0 => Some(1),
+                1 => Some(2),
+                2 => Some(5),
+                3 => Some(10),
+                4 => Some(15),
+                5 => Some(30),
+                _ => None, // "Never"
+            };
+            let secs = minutes.map(|m| m * 60).unwrap_or(0).to_string();
+            let _ = Command::new("xset")
+                .args(["dpms", &secs, &secs, &secs])
+                .spawn();
+        });
+    }
     let screen_exp = adw::ExpanderRow::new();
     screen_exp.set_title("Screen and sleep");
     screen_exp.set_subtitle("Idle time before the screen turns off and the system sleeps");
@@ -131,11 +186,31 @@ pub fn build() -> gtk4::Widget {
     let lid_list = gtk4::StringList::new(&["Do nothing", "Suspend", "Hibernate", "Shut down"]);
     lid.set_model(Some(&lid_list));
     lid.set_selected(1);
+    lid.connect_selected_notify(|r| {
+        let value = match r.selected() {
+            0 => "ignore",
+            2 => "hibernate",
+            3 => "poweroff",
+            _ => "suspend",
+        };
+        set_logind("HandleLidSwitchExternalPower", value);
+    });
+
     let lid_battery = adw::ComboRow::new();
     lid_battery.set_title("On battery");
     let lid_b_list = gtk4::StringList::new(&["Do nothing", "Suspend", "Hibernate", "Shut down"]);
     lid_battery.set_model(Some(&lid_b_list));
     lid_battery.set_selected(1);
+    lid_battery.connect_selected_notify(|r| {
+        let value = match r.selected() {
+            0 => "ignore",
+            2 => "hibernate",
+            3 => "poweroff",
+            _ => "suspend",
+        };
+        set_logind("HandleLidSwitch", value);
+    });
+
     let lid_exp = adw::ExpanderRow::new();
     lid_exp.set_title("Lid close action");
     lid_exp.set_subtitle("What happens when you close the laptop lid");
@@ -143,8 +218,6 @@ pub fn build() -> gtk4::Widget {
     lid_exp.add_row(&lid);
     lid_exp.add_row(&lid_battery);
     rows.append(&lid_exp);
-
-    let _ = set_logind; // reserved for future use
 
     root.append(&rows);
     scroll.set_child(Some(&root));

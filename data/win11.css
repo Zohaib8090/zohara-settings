@@ -12,10 +12,18 @@
  * beyond the existing /usr/bin/zohara-settings install.
  */
 
-/* ── Windows 11 Dark Acrylic / Mica Theme ────────────────────────────────── */
+/* ── Flat theme, accent-driven ───────────────────────────────────────────────
+ * accent_color / window_bg_color are named colors. The values below are just
+ * fallbacks for a first paint before src/theme.rs's provider attaches (it
+ * redefines both from ~/.config/zohara/theme.json at a higher priority, and
+ * live-updates them whenever Personalization changes). No gradients, no
+ * blur — flat fills only; see theme.rs for why transparency defaults off.
+ */
+@define-color accent_color #4c8dff;
+@define-color window_bg_color #1a1a1e;
 
 window, .win11-window {
-    background-color: #1a1a1e;
+    background-color: @window_bg_color;
     color: #ffffff;
     font-family: 'Segoe UI Variable Display', 'Segoe UI', 'Cantarell', sans-serif;
 }
@@ -41,8 +49,8 @@ headerbar {
 
 .win11-search:focus-within {
     background: rgba(255, 255, 255, 0.1);
-    border-color: #60cdff;
-    box-shadow: 0 0 0 1px #60cdff;
+    border-color: @accent_color;
+    box-shadow: 0 0 0 1px @accent_color;
 }
 
 /* ── Sidebar & Profile Card ──────────────────────────────────────────────── */
@@ -65,7 +73,7 @@ headerbar {
 }
 
 .win11-avatar-circle {
-    background: linear-gradient(135deg, #7c3aed 0%, #3b82f6 100%);
+    background: @accent_color;
     border-radius: 50%;
     color: white;
     min-width: 44px;
@@ -73,7 +81,7 @@ headerbar {
 }
 
 .win11-avatar-circle-large {
-    background: linear-gradient(135deg, #7c3aed 0%, #3b82f6 100%);
+    background: @accent_color;
     border-radius: 50%;
     color: white;
     min-width: 64px;
@@ -116,7 +124,7 @@ headerbar {
 .win11-nav-list row:selected,
 .win11-nav-list row:active {
     background: rgba(255, 255, 255, 0.08);
-    border-left: 3.5px solid #60cdff;
+    border-left: 3.5px solid @accent_color;
     color: #ffffff;
     font-weight: 600;
 }
@@ -146,8 +154,8 @@ headerbar {
 }
 
 .win11-device-thumb {
-    background: linear-gradient(135deg, #1e1b4b 0%, #311042 100%);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: alpha(@accent_color, 0.14);
+    border: 1px solid alpha(@accent_color, 0.35);
     border-radius: 10px;
     min-width: 90px;
     min-height: 65px;
@@ -232,31 +240,31 @@ headerbar {
 
 /* ── Buttons & Badges ─────────────────────────────────────────────────────── */
 .win11-primary-btn {
-    background: #a855f7;
+    background: @accent_color;
     color: white;
     font-weight: 600;
     font-size: 13px;
-    border-radius: 20px;
+    border-radius: 6px;
     padding: 6px 18px;
     border: none;
 }
 
 .win11-primary-btn:hover {
-    background: #9333ea;
+    background: shade(@accent_color, 0.88);
 }
 
 .win11-update-btn {
-    background: #9333ea;
+    background: @accent_color;
     color: white;
     font-weight: 700;
     font-size: 13.5px;
-    border-radius: 20px;
+    border-radius: 6px;
     padding: 8px 22px;
     border: none;
 }
 
 .win11-update-btn:hover {
-    background: #7e22ce;
+    background: shade(@accent_color, 0.88);
 }
 
 .win11-secondary-btn {
@@ -289,7 +297,7 @@ headerbar {
 
 .win11-link-btn {
     background: transparent;
-    color: #a855f7;
+    color: @accent_color;
     font-weight: 600;
     font-size: 12.5px;
     border: none;
@@ -297,12 +305,12 @@ headerbar {
 }
 
 .win11-link-btn:hover {
-    color: #c084fc;
+    color: shade(@accent_color, 1.15);
     text-decoration: underline;
 }
 
 .win11-link-sub {
-    color: #a855f7;
+    color: @accent_color;
     font-size: 13px;
     font-weight: 600;
 }
@@ -363,8 +371,8 @@ headerbar {
 }
 
 .win11-theme-preview-large {
-    background: linear-gradient(135deg, #1e1b4b 0%, #0a0a14 100%);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: @window_bg_color;
+    border: 1px solid alpha(@accent_color, 0.35);
     border-radius: 12px;
 }
 

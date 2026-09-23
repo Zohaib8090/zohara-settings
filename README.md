@@ -3,6 +3,11 @@
 Zohara OS system settings application — GTK4 + libadwaita, talks to
 NetworkManager / BlueZ / UPower over D-Bus.
 
+There's an in-progress UI redesign + OS-level theming engine underway
+across this repo, `zohara-link`, and `zohara-apps` (welcome) — see
+[docs/UI-REDESIGN.md](docs/UI-REDESIGN.md) for the design language, what's
+shipped, and what's left. Read that first if you're picking this up cold.
+
 ## Build
 
 Local:

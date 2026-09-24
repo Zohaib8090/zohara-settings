@@ -215,12 +215,6 @@ pub fn build() -> gtk4::Widget {
             "system-users-symbolic",
             "zohara-usermgr",
         ),
-        (
-            "Package cache cleaner",
-            "Remove old versions from /var/cache/pacman/pkg",
-            "edit-clear-symbolic",
-            "zohara-cleanup-cache",
-        ),
     ] {
         let row = adw::ActionRow::new();
         row.set_title(label);

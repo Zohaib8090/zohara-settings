@@ -1,0 +1,9 @@
+[Unit]
+Description=Check the system for problems regularly
+
+[Timer]
+OnStartupSec=3min
+OnUnitActiveSec=1h
+
+[Install]
+WantedBy=timers.target

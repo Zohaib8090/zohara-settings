@@ -1,0 +1,10 @@
+[Unit]
+Description=Zohara system health check
+Documentation=file:///usr/share/doc/zohara-settings/
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/zohara-settings --health-check
+# The notification waits for the user to open or dismiss it.
+TimeoutStartSec=15min
+Nice=10

@@ -28,6 +28,7 @@ makedepends=(
   'pkgconf'
 )
 optdepends=(
+  'libnotify: problem notifications from the background health check'
   'networkmanager: Network settings page'
   'bluez: Bluetooth settings page'
   'upower: Power settings page'
@@ -78,6 +79,11 @@ package() {
     install -Dm644 "$startdir/data/zohara-settings.service" \
       "$pkgdir/usr/lib/systemd/user/zohara-settings.service"
   fi
+
+  # Background health check (enabled per user by the ISO, or with
+  # `systemctl --user enable --now zohara-settings-health.timer`).
+  install -Dm644 "$startdir/data/zohara-settings-health.service"     "$pkgdir/usr/lib/systemd/user/zohara-settings-health.service"
+  install -Dm644 "$startdir/data/zohara-settings-health.timer"     "$pkgdir/usr/lib/systemd/user/zohara-settings-health.timer"
 
   # License
   if [ -f "$startdir/LICENSE" ]; then

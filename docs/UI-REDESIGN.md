@@ -222,6 +222,30 @@ None of this has been run on a booted image yet — CI proves it compiles,
 not that the D-Bus calls behave. Worker-thread pattern for D-Bus/process
 work: `backend::worker::{in_background, block_on}`.
 
+## Error handling and problem reporting
+
+- `backend::diag` starts first in `main()`: file logger at
+  `~/.local/state/zohara/settings.log` (1 MB, rotated; also stderr, which
+  reaches the journal) and a panic hook that writes
+  `~/.local/state/zohara/crashes/settings-*.txt` with page, system summary
+  and backtrace. Release builds use `strip = "debuginfo"` so backtraces keep
+  function names. The next launch offers the report.
+- Every page is built through `diag::guard`, so a page that panics while
+  being built shows an error page instead of closing Settings (and doesn't
+  trigger the "closed unexpectedly" prompt).
+- `backend::health` holds the checks (failed system/user units, disks >90%,
+  kernel updated but not rebooted, stale pacman lock, low memory, coredumps
+  today, time sync, recent Settings crashes) and their fixes. The
+  Troubleshoot page shows them with one-click fixes, lazily loaded details,
+  and save/copy/GitHub-issue reports.
+- `zohara-settings --health-check` is run by the
+  `zohara-settings-health.timer` user unit (3 min after sign-in, hourly;
+  enabled globally in the ISO). It notifies once per new serious problem;
+  the notification action runs `zohara-settings --page Troubleshoot`.
+- Pages open other pages with `pages::goto(widget, "<sidebar label>")`.
+- Panics inside signal handlers still abort (GTK callbacks can't unwind);
+  the hook records them, but keep handlers free of `unwrap()`.
+
 ## Key decisions worth remembering
 
 - Zohara Link's GUI lives inside Settings, not as a standalone popover/tray

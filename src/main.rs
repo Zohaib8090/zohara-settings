@@ -368,11 +368,12 @@ fn build_ui(app: &adw::Application) {
     window.present();
 
     if let Some(page) = START_PAGE.get() {
-        let _ = window.activate_action("win.goto", Some(&page.to_variant()));
+        let _ = gtk4::prelude::WidgetExt::activate_action(&window, "win.goto", Some(&page.to_variant()));
     }
 
     // Offer the report if the previous run crashed.
     if let Some(report) = backend::diag::take_previous_crash() {
+        use adw::prelude::{AdwDialogExt, AlertDialogExt};
         let d = adw::AlertDialog::new(
             Some("Settings closed unexpectedly last time"),
             Some("A crash report was saved. You can review it and include it in a problem report from Troubleshoot."),
@@ -382,7 +383,7 @@ fn build_ui(app: &adw::Application) {
         let w = window.clone();
         d.connect_response(None, move |_, r| {
             if r == "open" {
-                let _ = w.activate_action("win.goto", Some(&"Troubleshoot".to_variant()));
+                let _ = gtk4::prelude::WidgetExt::activate_action(&w, "win.goto", Some(&"Troubleshoot".to_variant()));
             }
         });
         d.present(Some(&window));

@@ -223,6 +223,99 @@ fn refresh_apps(list: &gtk4::Box, last_sig: &Rc<RefCell<String>>, force: bool) {
     }
 }
 
+// ── Speaker test ───────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+enum Channel {
+    Left,
+    Right,
+    Both,
+}
+
+/// A short 16-bit stereo WAV tone that sounds only on the chosen channel(s).
+fn tone_wav(channel: Channel) -> Vec<u8> {
+    const RATE: u32 = 48_000;
+    const SECS: f32 = 0.9;
+    const FREQ: f32 = 523.25; // C5: clear on laptop speakers, not harsh
+    let frames = (RATE as f32 * SECS) as u32;
+    let data_len = frames * 4;
+    let mut w = Vec::with_capacity(44 + data_len as usize);
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + data_len).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    w.extend_from_slice(&16u32.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    w.extend_from_slice(&2u16.to_le_bytes()); // stereo
+    w.extend_from_slice(&RATE.to_le_bytes());
+    w.extend_from_slice(&(RATE * 4).to_le_bytes());
+    w.extend_from_slice(&4u16.to_le_bytes());
+    w.extend_from_slice(&16u16.to_le_bytes());
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&data_len.to_le_bytes());
+    let fade = RATE as f32 * 0.03;
+    for i in 0..frames {
+        let t = i as f32 / RATE as f32;
+        // Fade in/out so the tone doesn't click.
+        let env = (i as f32 / fade).min((frames - i) as f32 / fade).min(1.0);
+        let v = ((t * FREQ * std::f32::consts::TAU).sin() * env * 0.5 * i16::MAX as f32) as i16;
+        let (l, r) = match channel {
+            Channel::Left => (v, 0),
+            Channel::Right => (0, v),
+            Channel::Both => (v, v),
+        };
+        w.extend_from_slice(&l.to_le_bytes());
+        w.extend_from_slice(&r.to_le_bytes());
+    }
+    w
+}
+
+fn play_tone(channel: Channel) {
+    std::thread::spawn(move || {
+        let name = match channel {
+            Channel::Left => "left",
+            Channel::Right => "right",
+            Channel::Both => "both",
+        };
+        let path = std::env::temp_dir().join(format!("zohara-speaker-test-{name}.wav"));
+        if std::fs::write(&path, tone_wav(channel)).is_err() {
+            return;
+        }
+        // Both play to the current default output device.
+        let played = Command::new("pw-play").arg(&path).status().map(|s| s.success()).unwrap_or(false);
+        if !played {
+            let _ = Command::new("paplay").arg(&path).status();
+        }
+        let _ = std::fs::remove_file(&path);
+    });
+}
+
+fn speaker_test_group() -> gtk4::Box {
+    let group = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+    group.set_css_classes(&["win11-card-group"]);
+
+    let row = adw::ActionRow::new();
+    row.set_title("Test speakers");
+    row.set_subtitle("Plays a short tone on the selected output device");
+    row.add_prefix(&gtk4::Image::from_icon_name("audio-speakers-symbolic"));
+    row.set_activatable(false);
+
+    let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    buttons.set_valign(gtk4::Align::Center);
+    for (label, channel) in [("Left", Channel::Left), ("Right", Channel::Right), ("Both", Channel::Both)] {
+        let b = gtk4::Button::with_label(label);
+        b.set_tooltip_text(Some(match channel {
+            Channel::Left => "Play a tone on the left speaker only",
+            Channel::Right => "Play a tone on the right speaker only",
+            Channel::Both => "Play a tone on both speakers",
+        }));
+        b.connect_clicked(move |_| play_tone(channel));
+        buttons.append(&b);
+    }
+    row.add_suffix(&buttons);
+    group.append(&row);
+    group
+}
+
 pub fn build() -> gtk4::Widget {
     let scroll = gtk4::ScrolledWindow::builder()
         .hscrollbar_policy(gtk4::PolicyType::Never)
@@ -247,6 +340,7 @@ pub fn build() -> gtk4::Widget {
     output.set_css_classes(&["win11-card-group"]);
     append_device_section(&output, true);
     root.append(&output);
+    root.append(&speaker_test_group());
 
     let input = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
     input.set_css_classes(&["win11-card-group"]);

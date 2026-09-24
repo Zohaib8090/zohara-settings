@@ -19,6 +19,7 @@ pub mod storage;
 pub mod mouse;
 pub mod touchpad;
 pub mod keyboard;
+pub mod shortcuts;
 pub mod default_apps;
 pub mod advanced;
 pub mod zohara_link;

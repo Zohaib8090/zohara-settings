@@ -58,7 +58,7 @@ static PAGES: &[PageDef] = &[
     PageDef { label: "Gaming",               icon: "applications-games-symbolic" },
     PageDef { label: "Accessibility",        icon: "preferences-desktop-accessibility-symbolic" },
     PageDef { label: "Privacy & security",   icon: "security-high-symbolic" },
-    PageDef { label: "Windows Update",       icon: "system-software-update-symbolic" },
+    PageDef { label: "Zohara Update",        icon: "system-software-update-symbolic" },
     PageDef { label: "Display",              icon: "video-display-symbolic" },
     PageDef { label: "Sound",                icon: "audio-speakers-symbolic" },
     PageDef { label: "Notifications",        icon: "preferences-system-notifications-symbolic" },

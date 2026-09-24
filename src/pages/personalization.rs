@@ -525,7 +525,7 @@ fn open_start_window(row: &adw::ActionRow) {
 /// Sets the GTK font (so this app and every other GTK4 app picks it up
 /// immediately via gtk-4.0/settings.ini) and best-effort sets the Qt/Plasma
 /// font too (kdeglobals), so both toolkits agree.
-fn open_fonts_window(row: &adw::ActionRow) {
+pub(crate) fn open_fonts_window(row: &adw::ActionRow) {
     let content = dialog_content_box();
 
     const FAMILIES: &[&str] = &["Segoe UI Variable", "Cantarell", "Noto Sans", "Inter", "Ubuntu"];

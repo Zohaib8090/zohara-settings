@@ -25,3 +25,10 @@ pub mod shortcuts;
 pub mod default_apps;
 pub mod advanced;
 pub mod zohara_link;
+
+/// Switch the Settings window to the page with this sidebar label.
+pub fn goto(widget: &impl gtk4::prelude::IsA<gtk4::Widget>, label: &str) {
+    use gtk4::prelude::*;
+    use gtk4::glib::prelude::ToVariant;
+    let _ = widget.as_ref().activate_action("win.goto", Some(&label.to_variant()));
+}

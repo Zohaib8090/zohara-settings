@@ -305,5 +305,18 @@ fn build_ui(app: &adw::Application) {
         .css_classes(vec!["win11-window".to_string()])
         .build();
 
+    // Lets any page open another one: `pages::goto(widget, "Mouse")`.
+    let goto = gtk4::gio::SimpleAction::new("goto", Some(glib::VariantTy::STRING));
+    let nav_for_goto = nav_list.clone();
+    goto.connect_activate(move |_, param| {
+        let Some(label) = param.and_then(|p| p.get::<String>()) else { return };
+        let Some(idx) = PAGES.iter().position(|p| p.label == label) else { return };
+        if let Some(row) = nav_for_goto.row_at_index(idx as i32) {
+            nav_for_goto.select_row(Some(&row));
+            row.activate();
+        }
+    });
+    window.add_action(&goto);
+
     window.present();
 }

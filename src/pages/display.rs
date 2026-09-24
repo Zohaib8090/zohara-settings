@@ -178,6 +178,10 @@ pub fn build() -> gtk4::Widget {
         .build();
     root.append(&title);
 
+    if let Some(layout) = super::display_layout::build_section() {
+        root.append(&layout);
+    }
+
     let rows = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
     rows.set_css_classes(&["win11-card-group"]);
 

@@ -373,7 +373,7 @@ fn build_ui(app: &adw::Application) {
 
     // Offer the report if the previous run crashed.
     if let Some(report) = backend::diag::take_previous_crash() {
-        use adw::prelude::{AdwDialogExt, AlertDialogExt};
+        use adw::prelude::*;
         let d = adw::AlertDialog::new(
             Some("Settings closed unexpectedly last time"),
             Some("A crash report was saved. You can review it and include it in a problem report from Troubleshoot."),

@@ -180,8 +180,43 @@ on a real install. Use Plasma's own interfaces instead:
 | Keyboard | `kcminputrc` / `kxkbrc` via `kwriteconfig6`, then `org.kde.keyboard.reloadConfig` + KWin reconfigure | CI-green |
 | Shortcuts | `org.kde.kglobalaccel` D-Bus (`shortcuts.rs`): list, capture, clear, reset, conflict reassign | CI-green |
 | Mouse / Touchpad | KWin `org.kde.KWin.InputDevice` D-Bus per device (`input_devices.rs`); KWin persists changes itself | CI-green |
-| Notifications, Accessibility | still GNOME `gsettings` — **dead on Plasma**, need the same treatment | todo |
+| Notifications | `plasmanotifyrc` via `backend::kconfig`: DND, pop-ups, per-app | CI-green |
+| Accessibility | Breeze High Contrast scheme, `plasma-apply-cursortheme`, `AnimationDurationFactor`, `kaccessrc` bell | CI-green |
 | Printers, firewall, removable storage, window rules | not started | todo |
+
+### Audit of the remaining pages (2026-09-25)
+
+Checked every page's commands against the packages the last ISO build
+actually installed (`xset`, `gammastep`, `openrgb` and a `zohara-cleanup-cache`
+script are **not** on the ISO) and read each page's logic.
+
+- **Power:** screen timeout disabled on Wayland; lid actions write logind,
+  which Plasma's PowerDevil overrides; every control starts from a hardcoded
+  value; battery path hardcoded to `BAT0`. Should move to `powerdevilrc`.
+- **Time & language:** timezone list is 6 hardcoded zones with Asia/Karachi
+  preselected (opening the page and touching it can change the real
+  timezone); NTP switch and "English (US)" region are hardcoded; Language &
+  region, Typing, Speech rows go nowhere.
+- **Privacy:** firewall switch always starts "on"; location/camera/mic
+  switches do nothing; five Windows-copied rows (Recommendations & offers,
+  Speech, Inking, Diagnostics, Search) plus "Find my device" go nowhere.
+- **Storage:** "Storage Sense" switch does nothing; cache cleanup calls the
+  missing `zohara-cleanup-cache` (same in System's tools card).
+- **Gaming:** Game Mode and MangoHud switches do nothing; power mode starts
+  hardcoded.
+- **Bluetooth & devices:** a fake "Wireless Controller" paired device;
+  switch always starts "on"; duplicate mouse/keyboard sliders that do
+  nothing; Printers, Mobile devices, Cameras, Touchpad rows go nowhere.
+- **Accounts:** "Disable lock screen" switch does nothing.
+- **Default apps:** picking an app means browsing for a `.desktop` file;
+  "Terminal" uses a MIME type that doesn't exist.
+- **Network:** hero card shows hardcoded "Private network • 5 GHz" and
+  "Unlimited"; Ethernet, VPN, Proxy, Dial-up, Advanced rows go nowhere.
+- **Apps:** seven navigation rows go nowhere.
+
+25 navigation rows across Apps, Network, Bluetooth, Privacy and Time &
+language have no click handler at all. Home, Personalization, Updates,
+Zohara Link and Advanced looked sound.
 
 None of this has been run on a booted image yet — CI proves it compiles,
 not that the D-Bus calls behave. Worker-thread pattern for D-Bus/process

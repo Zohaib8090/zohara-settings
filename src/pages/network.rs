@@ -347,9 +347,6 @@ pub fn build() -> gtk4::Widget {
     let proxy_row = build_action_row("Proxy", "Proxy server for Wi-Fi and Ethernet connections", "preferences-system-network-proxy-symbolic");
     rows_box.append(&proxy_row);
 
-    // 7. Dial-up
-    let dial_row = build_action_row("Dial-up", "Set up a dial-up internet connection", "modem-symbolic");
-    rows_box.append(&dial_row);
 
     // 8. Advanced Network Settings
     let adv_row = build_action_row("Advanced network settings", "View all network adapters, network reset", "preferences-system-network-symbolic");

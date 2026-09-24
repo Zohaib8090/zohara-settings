@@ -135,9 +135,6 @@ pub fn build() -> gtk4::Widget {
     let def_row = build_action_row("Default apps", "Defaults for file and link types, browser, mail", "preferences-desktop-default-applications-symbolic");
     rows_box.append(&def_row);
 
-    // 4. Actions
-    let act_row = build_action_row("Actions", "Zohara OS can recommend actions from these apps", "starred-symbolic");
-    rows_box.append(&act_row);
 
     // 5. Offline Maps
     let map_row = build_action_row("Offline maps", "Downloads, storage location, map updates", "find-location-symbolic");
@@ -173,9 +170,6 @@ pub fn build() -> gtk4::Widget {
     }
     rows_box.append(&startup_exp);
 
-    // 9. Resume
-    let res_row = build_action_row("Resume", "Continue work across devices", "document-open-recent-symbolic");
-    rows_box.append(&res_row);
 
     root_box.append(&rows_box);
     scroll.set_child(Some(&root_box));

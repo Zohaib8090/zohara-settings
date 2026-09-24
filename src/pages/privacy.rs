@@ -52,7 +52,6 @@ pub fn build() -> gtk4::Widget {
     ufw_exp.add_row(&ufw_sw);
     sec_box.append(&ufw_exp);
 
-    sec_box.append(&build_action_row("Find my device", "Track your device if you think you've lost it", "find-location-symbolic"));
     root_box.append(&sec_box);
 
     // ── Section 2: Windows permissions ────────────────────────────────────────
@@ -66,9 +65,7 @@ pub fn build() -> gtk4::Widget {
     let perm_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
     perm_box.set_css_classes(&["win11-card-group"]);
 
-    perm_box.append(&build_action_row("Recommendations & offers", "Advertising ID, personalized suggestions, productivity tools", "dialog-information-symbolic"));
     perm_box.append(&build_action_row("Speech", "Speech recognition for dictation and voice interactions", "audio-input-microphone-symbolic"));
-    perm_box.append(&build_action_row("Inking & typing personalization", "Custom dictionary, word predictions", "format-text-underline-symbolic"));
     perm_box.append(&build_action_row("Diagnostics & feedback", "Diagnostic data, crash reporting, telemetry control", "utilities-system-monitor-symbolic"));
     perm_box.append(&build_action_row("Search", "Search history, search apps, file indexing", "system-search-symbolic"));
     root_box.append(&perm_box);

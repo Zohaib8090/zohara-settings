@@ -127,6 +127,120 @@ fn hearing_group() -> adw::PreferencesGroup {
     g
 }
 
+// ── Speech ─────────────────────────────────────────────────────────────────
+
+fn speechd_user_conf() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let base = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{home}/.config"));
+    std::path::PathBuf::from(base).join("speech-dispatcher").join("speechd.conf")
+}
+
+fn speech_rate() -> i32 {
+    std::fs::read_to_string(speechd_user_conf())
+        .ok()
+        .and_then(|s| {
+            s.lines().find_map(|l| l.trim().strip_prefix("DefaultRate").and_then(|v| v.trim().parse().ok()))
+        })
+        .unwrap_or(0)
+}
+
+/// speech-dispatcher replaces its whole system config with a user config if
+/// one exists, so start from a copy of the system file and change one line.
+fn set_speech_rate(rate: i32) {
+    let path = speechd_user_conf();
+    let base = std::fs::read_to_string(&path)
+        .or_else(|_| std::fs::read_to_string("/etc/speech-dispatcher/speechd.conf"))
+        .unwrap_or_default();
+    let mut lines: Vec<String> = base
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("DefaultRate") && !l.trim_start().starts_with("# DefaultRate"))
+        .map(str::to_string)
+        .collect();
+    lines.push(format!("DefaultRate {rate}"));
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, lines.join("\n") + "\n");
+    // The daemon is started on demand; stopping it makes the next use read the new config.
+    let _ = Command::new("pkill").args(["-x", "speech-dispatcher"]).status();
+}
+
+fn screen_reader_on() -> bool {
+    kconfig::read("kaccessrc", &["ScreenReader"], "Enabled").as_deref() == Some("true")
+}
+
+fn speech_group() -> adw::PreferencesGroup {
+    let g = adw::PreferencesGroup::new();
+    g.set_title("Speech");
+
+    let has_orca = std::path::Path::new("/usr/bin/orca").exists();
+    let reader = adw::SwitchRow::new();
+    reader.set_title("Screen reader");
+    reader.set_subtitle(if has_orca {
+        "Read out what's on screen with Orca. Starts automatically when you sign in"
+    } else {
+        "The Orca screen reader is not installed"
+    });
+    reader.add_prefix(&gtk4::Image::from_icon_name("preferences-desktop-accessibility-symbolic"));
+    reader.set_active(has_orca && screen_reader_on());
+    reader.set_sensitive(has_orca);
+    reader.connect_active_notify(|r| {
+        let on = r.is_active();
+        kconfig::spawn(move || {
+            kconfig::write("kaccessrc", &["ScreenReader"], "Enabled", if on { "true" } else { "false" });
+            if on {
+                let _ = Command::new("orca").arg("--replace").spawn();
+            } else {
+                let _ = Command::new("pkill").args(["-f", "/usr/bin/orca"]).status();
+            }
+        });
+    });
+    g.add(&reader);
+
+    let has_tts = std::path::Path::new("/usr/bin/spd-say").exists();
+    let rate = adw::ActionRow::new();
+    rate.set_title("Speaking rate");
+    rate.add_prefix(&gtk4::Image::from_icon_name("audio-speakers-symbolic"));
+    rate.set_activatable(false);
+    if !has_tts {
+        rate.set_subtitle("Text-to-speech is not installed");
+        g.add(&rate);
+        return g;
+    }
+    rate.set_subtitle("How fast the screen reader and other apps speak");
+    let scale = gtk4::Scale::with_range(gtk4::Orientation::Horizontal, -100.0, 100.0, 10.0);
+    scale.set_value(speech_rate() as f64);
+    scale.add_mark(0.0, gtk4::PositionType::Bottom, Some("Normal"));
+    scale.set_size_request(220, -1);
+    scale.set_valign(gtk4::Align::Center);
+    scale.connect_value_changed(|s| {
+        let v = s.value().round() as i32;
+        kconfig::spawn(move || set_speech_rate(v));
+    });
+    rate.add_suffix(&scale);
+    g.add(&rate);
+
+    let test = adw::ActionRow::new();
+    test.set_title("Test voice");
+    let play = gtk4::Button::from_icon_name("media-playback-start-symbolic");
+    play.set_valign(gtk4::Align::Center);
+    play.add_css_class("flat");
+    play.set_tooltip_text(Some("Speak a sample sentence"));
+    let scale2 = scale.clone();
+    play.connect_clicked(move |_| {
+        let r = (scale2.value().round() as i32).to_string();
+        std::thread::spawn(move || {
+            let _ = Command::new("spd-say")
+                .args(["-w", "-r", &r, "This is how Zohara sounds when it reads to you."])
+                .status();
+        });
+    });
+    test.add_suffix(&play);
+    test.set_activatable_widget(Some(&play));
+    g.add(&test);
+    g
+}
+
 pub fn build() -> gtk4::Widget {
     let scroll = gtk4::ScrolledWindow::builder()
         .hscrollbar_policy(gtk4::PolicyType::Never)
@@ -158,6 +272,7 @@ pub fn build() -> gtk4::Widget {
     } else {
         root.append(&vision_group());
         root.append(&hearing_group());
+        root.append(&speech_group());
     }
 
     scroll.set_child(Some(&root));

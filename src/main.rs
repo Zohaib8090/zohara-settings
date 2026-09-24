@@ -27,7 +27,21 @@ pub fn tokio_runtime() -> &'static Runtime {
 // so no runtime path lookup is needed.
 const WIN11_CSS: &str = include_str!("../data/win11.css");
 
-fn main() {
+/// Page requested with `--page <label>` (used by the health-check notification).
+static START_PAGE: OnceLock<String> = OnceLock::new();
+
+fn main() -> glib::ExitCode {
+    backend::diag::init();
+    let args: Vec<String> = std::env::args().collect();
+
+    // Background health check (systemd user timer): no window, just notify.
+    if args.iter().any(|a| a == "--health-check") {
+        std::process::exit(backend::health::background_check());
+    }
+    if let Some(page) = args.iter().position(|a| a == "--page").and_then(|i| args.get(i + 1)) {
+        let _ = START_PAGE.set(page.clone());
+    }
+
     let rt = tokio_runtime();
     let _rt_guard = rt.enter();
 
@@ -36,7 +50,10 @@ fn main() {
         .build();
 
     app.connect_activate(build_ui);
-    app.run();
+    // Our own flags are handled above; don't let GTK reject them.
+    let code = app.run_with_args(&args[..1]);
+    log::info!("Zohara Settings exiting");
+    code
 }
 
 // ΓöÇΓöÇ Page registry (single source of truth) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
@@ -70,10 +87,39 @@ static PAGES: &[PageDef] = &[
     PageDef { label: "Default apps",         icon: "preferences-desktop-default-applications-symbolic" },
     PageDef { label: "About",                icon: "help-about-symbolic" },
     PageDef { label: "Zohara Link",          icon: "phone-symbolic" },
+    PageDef { label: "Troubleshoot",         icon: "system-help-symbolic" },
 ];
 
-/// Build a page widget by its index into PAGES.
+/// Build a page, isolating failures: a page that panics while being built
+/// shows an explanation (and is logged with a crash report) instead of
+/// closing Settings.
 fn build_page(index: usize) -> gtk4::Widget {
+    let label = PAGES[index].label;
+    backend::diag::set_current_page(label);
+    match backend::diag::guard(label, || build_page_inner(index)) {
+        Ok(w) => w,
+        Err(msg) => {
+            let details = gtk4::Button::with_label("Open Troubleshoot");
+            details.add_css_class("pill");
+            details.set_halign(gtk4::Align::Center);
+            details.connect_clicked(|b| pages::goto(b, "Troubleshoot"));
+            adw::StatusPage::builder()
+                .icon_name("dialog-error-symbolic")
+                .title(format!("{label} couldn't be opened"))
+                .description(format!(
+                    "Something went wrong while loading this page, so it was stopped to keep the rest of Settings working.
+
+{}",
+                    glib::markup_escape_text(&msg)
+                ))
+                .child(&details)
+                .build()
+                .upcast()
+        }
+    }
+}
+
+fn build_page_inner(index: usize) -> gtk4::Widget {
     match index {
         0  => pages::home::build(),
         1  => pages::system::build(),
@@ -98,6 +144,7 @@ fn build_page(index: usize) -> gtk4::Widget {
         20 => pages::default_apps::build(),
         21 => pages::advanced::build(),
         22 => pages::zohara_link::build(),
+        23 => pages::troubleshoot::build(),
         _  => unreachable!("Page index {} out of range", index),
     }
 }
@@ -319,4 +366,26 @@ fn build_ui(app: &adw::Application) {
     window.add_action(&goto);
 
     window.present();
+
+    if let Some(page) = START_PAGE.get() {
+        let _ = window.activate_action("win.goto", Some(&page.to_variant()));
+    }
+
+    // Offer the report if the previous run crashed.
+    if let Some(report) = backend::diag::take_previous_crash() {
+        let d = adw::AlertDialog::new(
+            Some("Settings closed unexpectedly last time"),
+            Some("A crash report was saved. You can review it and include it in a problem report from Troubleshoot."),
+        );
+        d.add_responses(&[("dismiss", "Dismiss"), ("open", "Open Troubleshoot")]);
+        d.set_response_appearance("open", adw::ResponseAppearance::Suggested);
+        let w = window.clone();
+        d.connect_response(None, move |_, r| {
+            if r == "open" {
+                let _ = w.activate_action("win.goto", Some(&"Troubleshoot".to_variant()));
+            }
+        });
+        d.present(Some(&window));
+        log::info!("previous crash report: {}", report.display());
+    }
 }

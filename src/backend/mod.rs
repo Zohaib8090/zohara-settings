@@ -1,4 +1,6 @@
 pub mod dbus;
+pub mod diag;
+pub mod health;
 pub mod kconfig;
 pub mod network;
 pub mod process;

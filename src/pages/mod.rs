@@ -10,6 +10,7 @@ pub mod offline_maps;
 pub mod web_apps;
 pub mod accounts;
 pub mod time_language;
+pub mod troubleshoot;
 pub mod gaming;
 pub mod accessibility;
 pub mod privacy;

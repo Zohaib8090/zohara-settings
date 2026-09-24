@@ -30,4 +30,5 @@ env_logger = "0.11"
 [profile.release]
 opt-level = 3
 lto = true
-strip = true
+# Keep function names so crash reports have readable backtraces.
+strip = "debuginfo"

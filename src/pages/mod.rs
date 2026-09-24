@@ -16,6 +16,7 @@ pub mod sound;
 pub mod notifications;
 pub mod power;
 pub mod storage;
+pub mod input_devices;
 pub mod mouse;
 pub mod touchpad;
 pub mod keyboard;

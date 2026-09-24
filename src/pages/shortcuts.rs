@@ -5,13 +5,13 @@
 //! Keys travel as Qt "combined" ints (key code | modifier bits); a shortcut is
 //! a list of key sequences, of which we use the first key of each.
 
+use crate::backend::worker::{block_on, in_background};
 use adw::prelude::*;
 use gtk4::glib::translate::IntoGlib;
 use gtk4::prelude::*;
 use libadwaita as adw;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
 
 const SERVICE: &str = "org.kde.kglobalaccel";
 const PATH: &str = "/kglobalaccel";
@@ -140,14 +140,6 @@ fn gdk_to_qt(keyval: gtk4::gdk::Key, state: gtk4::gdk::ModifierType) -> Option<i
 
 // ── D-Bus (runs on worker threads) ──────────────────────────────────────────
 
-fn block_on<F: std::future::Future>(f: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime")
-        .block_on(f)
-}
-
 async fn call<B, R>(conn: &zbus::Connection, method: &str, body: &B) -> zbus::Result<R>
 where
     B: serde::Serialize + zbus::zvariant::DynamicType,
@@ -207,28 +199,6 @@ fn block_global_shortcuts(block: bool) {
             let conn = zbus::Connection::session().await?;
             conn.call_method(Some(SERVICE), PATH, Some(IFACE), "blockGlobalShortcuts", &block).await
         });
-    });
-}
-
-/// Run `work` on a thread and hand its result to `done` on the GTK thread.
-fn in_background<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
-    done: impl FnOnce(T) + 'static,
-) {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(work());
-    });
-    let mut done = Some(done);
-    glib::timeout_add_local(Duration::from_millis(40), move || match rx.try_recv() {
-        Ok(v) => {
-            if let Some(d) = done.take() {
-                d(v);
-            }
-            glib::ControlFlow::Break
-        }
-        Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-        Err(_) => glib::ControlFlow::Break,
     });
 }
 

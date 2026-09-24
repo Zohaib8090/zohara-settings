@@ -29,6 +29,8 @@ makedepends=(
 )
 optdepends=(
   'libnotify: problem notifications from the background health check'
+  'wl-clipboard: voice typing'
+  'ydotool: voice typing types into apps instead of copying'
   'networkmanager: Network settings page'
   'bluez: Bluetooth settings page'
   'upower: Power settings page'
@@ -84,6 +86,12 @@ package() {
   # `systemctl --user enable --now zohara-settings-health.timer`).
   install -Dm644 "$startdir/data/zohara-settings-health.service"     "$pkgdir/usr/lib/systemd/user/zohara-settings-health.service"
   install -Dm644 "$startdir/data/zohara-settings-health.timer"     "$pkgdir/usr/lib/systemd/user/zohara-settings-health.timer"
+
+  # Voice typing (Meta+H). kglobalaccel picks up the default shortcut from
+  # desktop files linked into its own directory.
+  install -Dm644 "$startdir/data/zohara-dictation.desktop"     "$pkgdir/usr/share/applications/zohara-dictation.desktop"
+  install -d "$pkgdir/usr/share/kglobalaccel"
+  ln -s /usr/share/applications/zohara-dictation.desktop     "$pkgdir/usr/share/kglobalaccel/zohara-dictation.desktop"
 
   # License
   if [ -f "$startdir/LICENSE" ]; then

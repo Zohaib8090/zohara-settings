@@ -1,6 +1,6 @@
 //! Accessibility settings backed by Plasma: high-contrast colour scheme,
 //! cursor size, reduced animations, text size (via the Fonts dialog), and
-//! visual bell.
+//! visual bell, speech and voice typing.
 
 use crate::backend::kconfig;
 use adw::prelude::*;
@@ -241,6 +241,87 @@ fn speech_group() -> adw::PreferencesGroup {
     g
 }
 
+// ── Voice typing ───────────────────────────────────────────────────────────
+
+fn voice_typing_group() -> adw::PreferencesGroup {
+    use crate::backend::dictation;
+    let g = adw::PreferencesGroup::new();
+    g.set_title("Voice typing");
+    g.set_description(Some(
+        "Press the shortcut, speak, and your words are typed wherever the cursor is.          Speech is recognised on this computer and never sent anywhere.",
+    ));
+    let s = dictation::settings();
+    let missing = dictation::missing();
+
+    let on = adw::SwitchRow::new();
+    on.set_title("Voice typing");
+    on.add_prefix(&gtk4::Image::from_icon_name("audio-input-microphone-symbolic"));
+    let subtitle = match &missing {
+        Some(why) => why.clone(),
+        None => format!("Press {} to start or finish", dictation::shortcut_text()),
+    };
+    on.set_subtitle(&subtitle);
+    on.set_active(missing.is_none() && s.enabled);
+    on.set_sensitive(missing.is_none());
+    on.connect_active_notify(|r| {
+        let v = if r.is_active() { "true" } else { "false" };
+        kconfig::spawn(move || dictation::set("Enabled", v));
+    });
+    g.add(&on);
+    if missing.is_some() {
+        return g;
+    }
+
+    let lang = adw::ComboRow::new();
+    lang.set_title("Language");
+    lang.set_subtitle("The language you'll speak");
+    let labels: Vec<&str> = dictation::LANGUAGES.iter().map(|(l, _)| *l).collect();
+    lang.set_model(Some(&gtk4::StringList::new(&labels)));
+    lang.set_selected(dictation::LANGUAGES.iter().position(|(_, c)| *c == s.language).unwrap_or(0) as u32);
+    lang.connect_selected_notify(|r| {
+        if let Some((_, code)) = dictation::LANGUAGES.get(r.selected() as usize) {
+            kconfig::spawn(move || dictation::set("Language", code));
+        }
+    });
+    g.add(&lang);
+
+    let auto = adw::SwitchRow::new();
+    auto.set_title("Stop when I stop talking");
+    auto.set_subtitle("Otherwise, press the shortcut again to finish");
+    auto.set_active(s.auto_stop);
+    auto.connect_active_notify(|r| {
+        let v = if r.is_active() { "true" } else { "false" };
+        kconfig::spawn(move || dictation::set("AutoStop", v));
+    });
+    g.add(&auto);
+
+    let key = adw::ActionRow::new();
+    key.set_title("Shortcut");
+    key.set_subtitle(&dictation::shortcut_text());
+    let change = gtk4::Button::with_label("Change");
+    change.set_valign(gtk4::Align::Center);
+    change.connect_clicked(|b| crate::pages::shortcuts::open(b.upcast_ref()));
+    key.add_suffix(&change);
+    g.add(&key);
+
+    if !dictation::can_type() {
+        let note = adw::ActionRow::new();
+        note.set_title("Typing into apps isn't set up");
+        note.set_subtitle("What you say is copied to the clipboard instead. Paste it with Ctrl+V");
+        note.add_prefix(&gtk4::Image::from_icon_name("dialog-information-symbolic"));
+        g.add(&note);
+    }
+
+    let tryit = adw::EntryRow::new();
+    tryit.set_title("Try it: click here, then press the shortcut and speak");
+    g.add(&tryit);
+
+    for w in [lang.upcast_ref::<gtk4::Widget>(), auto.upcast_ref(), key.upcast_ref(), tryit.upcast_ref()] {
+        on.bind_property("active", w, "sensitive").sync_create().build();
+    }
+    g
+}
+
 pub fn build() -> gtk4::Widget {
     let scroll = gtk4::ScrolledWindow::builder()
         .hscrollbar_policy(gtk4::PolicyType::Never)
@@ -273,6 +354,7 @@ pub fn build() -> gtk4::Widget {
         root.append(&vision_group());
         root.append(&hearing_group());
         root.append(&speech_group());
+        root.append(&voice_typing_group());
     }
 
     scroll.set_child(Some(&root));

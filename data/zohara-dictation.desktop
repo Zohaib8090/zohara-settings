@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Voice typing
+Comment=Type with your voice
+Exec=zohara-settings --dictate
+Icon=audio-input-microphone
+NoDisplay=true
+StartupNotify=false
+X-KDE-StartupNotify=false
+X-KDE-Shortcuts=Meta+H

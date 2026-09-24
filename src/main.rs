@@ -38,6 +38,10 @@ fn main() -> glib::ExitCode {
     if args.iter().any(|a| a == "--health-check") {
         std::process::exit(backend::health::background_check());
     }
+    // Voice typing (Meta+H): no window, just listen and type.
+    if args.iter().any(|a| a == "--dictate") {
+        std::process::exit(backend::dictation::run());
+    }
     if let Some(page) = args.iter().position(|a| a == "--page").and_then(|i| args.get(i + 1)) {
         let _ = START_PAGE.set(page.clone());
     }

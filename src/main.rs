@@ -88,6 +88,7 @@ static PAGES: &[PageDef] = &[
     PageDef { label: "Mouse",                icon: "input-mouse-symbolic" },
     PageDef { label: "Touchpad",             icon: "input-touchpad-symbolic" },
     PageDef { label: "Keyboard",             icon: "input-keyboard-symbolic" },
+    PageDef { label: "Printers",             icon: "printer-symbolic" },
     PageDef { label: "Default apps",         icon: "preferences-desktop-default-applications-symbolic" },
     PageDef { label: "About",                icon: "help-about-symbolic" },
     PageDef { label: "Zohara Link",          icon: "phone-symbolic" },
@@ -145,10 +146,11 @@ fn build_page_inner(index: usize) -> gtk4::Widget {
         17 => pages::mouse::build(),
         18 => pages::touchpad::build(),
         19 => pages::keyboard::build(),
-        20 => pages::default_apps::build(),
-        21 => pages::advanced::build(),
-        22 => pages::zohara_link::build(),
-        23 => pages::troubleshoot::build(),
+        20 => pages::printers::build(),
+        21 => pages::default_apps::build(),
+        22 => pages::advanced::build(),
+        23 => pages::zohara_link::build(),
+        24 => pages::troubleshoot::build(),
         _  => unreachable!("Page index {} out of range", index),
     }
 }

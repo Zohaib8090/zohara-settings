@@ -13,6 +13,7 @@ pub mod time_language;
 pub mod troubleshoot;
 pub mod gaming;
 pub mod accessibility;
+pub mod printers;
 pub mod privacy;
 pub mod updates;
 pub mod display;

@@ -278,6 +278,7 @@ fn other_devices_group(page: &gtk4::Box) -> adw::PreferencesGroup {
         ("Mouse", "Pointer speed, buttons, scrolling", "input-mouse-symbolic", "Mouse"),
         ("Touchpad", "Taps, scrolling, speed", "input-touchpad-symbolic", "Touchpad"),
         ("Keyboard", "Typing, layouts, shortcuts", "input-keyboard-symbolic", "Keyboard"),
+        ("Printers", "Add printers, print queue, paper size", "printer-symbolic", "Printers"),
         ("Phone", "Link your Android phone with Zohara Link", "phone-symbolic", "Zohara Link"),
     ] {
         let r = adw::ActionRow::new();

@@ -182,7 +182,9 @@ on a real install. Use Plasma's own interfaces instead:
 | Mouse / Touchpad | KWin `org.kde.KWin.InputDevice` D-Bus per device (`input_devices.rs`); KWin persists changes itself | CI-green |
 | Notifications | `plasmanotifyrc` via `backend::kconfig`: DND, pop-ups, per-app | CI-green |
 | Accessibility | Breeze High Contrast scheme, `plasma-apply-cursortheme`, `AnimationDurationFactor`, `kaccessrc` bell | CI-green |
-| Printers, firewall, removable storage, window rules | not started | todo |
+| Voice typing | `zohara-settings --dictate` from the Meta+H `zohara-dictation.desktop` shortcut: `parecord` → whisper.cpp (`/usr/lib/zohara/whisper`, model in `/usr/share/zohara/dictation`, both built into the ISO) → `wl-copy` + Ctrl+V via `ydotool` | CI-green |
+| Printers | CUPS: `lpstat`/`lpoptions` as the user; `pkexec lpadmin -m everywhere` for driverless network printers found with `avahi-browse` or by address | CI-green |
+| Firewall, removable storage, window rules | not started | todo |
 
 ### Audit of the remaining pages (2026-09-25)
 

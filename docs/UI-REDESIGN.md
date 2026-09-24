@@ -164,6 +164,29 @@ fixing an unrelated CI ordering bug — see below).
   do with the Rust source. Moved the `chown` to its own step right after
   checkout.
 
+## KDE-parity work (after the redesign)
+
+The user asked for KDE System Settings parity first, Zohara-specific
+features second. Target environment matters: the ISO boots SDDM
+`Session=plasma`, which in Plasma 6 is the **Wayland** session (both `kwin`
+and `kwin-x11` are installed). `xrandr`, `wlr-randr`, `gammastep` and GNOME
+`gsettings` schemas do **not** ship, so any page built on those does nothing
+on a real install. Use Plasma's own interfaces instead:
+
+| Page | Backend | Status |
+|---|---|---|
+| Sound | `pactl -f json` (pipewire-pulse): devices, volume, mute, per-app mixer | CI-green |
+| Display | `kscreen-doctor -j` + per-display mode/scale/rotation; drag-to-arrange (`display_layout.rs`); Night Color via `kwinrc` | CI-green |
+| Keyboard | `kcminputrc` / `kxkbrc` via `kwriteconfig6`, then `org.kde.keyboard.reloadConfig` + KWin reconfigure | CI-green |
+| Shortcuts | `org.kde.kglobalaccel` D-Bus (`shortcuts.rs`): list, capture, clear, reset, conflict reassign | CI-green |
+| Mouse / Touchpad | KWin `org.kde.KWin.InputDevice` D-Bus per device (`input_devices.rs`); KWin persists changes itself | CI-green |
+| Notifications, Accessibility | still GNOME `gsettings` — **dead on Plasma**, need the same treatment | todo |
+| Printers, firewall, removable storage, window rules | not started | todo |
+
+None of this has been run on a booted image yet — CI proves it compiles,
+not that the D-Bus calls behave. Worker-thread pattern for D-Bus/process
+work: `backend::worker::{in_background, block_on}`.
+
 ## Key decisions worth remembering
 
 - Zohara Link's GUI lives inside Settings, not as a standalone popover/tray

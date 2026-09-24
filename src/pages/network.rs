@@ -27,106 +27,7 @@ pub fn build() -> gtk4::Widget {
         .build();
     root_box.append(&title_lbl);
 
-    // ── Hero Network Banner Card ──────────────────────────────────────────────
-    let hero_card = gtk4::Box::new(gtk4::Orientation::Horizontal, 20);
-    hero_card.set_css_classes(&["win11-hero-card"]);
-    hero_card.set_margin_bottom(4);
-
-    let wifi_icon = gtk4::Image::from_icon_name("network-wireless-symbolic");
-    wifi_icon.set_pixel_size(48);
-    wifi_icon.set_css_classes(&["accent-blue"]);
-    hero_card.append(&wifi_icon);
-
-    let info_box = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-    info_box.set_valign(gtk4::Align::Center);
-
-    let ssid_lbl = gtk4::Label::builder()
-        .label("Wi-Fi (Connected)")
-        .halign(gtk4::Align::Start)
-        .css_classes(vec!["win11-device-name".to_string()])
-        .build();
-
-    let status_lbl = gtk4::Label::builder()
-        .label("Connected, secured")
-        .halign(gtk4::Align::Start)
-        .css_classes(vec!["win11-device-sub".to_string()])
-        .build();
-
-    info_box.append(&ssid_lbl);
-    info_box.append(&status_lbl);
-    hero_card.append(&info_box);
-
-    let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-    spacer.set_hexpand(true);
-    hero_card.append(&spacer);
-
-    // Right status badges (Properties + Data Usage)
-    let badges_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 28);
-    badges_box.set_valign(gtk4::Align::Center);
-
-    // Properties badge
-    let prop_badge = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
-    let prop_icon = gtk4::Image::from_icon_name("dialog-information-symbolic");
-    prop_icon.set_pixel_size(22);
-    let prop_texts = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-    let prop_title = gtk4::Label::builder()
-        .label("Properties")
-        .halign(gtk4::Align::Start)
-        .css_classes(vec!["win11-badge-title".to_string()])
-        .build();
-    let prop_sub = gtk4::Label::builder()
-        .label("Private network • 5 GHz")
-        .halign(gtk4::Align::Start)
-        .css_classes(vec!["win11-badge-sub".to_string()])
-        .build();
-    prop_texts.append(&prop_title);
-    prop_texts.append(&prop_sub);
-    prop_badge.append(&prop_icon);
-    prop_badge.append(&prop_texts);
-    badges_box.append(&prop_badge);
-
-    // Data Usage badge
-    let data_badge = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
-    let data_icon = gtk4::Image::from_icon_name("network-transmit-receive-symbolic");
-    data_icon.set_pixel_size(22);
-    let data_texts = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-    let data_title = gtk4::Label::builder()
-        .label("Data usage")
-        .halign(gtk4::Align::Start)
-        .css_classes(vec!["win11-badge-title".to_string()])
-        .build();
-    let data_sub = gtk4::Label::builder()
-        .label("Unlimited (Unmetered)")
-        .halign(gtk4::Align::Start)
-        .css_classes(vec!["win11-badge-sub".to_string()])
-        .build();
-    data_texts.append(&data_title);
-    data_texts.append(&data_sub);
-    data_badge.append(&data_icon);
-    data_badge.append(&data_texts);
-    badges_box.append(&data_badge);
-
-    hero_card.append(&badges_box);
-    root_box.append(&hero_card);
-
-    // Async Wi-Fi detection
-    let ssid_clone = ssid_lbl.clone();
-    glib::spawn_future_local(async move {
-        let out = tokio::process::Command::new("nmcli")
-            .args(["-t", "-f", "active,ssid", "dev", "wifi"])
-            .output()
-            .await
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .unwrap_or_default();
-        let connected_ssid = out.lines()
-            .find(|l| l.starts_with("yes:"))
-            .map(|l| l.trim_start_matches("yes:").to_string());
-
-        if let Some(name) = connected_ssid {
-            ssid_clone.set_text(&format!("Wi-Fi ({})", name));
-        }
-    });
+    root_box.append(&super::network_extra::status_group());
 
     // ── Grouped Rows ──────────────────────────────────────────────────────────
     let rows_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
@@ -140,7 +41,7 @@ pub fn build() -> gtk4::Widget {
     wifi_exp.set_css_classes(&["win11-expander-row"]);
 
     let wifi_switch = gtk4::Switch::builder()
-        .active(true)
+        .active(super::network_extra::wifi_enabled())
         .valign(gtk4::Align::Center)
         .build();
     wifi_switch.connect_state_set(|_, active| {
@@ -314,60 +215,19 @@ pub fn build() -> gtk4::Widget {
 
     rows_box.append(&wifi_exp);
 
-    // 2. Ethernet
-    let eth_row = build_action_row("Ethernet", "Authentication, IP and DNS settings, metered network", "network-wired-symbolic");
-    rows_box.append(&eth_row);
-
-    // 3. VPN
-    let vpn_row = build_action_row("VPN", "Add, connect, and manage VPN connections", "network-vpn-symbolic");
-    rows_box.append(&vpn_row);
-
-    // 4. Mobile Hotspot
-    let hotspot_row = adw::SwitchRow::new();
-    hotspot_row.set_title("Mobile hotspot");
-    hotspot_row.set_subtitle("Share your internet connection with other devices");
-    hotspot_row.add_prefix(&gtk4::Image::from_icon_name("network-wireless-hotspot-symbolic"));
-    hotspot_row.set_css_classes(&["win11-expander-row"]);
-    rows_box.append(&hotspot_row);
-
-    // 5. Airplane Mode
-    let air_row = adw::SwitchRow::new();
-    air_row.set_title("Airplane mode");
-    air_row.set_subtitle("Stop all wireless communication (Wi-Fi, Bluetooth)");
-    air_row.add_prefix(&gtk4::Image::from_icon_name("airplane-mode-symbolic"));
-    air_row.set_css_classes(&["win11-expander-row"]);
-    air_row.connect_active_notify(|sw| {
-        let active = sw.is_active();
-        let cmd = if active { "off" } else { "on" };
-        let _ = Command::new("nmcli").args(["radio", "all", cmd]).spawn();
-    });
-    rows_box.append(&air_row);
-
-    // 6. Proxy
-    let proxy_row = build_action_row("Proxy", "Proxy server for Wi-Fi and Ethernet connections", "preferences-system-network-proxy-symbolic");
-    rows_box.append(&proxy_row);
-
-
-    // 8. Advanced Network Settings
-    let adv_row = build_action_row("Advanced network settings", "View all network adapters, network reset", "preferences-system-network-symbolic");
-    rows_box.append(&adv_row);
-
     root_box.append(&rows_box);
+    if let Some(eth) = super::network_extra::ethernet_group() {
+        root_box.append(&eth);
+    }
+    root_box.append(&super::network_extra::radios_group(&root_box));
+    root_box.append(&super::network_extra::vpn_group(&root_box));
     root_box.append(&super::speedtest::group());
+    root_box.append(&super::network_extra::proxy_group());
+    root_box.append(&super::network_extra::adapters_group());
     scroll.set_child(Some(&root_box));
     scroll.upcast()
 }
 
-fn build_action_row(title: &str, subtitle: &str, icon_name: &str) -> adw::ActionRow {
-    let row = adw::ActionRow::new();
-    row.set_title(title);
-    row.set_subtitle(subtitle);
-    row.add_prefix(&gtk4::Image::from_icon_name(icon_name));
-    row.add_suffix(&gtk4::Image::from_icon_name("go-next-symbolic"));
-    row.set_css_classes(&["win11-expander-row"]);
-    row.set_activatable(true);
-    row
-}
 
 /// Build an ActionRow for a single Wi-Fi access point.
 ///

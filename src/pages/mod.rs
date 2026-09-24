@@ -2,6 +2,7 @@ pub mod home;
 pub mod system;
 pub mod bluetooth;
 pub mod network;
+pub mod network_extra;
 pub mod speedtest;
 pub mod personalization;
 pub mod apps;

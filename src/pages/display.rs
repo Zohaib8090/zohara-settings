@@ -1,162 +1,377 @@
-//! Display settings — resolution, refresh rate, scaling, rotation, night light.
+//! Display settings -- per-display resolution/refresh, scale, rotation,
+//! arrangement, and night light.
 //!
-//! Talks to whatever is providing the display configuration:
-//!   * Wayland: wlr-randr (Sway / Hyprland / etc.) — `--json` gives a stable,
-//!     exact schema, so this is the reliable path.
-//!   * X11:     xrandr --verbose — no machine-readable output exists, so
-//!     this is a best-effort line parser of the human-readable text.
+//! Backends, in order of preference:
+//!   * kscreen-doctor (libkscreen): what Plasma itself uses; works on X11 and
+//!     Wayland Plasma sessions and is the one that ships on Zohara OS.
+//!   * wlr-randr --json: wlroots compositors (Sway, Hyprland, ...).
+//!   * xrandr --verbose: plain X11, best-effort text parse.
 //!
-//! On detection failure we just show "no outputs detected" instead of a
-//! broken UI (previously this returned one hardcoded fake `eDP-1` entry
-//! regardless of what was actually connected).
+//! Every control is initialised from the display's real current state before
+//! its change handler is connected, so opening the page never re-applies
+//! anything.
 
+use adw::prelude::*;
 use gtk4::prelude::*;
 use libadwaita as adw;
-use adw::prelude::*;
 use std::collections::HashSet;
 use std::process::Command;
 
+#[derive(Clone, Copy, PartialEq)]
+enum Backend {
+    Kscreen,
+    Wlr,
+    Xrandr,
+}
+
+struct Mode {
+    /// Value passed back to the backend when this mode is chosen.
+    id: String,
+    label: String,
+}
+
 struct DisplayOutput {
     name: String,
-    modes: Vec<String>,
-    current: String,
-    #[allow(dead_code)]
+    modes: Vec<Mode>,
+    current: usize,
     scale: f64,
-    #[allow(dead_code)]
-    transform: String,
+    /// 0 = normal, 1 = 90° (portrait), 2 = 180°, 3 = 270°
+    rotation: u32,
 }
+
+const SCALES: [f64; 7] = [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
+const ROTATIONS: [&str; 4] = ["Landscape", "Portrait", "Landscape (flipped)", "Portrait (flipped)"];
 
 fn command_exists(bin: &str) -> bool {
     Command::new("sh")
-        .args(["-c", &format!("command -v {bin}")])
-        .output()
-        .map(|o| o.status.success())
+        .args(["-c", &format!("command -v {bin} >/dev/null")])
+        .status()
+        .map(|s| s.success())
         .unwrap_or(false)
 }
 
-fn enumerate_outputs() -> Vec<DisplayOutput> {
+fn run_json(bin: &str, args: &[&str]) -> Option<serde_json::Value> {
+    let out = Command::new(bin).args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    serde_json::from_slice(&out.stdout).ok()
+}
+
+fn enumerate() -> Option<(Backend, Vec<DisplayOutput>)> {
+    if command_exists("kscreen-doctor") {
+        if let Some(v) = run_json("kscreen-doctor", &["-j"]) {
+            let outs = parse_kscreen(&v);
+            if !outs.is_empty() {
+                return Some((Backend::Kscreen, outs));
+            }
+        }
+    }
     if command_exists("wlr-randr") {
-        if let Ok(out) = Command::new("wlr-randr").arg("--json").output() {
-            if out.status.success() {
-                let outputs = parse_wlr_randr_json(&String::from_utf8_lossy(&out.stdout));
-                if !outputs.is_empty() {
-                    return outputs;
-                }
+        if let Some(v) = run_json("wlr-randr", &["--json"]) {
+            let outs = parse_wlr(&v);
+            if !outs.is_empty() {
+                return Some((Backend::Wlr, outs));
             }
         }
     }
     if command_exists("xrandr") {
         if let Ok(out) = Command::new("xrandr").arg("--verbose").output() {
             if out.status.success() {
-                return parse_xrandr_verbose(&String::from_utf8_lossy(&out.stdout));
+                let outs = parse_xrandr(&String::from_utf8_lossy(&out.stdout));
+                if !outs.is_empty() {
+                    return Some((Backend::Xrandr, outs));
+                }
             }
         }
     }
-    Vec::new()
+    None
 }
 
-fn parse_wlr_randr_json(raw: &str) -> Vec<DisplayOutput> {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
-        return Vec::new();
-    };
-    let Some(arr) = v.as_array() else {
+fn parse_kscreen(v: &serde_json::Value) -> Vec<DisplayOutput> {
+    let Some(arr) = v["outputs"].as_array() else {
         return Vec::new();
     };
     arr.iter()
-        .filter(|o| o.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true))
+        .filter(|o| o["enabled"].as_bool().unwrap_or(false))
         .filter_map(|o| {
-            let name = o.get("name")?.as_str()?.to_string();
-            let modes = o.get("modes")?.as_array()?;
-
-            let mode_str = |m: &serde_json::Value| -> Option<String> {
-                let w = m.get("width")?.as_i64()?;
-                let h = m.get("height")?.as_i64()?;
-                Some(format!("{w}x{h}"))
-            };
-
-            let mut seen = HashSet::new();
-            let mode_strs: Vec<String> = modes
+            let name = o["name"].as_str()?.to_string();
+            let current_id = o["currentModeId"].as_str().unwrap_or_default();
+            let mut modes: Vec<(i64, f64, Mode)> = o["modes"]
+                .as_array()?
                 .iter()
-                .filter_map(mode_str)
-                .filter(|m| seen.insert(m.clone()))
+                .filter_map(|m| {
+                    let w = m["size"]["width"].as_i64()?;
+                    let h = m["size"]["height"].as_i64()?;
+                    let hz = m["refreshRate"].as_f64().unwrap_or(0.0);
+                    Some((
+                        w * h,
+                        hz,
+                        Mode {
+                            id: m["id"].as_str()?.to_string(),
+                            label: format!("{w} × {h}  ·  {hz:.2} Hz"),
+                        },
+                    ))
+                })
                 .collect();
-
-            let current = modes
-                .iter()
-                .find(|m| m.get("current").and_then(|c| c.as_bool()).unwrap_or(false))
-                .and_then(mode_str)
-                .or_else(|| mode_strs.first().cloned())
-                .unwrap_or_default();
-
-            let scale = o.get("scale").and_then(|s| s.as_f64()).unwrap_or(1.0);
-            let transform = o
-                .get("transform")
-                .and_then(|t| t.as_str())
-                .unwrap_or("normal")
-                .to_string();
-
+            // Largest resolution first, then highest refresh rate.
+            modes.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.total_cmp(&a.1)));
+            let mut seen = HashSet::new();
+            let modes: Vec<Mode> = modes
+                .into_iter()
+                .map(|(_, _, m)| m)
+                .filter(|m| seen.insert(m.label.clone()))
+                .collect();
+            let current = modes.iter().position(|m| m.id == current_id).unwrap_or(0);
+            // libkscreen rotation bitmask: 1 none, 2 left, 4 inverted, 8 right
+            let rotation = match o["rotation"].as_i64().unwrap_or(1) {
+                2 => 1,
+                4 => 2,
+                8 => 3,
+                _ => 0,
+            };
             Some(DisplayOutput {
                 name,
-                modes: mode_strs,
+                modes,
                 current,
-                scale,
-                transform,
+                scale: o["scale"].as_f64().unwrap_or(1.0),
+                rotation,
             })
         })
         .collect()
 }
 
-/// Best-effort parse of `xrandr --verbose`: a header line per output
-/// (`eDP-1 connected primary 1920x1080+0+0 ...`) followed by indented mode
-/// lines (`   1920x1080     60.00*+  59.94`), `*` marking the active mode.
-fn parse_xrandr_verbose(raw: &str) -> Vec<DisplayOutput> {
-    let mut outputs = Vec::new();
-    let mut cur: Option<DisplayOutput> = None;
-
-    for line in raw.lines() {
-        let indented = line.starts_with(' ') || line.starts_with('\t');
-        if !indented {
-            if let Some(o) = cur.take() {
-                outputs.push(o);
-            }
-            if line.contains(" connected") {
-                if let Some(name) = line.split_whitespace().next() {
-                    cur = Some(DisplayOutput {
-                        name: name.to_string(),
-                        modes: Vec::new(),
-                        current: String::new(),
-                        scale: 1.0,
-                        transform: "normal".into(),
-                    });
+fn parse_wlr(v: &serde_json::Value) -> Vec<DisplayOutput> {
+    let Some(arr) = v.as_array() else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter(|o| o["enabled"].as_bool().unwrap_or(true))
+        .filter_map(|o| {
+            let name = o["name"].as_str()?.to_string();
+            let mut seen = HashSet::new();
+            let mut current = 0;
+            let mut modes = Vec::new();
+            for m in o["modes"].as_array()? {
+                let (Some(w), Some(h)) = (m["width"].as_i64(), m["height"].as_i64()) else {
+                    continue;
+                };
+                let hz = m["refresh"].as_f64().unwrap_or(0.0);
+                let label = format!("{w} × {h}  ·  {hz:.2} Hz");
+                if !seen.insert(label.clone()) {
+                    continue;
                 }
+                if m["current"].as_bool().unwrap_or(false) {
+                    current = modes.len();
+                }
+                modes.push(Mode { id: format!("{w}x{h}@{hz:.3}Hz"), label });
+            }
+            let rotation = match o["transform"].as_str().unwrap_or("normal") {
+                "90" => 1,
+                "180" => 2,
+                "270" => 3,
+                _ => 0,
+            };
+            Some(DisplayOutput { name, modes, current, scale: o["scale"].as_f64().unwrap_or(1.0), rotation })
+        })
+        .collect()
+}
+
+/// Best-effort parse of `xrandr --verbose`: a header line per output
+/// (`eDP-1 connected primary 1920x1080+0+0 (0x4b) left ...`) followed by
+/// indented mode lines (`  1920x1080 (0x4b) 148.500MHz *current +preferred`).
+fn parse_xrandr(raw: &str) -> Vec<DisplayOutput> {
+    let mut outputs: Vec<DisplayOutput> = Vec::new();
+    let mut active = false;
+    for line in raw.lines() {
+        if !line.starts_with(' ') && !line.starts_with('\t') {
+            active = false;
+            let words: Vec<&str> = line.split_whitespace().collect();
+            // "connected" with a geometry token means the output is enabled.
+            if words.get(1) == Some(&"connected") && words.iter().any(|w| w.contains('+') && w.contains('x')) {
+                let rotation = if words.contains(&"left") {
+                    1
+                } else if words.contains(&"inverted") {
+                    2
+                } else if words.contains(&"right") {
+                    3
+                } else {
+                    0
+                };
+                outputs.push(DisplayOutput {
+                    name: words[0].to_string(),
+                    modes: Vec::new(),
+                    current: 0,
+                    scale: 1.0,
+                    rotation,
+                });
+                active = true;
             }
             continue;
         }
-        if let Some(o) = cur.as_mut() {
-            let trimmed = line.trim_start();
-            if let Some(res) = trimmed.split_whitespace().next() {
-                let looks_like_mode = res.contains('x')
-                    && res.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false);
-                if looks_like_mode {
-                    if !o.modes.contains(&res.to_string()) {
-                        o.modes.push(res.to_string());
-                    }
-                    if trimmed.contains('*') && o.current.is_empty() {
-                        o.current = res.to_string();
-                    }
+        if !active {
+            continue;
+        }
+        let Some(o) = outputs.last_mut() else { continue };
+        let trimmed = line.trim_start();
+        let Some(res) = trimmed.split_whitespace().next() else { continue };
+        if res.contains('x') && res.starts_with(|c: char| c.is_ascii_digit()) {
+            if !o.modes.iter().any(|m| m.id == res) {
+                if trimmed.contains("*current") {
+                    o.current = o.modes.len();
                 }
+                o.modes.push(Mode { id: res.to_string(), label: res.replace('x', " × ") });
             }
         }
     }
-    if let Some(o) = cur.take() {
-        outputs.push(o);
+    outputs
+}
+
+fn run_bg(bin: &'static str, args: Vec<String>) {
+    std::thread::spawn(move || {
+        let _ = Command::new(bin).args(&args).status();
+    });
+}
+
+fn apply_mode(b: Backend, out: &str, mode: &str) {
+    match b {
+        Backend::Kscreen => run_bg("kscreen-doctor", vec![format!("output.{out}.mode.{mode}")]),
+        Backend::Wlr => run_bg("wlr-randr", vec!["--output".into(), out.into(), "--mode".into(), mode.into()]),
+        Backend::Xrandr => run_bg("xrandr", vec!["--output".into(), out.into(), "--mode".into(), mode.into()]),
     }
-    for o in outputs.iter_mut() {
-        if o.current.is_empty() {
-            o.current = o.modes.first().cloned().unwrap_or_default();
+}
+
+fn apply_scale(b: Backend, out: &str, scale: f64) {
+    match b {
+        Backend::Kscreen => run_bg("kscreen-doctor", vec![format!("output.{out}.scale.{scale}")]),
+        Backend::Wlr => run_bg("wlr-randr", vec!["--output".into(), out.into(), "--scale".into(), scale.to_string()]),
+        Backend::Xrandr => {}
+    }
+}
+
+fn apply_rotation(b: Backend, out: &str, rot: u32) {
+    let idx = rot.min(3) as usize;
+    match b {
+        Backend::Kscreen => {
+            let name = ["normal", "left", "inverted", "right"][idx];
+            run_bg("kscreen-doctor", vec![format!("output.{out}.rotation.{name}")]);
+        }
+        Backend::Wlr => {
+            let t = ["normal", "90", "180", "270"][idx];
+            run_bg("wlr-randr", vec!["--output".into(), out.into(), "--transform".into(), t.into()]);
+        }
+        Backend::Xrandr => {
+            let r = ["normal", "left", "inverted", "right"][idx];
+            run_bg("xrandr", vec!["--output".into(), out.into(), "--rotate".into(), r.into()]);
         }
     }
-    outputs
+}
+
+fn scale_label(s: f64) -> String {
+    format!("{}%", (s * 100.0).round() as i64)
+}
+
+fn build_output_group(backend: Backend, out: &DisplayOutput) -> gtk4::Box {
+    let group = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+    group.set_css_classes(&["win11-card-group"]);
+
+    let header = adw::ActionRow::new();
+    header.set_title(&out.name);
+    header.add_prefix(&gtk4::Image::from_icon_name("video-display-symbolic"));
+    header.set_activatable(false);
+    group.append(&header);
+
+    let name = out.name.clone();
+
+    let res = adw::ComboRow::new();
+    res.set_title("Resolution & refresh rate");
+    let labels: Vec<&str> = out.modes.iter().map(|m| m.label.as_str()).collect();
+    res.set_model(Some(&gtk4::StringList::new(&labels)));
+    if out.modes.is_empty() {
+        res.set_sensitive(false);
+    } else {
+        res.set_selected(out.current as u32);
+        let ids: Vec<String> = out.modes.iter().map(|m| m.id.clone()).collect();
+        let n = name.clone();
+        res.connect_selected_notify(move |r| {
+            if let Some(id) = ids.get(r.selected() as usize) {
+                apply_mode(backend, &n, id);
+            }
+        });
+    }
+    group.append(&res);
+
+    let scale = adw::ComboRow::new();
+    scale.set_title("Scale");
+    let mut scales: Vec<f64> = SCALES.to_vec();
+    if !scales.iter().any(|s| (s - out.scale).abs() < 0.01) {
+        scales.push(out.scale);
+        scales.sort_by(|a, b| a.total_cmp(b));
+    }
+    let scale_labels: Vec<String> = scales.iter().map(|s| scale_label(*s)).collect();
+    let scale_refs: Vec<&str> = scale_labels.iter().map(String::as_str).collect();
+    scale.set_model(Some(&gtk4::StringList::new(&scale_refs)));
+    let cur = scales.iter().position(|s| (s - out.scale).abs() < 0.01).unwrap_or(0);
+    scale.set_selected(cur as u32);
+    if backend == Backend::Xrandr {
+        // xrandr --scale resamples the framebuffer instead of scaling the UI.
+        scale.set_subtitle("Not available in this session");
+        scale.set_sensitive(false);
+    } else {
+        let n = name.clone();
+        scale.connect_selected_notify(move |r| {
+            if let Some(s) = scales.get(r.selected() as usize) {
+                apply_scale(backend, &n, *s);
+            }
+        });
+    }
+    group.append(&scale);
+
+    let rot = adw::ComboRow::new();
+    rot.set_title("Orientation");
+    rot.set_model(Some(&gtk4::StringList::new(&ROTATIONS)));
+    rot.set_selected(out.rotation);
+    let n = name;
+    rot.connect_selected_notify(move |r| apply_rotation(backend, &n, r.selected()));
+    group.append(&rot);
+
+    group
+}
+
+fn kreadconfig(file: &str, group: &str, key: &str) -> Option<String> {
+    let out = Command::new("kreadconfig6")
+        .args(["--file", file, "--group", group, "--key", key])
+        .output()
+        .ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn build_night_light() -> adw::SwitchRow {
+    let night = adw::SwitchRow::new();
+    night.set_title("Night light");
+    night.add_prefix(&gtk4::Image::from_icon_name("night-light-symbolic"));
+
+    if !command_exists("kwriteconfig6") {
+        night.set_subtitle("Requires Plasma's Night Color");
+        night.set_sensitive(false);
+        return night;
+    }
+
+    night.set_subtitle("Warmer colours to reduce blue light at night");
+    night.set_active(kreadconfig("kwinrc", "NightColor", "Active").as_deref() == Some("true"));
+    night.connect_active_notify(|row| {
+        let on = row.is_active();
+        std::thread::spawn(move || {
+            let _ = Command::new("kwriteconfig6")
+                .args(["--file", "kwinrc", "--group", "NightColor", "--key", "Active", if on { "true" } else { "false" }])
+                .status();
+            // KWin only rereads kwinrc when asked.
+            let _ = Command::new("dbus-send")
+                .args(["--session", "--type=method_call", "--dest=org.kde.KWin", "/KWin", "org.kde.KWin.reconfigure"])
+                .status();
+        });
+    });
+    night
 }
 
 pub fn build() -> gtk4::Widget {
@@ -171,145 +386,41 @@ pub fn build() -> gtk4::Widget {
     root.set_margin_top(20);
     root.set_margin_bottom(32);
 
-    let title = gtk4::Label::builder()
-        .label("Display")
-        .halign(gtk4::Align::Start)
-        .css_classes(vec!["win11-page-title".to_string()])
-        .build();
-    root.append(&title);
+    root.append(
+        &gtk4::Label::builder()
+            .label("Display")
+            .halign(gtk4::Align::Start)
+            .css_classes(vec!["win11-page-title".to_string()])
+            .build(),
+    );
 
     if let Some(layout) = super::display_layout::build_section() {
         root.append(&layout);
     }
 
-    let rows = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-    rows.set_css_classes(&["win11-card-group"]);
-
-    let outputs = enumerate_outputs();
-    // Primary output for the single global Scale/Rotation controls below —
-    // real displays vary in name (eDP-1, DP-1, HDMI-A-1, ...), so this must
-    // come from what was actually detected, not a hardcoded "eDP-1".
-    let primary_name = outputs.first().map(|o| o.name.clone());
-
-    // 1. Resolution + refresh rate (per output)
-    let res_exp = adw::ExpanderRow::new();
-    res_exp.set_title("Resolution & refresh rate");
-    if outputs.is_empty() {
-        res_exp.set_subtitle("No displays detected");
-    } else {
-        res_exp.set_subtitle("Choose a resolution for each connected display");
-    }
-    res_exp.add_prefix(&gtk4::Image::from_icon_name("video-display-symbolic"));
-
-    for out in &outputs {
-        let row = adw::ComboRow::new();
-        row.set_title(&out.name);
-        row.set_subtitle(&format!("Current: {}", out.current));
-        let model = gtk4::StringList::new(
-            &out.modes.iter().map(|m| m.as_str()).collect::<Vec<_>>(),
-        );
-        row.set_model(Some(&model));
-        if let Some(idx) = out.modes.iter().position(|m| m == &out.current) {
-            row.set_selected(idx as u32);
-        }
-        let out_name = out.name.clone();
-        row.connect_selected_notify(move |r| {
-            if let Some(mode) = r.model().and_then(|m| m.downcast::<gtk4::StringList>().ok()) {
-                let sel = mode.string(r.selected()).map(|s| s.to_string()).unwrap_or_default();
-                if !sel.is_empty() {
-                    let _ = Command::new("sh")
-                        .args(["-c", &format!(
-                            "command -v wlr-randr >/dev/null && wlr-randr --output {} --mode {} || xrandr --output {} --mode {}",
-                            out_name, sel, out_name, sel,
-                        )])
-                        .spawn();
-                }
+    match enumerate() {
+        Some((backend, outputs)) => {
+            for out in &outputs {
+                root.append(&build_output_group(backend, out));
             }
-        });
-        res_exp.add_row(&row);
-    }
-    rows.append(&res_exp);
-
-    // 2. Scale
-    let scale_exp = adw::ExpanderRow::new();
-    scale_exp.set_title("Scale");
-    scale_exp.set_subtitle("Make text and UI larger or smaller");
-    scale_exp.add_prefix(&gtk4::Image::from_icon_name("zoom-symbolic"));
-
-    let scale_row = adw::ComboRow::new();
-    scale_row.set_title("Display scale");
-    let scale_list = gtk4::StringList::new(&["100% (Recommended)", "125%", "150%", "175%", "200%"]);
-    scale_row.set_model(Some(&scale_list));
-    scale_row.set_selected(0);
-    if let Some(name) = primary_name.clone() {
-        scale_row.connect_selected_notify(move |r| {
-            let factor = match r.selected() {
-                1 => 1.25,
-                2 => 1.5,
-                3 => 1.75,
-                4 => 2.0,
-                _ => 1.0,
-            };
-            let _ = Command::new("sh")
-                .args(["-c", &format!(
-                    "command -v wlr-randr >/dev/null && wlr-randr --output {} --scale {} || xrandr --output {} --scale {}",
-                    name, factor, name, factor,
-                )])
-                .spawn();
-        });
-    } else {
-        scale_row.set_sensitive(false);
-    }
-    scale_exp.add_row(&scale_row);
-    rows.append(&scale_exp);
-
-    // 3. Rotation — previously had no click handler at all, so choosing an
-    // orientation here did nothing.
-    let rot_row = adw::ComboRow::new();
-    rot_row.set_title("Display orientation");
-    let rot_list = gtk4::StringList::new(&["Landscape", "Portrait", "Landscape (flipped)", "Portrait (flipped)"]);
-    rot_row.set_model(Some(&rot_list));
-    rot_row.set_selected(0);
-    if let Some(name) = primary_name.clone() {
-        rot_row.connect_selected_notify(move |r| {
-            let (wlr_transform, xrandr_rotate) = match r.selected() {
-                1 => ("90", "left"),
-                2 => ("180", "inverted"),
-                3 => ("270", "right"),
-                _ => ("normal", "normal"),
-            };
-            let _ = Command::new("sh")
-                .args(["-c", &format!(
-                    "command -v wlr-randr >/dev/null && wlr-randr --output {} --transform {} || xrandr --output {} --rotate {}",
-                    name, wlr_transform, name, xrandr_rotate,
-                )])
-                .spawn();
-        });
-    } else {
-        rot_row.set_sensitive(false);
-    }
-    let rot_exp = adw::ExpanderRow::new();
-    rot_exp.set_title("Rotation");
-    rot_exp.set_subtitle("Rotate the screen");
-    rot_exp.add_prefix(&gtk4::Image::from_icon_name("object-rotate-right-symbolic"));
-    rot_exp.add_row(&rot_row);
-    rows.append(&rot_exp);
-
-    // 4. Night light toggle
-    let night = adw::SwitchRow::new();
-    night.set_title("Night light");
-    night.set_subtitle("Reduce blue light at night (uses gammastep if installed)");
-    night.set_active(false);
-    night.connect_active_notify(move |row| {
-        if row.is_active() {
-            let _ = Command::new("gammastep").arg("-O").arg("4500K").spawn();
-        } else {
-            let _ = Command::new("gammastep").arg("-x").spawn();
         }
-    });
-    rows.append(&night);
+        None => {
+            let group = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+            group.set_css_classes(&["win11-card-group"]);
+            let row = adw::ActionRow::new();
+            row.set_title("No displays detected");
+            row.set_subtitle("Display settings need kscreen, wlr-randr or xrandr");
+            row.set_activatable(false);
+            group.append(&row);
+            root.append(&group);
+        }
+    }
 
-    root.append(&rows);
+    let extras = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+    extras.set_css_classes(&["win11-card-group"]);
+    extras.append(&build_night_light());
+    root.append(&extras);
+
     scroll.set_child(Some(&root));
     scroll.upcast()
 }

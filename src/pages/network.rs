@@ -356,6 +356,7 @@ pub fn build() -> gtk4::Widget {
     rows_box.append(&adv_row);
 
     root_box.append(&rows_box);
+    root_box.append(&super::speedtest::group());
     scroll.set_child(Some(&root_box));
     scroll.upcast()
 }

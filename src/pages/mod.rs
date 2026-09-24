@@ -2,6 +2,7 @@ pub mod home;
 pub mod system;
 pub mod bluetooth;
 pub mod network;
+pub mod speedtest;
 pub mod personalization;
 pub mod apps;
 pub mod accounts;

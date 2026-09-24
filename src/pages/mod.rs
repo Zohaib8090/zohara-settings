@@ -6,6 +6,8 @@ pub mod network_extra;
 pub mod speedtest;
 pub mod personalization;
 pub mod apps;
+pub mod offline_maps;
+pub mod web_apps;
 pub mod accounts;
 pub mod time_language;
 pub mod gaming;

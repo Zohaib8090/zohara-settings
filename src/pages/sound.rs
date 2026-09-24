@@ -1,99 +1,225 @@
-//! Sound settings — output / input devices, master volume, mic mute.
+//! Sound settings -- output/input devices with real volume and mute state,
+//! plus a per-application volume mixer.
 //!
-//! Talks to PipeWire (or PulseAudio) over D-Bus via the wpctl / pactl CLI.
-//! We don't link libpulse or libwireplumber directly because the binaries
-//! are already on every install and the protocol is stable.
+//! Talks to PipeWire through its PulseAudio-compatible server (pipewire-pulse,
+//! enabled on Zohara OS) using `pactl -f json`. State is always read back from
+//! the server rather than assumed, so the sliders and switches reflect reality.
 
+use adw::prelude::*;
 use gtk4::prelude::*;
 use libadwaita as adw;
-use adw::prelude::*;
+use serde_json::Value;
+use std::cell::RefCell;
 use std::process::Command;
+use std::rc::Rc;
 
-fn pw_or_pa() -> &'static str {
-    // Prefer wpctl (PipeWire's official CLI), fall back to pactl.
-    if Command::new("sh")
-        .args(["-c", "command -v wpctl >/dev/null"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-    {
-        "wpctl"
-    } else {
-        "pactl"
-    }
-}
-
-fn list_sinks() -> Vec<(String, String)> {
-    let cmd = pw_or_pa();
-    let out = Command::new(cmd)
-        .args(["status"])
+fn pactl_json(kind: &str) -> Vec<Value> {
+    Command::new("pactl")
+        .args(["-f", "json", "list", kind])
         .output()
-        .or_else(|_| Command::new("pactl").args(["list", "short", "sinks"]).output());
-    let stdout = match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
-        _ => return Vec::new(),
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| serde_json::from_slice::<Vec<Value>>(&o.stdout).ok())
+        .unwrap_or_default()
+}
+
+fn pactl_text(args: &[&str]) -> String {
+    Command::new("pactl")
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+// Fire-and-forget on a worker thread so slider drags never block the UI and
+// finished children are always reaped.
+fn pactl_run(args: Vec<String>) {
+    std::thread::spawn(move || {
+        let _ = Command::new("pactl").args(&args).status();
+    });
+}
+
+fn volume_percent(v: &Value) -> u32 {
+    v["volume"]
+        .as_object()
+        .and_then(|m| m.values().next())
+        .and_then(|c| c["value_percent"].as_str())
+        .and_then(|s| s.trim_end_matches('%').parse().ok())
+        .unwrap_or(0)
+}
+
+fn device_label(v: &Value) -> String {
+    v["description"]
+        .as_str()
+        .or_else(|| v["name"].as_str())
+        .unwrap_or("Unknown device")
+        .to_string()
+}
+
+fn volume_scale(percent: u32) -> gtk4::Scale {
+    let scale = gtk4::Scale::with_range(gtk4::Orientation::Horizontal, 0.0, 100.0, 1.0);
+    scale.set_value(percent.min(100) as f64);
+    scale.set_size_request(240, -1);
+    scale.set_hexpand(true);
+    scale.set_draw_value(true);
+    scale.set_value_pos(gtk4::PositionType::Right);
+    scale.set_valign(gtk4::Align::Center);
+    scale
+}
+
+/// Device picker + volume + mute for either outputs (sinks) or inputs (sources).
+fn append_device_section(rows: &gtk4::Box, output: bool) {
+    let (kind, default_getter, set_default, set_volume, set_mute, default_token) = if output {
+        ("sinks", "get-default-sink", "set-default-sink", "set-sink-volume", "set-sink-mute", "@DEFAULT_SINK@")
+    } else {
+        ("sources", "get-default-source", "set-default-source", "set-source-volume", "set-source-mute", "@DEFAULT_SOURCE@")
     };
-    if cmd == "wpctl" {
-        // wpctl status format: "* id. name [vol]"
-        stdout
-            .lines()
-            .filter_map(|l| {
-                let parts: Vec<&str> = l.split_whitespace().collect();
-                if parts.len() >= 2 && (parts[0].starts_with('*') || parts[0].starts_with("○")) {
-                    Some((parts[1].to_string(), parts[1].to_string()))
-                } else {
-                    None
-                }
-            })
-            .collect()
+
+    let devices: Vec<Value> = pactl_json(kind)
+        .into_iter()
+        // Every sink has a "monitor" source; hide those from the input list.
+        .filter(|d| output || d["monitor_of_sink"].is_null())
+        .collect();
+
+    let picker = adw::ComboRow::new();
+    picker.set_title(if output { "Output device" } else { "Input device" });
+    picker.add_prefix(&gtk4::Image::from_icon_name(if output {
+        "audio-speakers-symbolic"
     } else {
-        // pactl short format: id<TAB>name<TAB>...
-        stdout
-            .lines()
-            .filter_map(|l| {
-                let mut parts = l.split('\t');
-                let id = parts.next()?.to_string();
-                let name = parts.next()?.to_string();
-                Some((id, name))
-            })
-            .collect()
+        "audio-input-microphone-symbolic"
+    }));
+
+    if devices.is_empty() {
+        picker.set_subtitle(if output {
+            "No output devices detected. Make sure PipeWire is running."
+        } else {
+            "No input devices detected"
+        });
+        picker.set_sensitive(false);
+        rows.append(&picker);
+        return;
     }
+
+    picker.set_subtitle(if output { "Choose where sound plays" } else { "Choose your microphone" });
+    let labels: Vec<String> = devices.iter().map(device_label).collect();
+    let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    picker.set_model(Some(&gtk4::StringList::new(&label_refs)));
+
+    let default_name = pactl_text(&[default_getter]);
+    let default_idx = devices
+        .iter()
+        .position(|d| d["name"].as_str() == Some(default_name.as_str()))
+        .unwrap_or(0);
+    picker.set_selected(default_idx as u32);
+
+    let names: Vec<String> = devices
+        .iter()
+        .map(|d| d["name"].as_str().unwrap_or_default().to_string())
+        .collect();
+    // Connected after set_selected so initialising the row doesn't re-apply the default.
+    picker.connect_selected_notify(move |row| {
+        if let Some(name) = names.get(row.selected() as usize) {
+            pactl_run(vec![set_default.into(), name.clone()]);
+        }
+    });
+    rows.append(&picker);
+
+    let current = &devices[default_idx];
+
+    let scale = volume_scale(volume_percent(current));
+    scale.connect_value_changed(move |s| {
+        pactl_run(vec![set_volume.into(), default_token.into(), format!("{}%", s.value() as u32)]);
+    });
+    let vol_row = adw::ActionRow::new();
+    vol_row.set_title(if output { "Volume" } else { "Input volume" });
+    vol_row.add_prefix(&gtk4::Image::from_icon_name(if output {
+        "audio-volume-high-symbolic"
+    } else {
+        "microphone-sensitivity-high-symbolic"
+    }));
+    vol_row.add_suffix(&scale);
+    vol_row.set_activatable(false);
+    rows.append(&vol_row);
+
+    let mute = adw::SwitchRow::new();
+    mute.set_title("Mute");
+    mute.set_active(current["mute"].as_bool().unwrap_or(false));
+    mute.connect_active_notify(move |row| {
+        pactl_run(vec![set_mute.into(), default_token.into(), (row.is_active() as u8).to_string()]);
+    });
+    rows.append(&mute);
 }
 
-fn set_default_sink(name: &str) {
-    let cmd = pw_or_pa();
-    if cmd == "wpctl" {
-        let _ = Command::new(cmd).args(["set-default", name]).spawn();
-    } else {
-        let _ = Command::new(cmd).args(["set-default-sink", name]).spawn();
-    }
+fn stream_signature(inputs: &[Value]) -> String {
+    inputs
+        .iter()
+        .map(|i| format!("{}:{}", i["index"], i["properties"]["application.name"]))
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
-fn set_volume(percent: u32) {
-    let cmd = pw_or_pa();
-    let value = ((percent as f32 / 100.0) * 1.0) as i32; // both CLIs take 0..1
-    if cmd == "wpctl" {
-        let _ = Command::new(cmd)
-            .args(["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{value}%")])
-            .spawn();
-    } else {
-        let _ = Command::new(cmd)
-            .args(["set-sink-volume", "@DEFAULT_SINK@", &format!("{value}%")])
-            .spawn();
+fn refresh_apps(list: &gtk4::Box, last_sig: &Rc<RefCell<String>>, force: bool) {
+    let inputs = pactl_json("sink-inputs");
+    let sig = stream_signature(&inputs);
+    // Rebuilding while the set of streams is unchanged would destroy a slider mid-drag.
+    if !force && *last_sig.borrow() == sig {
+        return;
     }
-}
+    *last_sig.borrow_mut() = sig;
 
-fn toggle_mute(mute: bool) {
-    let cmd = pw_or_pa();
-    let arg = if mute { "1" } else { "0" };
-    if cmd == "wpctl" {
-        let _ = Command::new(cmd)
-            .args(["set-mute", "@DEFAULT_AUDIO_SINK@", arg])
-            .spawn();
-    } else {
-        let _ = Command::new(cmd)
-            .args(["set-sink-mute", "@DEFAULT_SINK@", arg])
-            .spawn();
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+
+    if inputs.is_empty() {
+        let row = adw::ActionRow::new();
+        row.set_title("No applications are playing audio");
+        row.set_subtitle("Apps appear here while they are producing sound");
+        row.set_activatable(false);
+        list.append(&row);
+        return;
+    }
+
+    for input in &inputs {
+        let idx = input["index"].as_u64().unwrap_or(0).to_string();
+        let props = &input["properties"];
+        let app = props["application.name"]
+            .as_str()
+            .or_else(|| props["media.name"].as_str())
+            .unwrap_or("Unknown application");
+
+        let row = adw::ActionRow::new();
+        row.set_title(app);
+        if let Some(media) = props["media.name"].as_str().filter(|m| *m != app) {
+            row.set_subtitle(media);
+        }
+        row.set_activatable(false);
+        row.add_prefix(&gtk4::Image::from_icon_name(
+            props["application.icon_name"].as_str().unwrap_or("audio-x-generic-symbolic"),
+        ));
+
+        let scale = volume_scale(volume_percent(input));
+        let idx_v = idx.clone();
+        scale.connect_value_changed(move |s| {
+            pactl_run(vec!["set-sink-input-volume".into(), idx_v.clone(), format!("{}%", s.value() as u32)]);
+        });
+
+        let mute = gtk4::ToggleButton::new();
+        mute.set_icon_name("audio-volume-muted-symbolic");
+        mute.set_css_classes(&["flat"]);
+        mute.set_valign(gtk4::Align::Center);
+        mute.set_tooltip_text(Some("Mute this application"));
+        mute.set_active(input["mute"].as_bool().unwrap_or(false));
+        let idx_m = idx.clone();
+        mute.connect_toggled(move |b| {
+            pactl_run(vec!["set-sink-input-mute".into(), idx_m.clone(), (b.is_active() as u8).to_string()]);
+        });
+
+        row.add_suffix(&scale);
+        row.add_suffix(&mute);
+        list.append(&row);
     }
 }
 
@@ -109,83 +235,64 @@ pub fn build() -> gtk4::Widget {
     root.set_margin_top(20);
     root.set_margin_bottom(32);
 
-    let title = gtk4::Label::builder()
-        .label("Sound")
-        .halign(gtk4::Align::Start)
-        .css_classes(vec!["win11-page-title".to_string()])
-        .build();
-    root.append(&title);
+    root.append(
+        &gtk4::Label::builder()
+            .label("Sound")
+            .halign(gtk4::Align::Start)
+            .css_classes(vec!["win11-page-title".to_string()])
+            .build(),
+    );
 
-    let rows = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-    rows.set_css_classes(&["win11-card-group"]);
+    let output = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+    output.set_css_classes(&["win11-card-group"]);
+    append_device_section(&output, true);
+    root.append(&output);
 
-    // 1. Output device picker
-    let out_exp = adw::ExpanderRow::new();
-    out_exp.set_title("Output device");
-    out_exp.set_subtitle("Choose where sound plays");
-    out_exp.add_prefix(&gtk4::Image::from_icon_name("audio-speakers-symbolic"));
-    let sinks = list_sinks();
-    if sinks.is_empty() {
-        let row = adw::ActionRow::new();
-        row.set_title("No output devices detected");
-        row.set_subtitle("Make sure PipeWire or PulseAudio is running");
-        out_exp.add_row(&row);
-    } else {
-        for (id, name) in &sinks {
-            let row = adw::ActionRow::new();
-            row.set_title(name);
-            row.set_subtitle(&format!("ID: {id}"));
-            row.set_activatable(true);
-            let name_owned = name.clone();
-            row.connect_activated(move |_| set_default_sink(&name_owned));
-            out_exp.add_row(&row);
-        }
+    let input = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+    input.set_css_classes(&["win11-card-group"]);
+    append_device_section(&input, false);
+    root.append(&input);
+
+    let mixer_header = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    mixer_header.append(
+        &gtk4::Label::builder()
+            .label("Volume mixer")
+            .halign(gtk4::Align::Start)
+            .hexpand(true)
+            .css_classes(vec!["heading".to_string()])
+            .build(),
+    );
+    let refresh_btn = gtk4::Button::from_icon_name("view-refresh-symbolic");
+    refresh_btn.set_css_classes(&["flat"]);
+    refresh_btn.set_tooltip_text(Some("Refresh"));
+    mixer_header.append(&refresh_btn);
+    root.append(&mixer_header);
+
+    let apps = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+    apps.set_css_classes(&["win11-card-group"]);
+    let sig = Rc::new(RefCell::new(String::new()));
+    refresh_apps(&apps, &sig, true);
+    root.append(&apps);
+
+    {
+        let apps = apps.clone();
+        let sig = sig.clone();
+        refresh_btn.connect_clicked(move |_| refresh_apps(&apps, &sig, true));
     }
-    rows.append(&out_exp);
 
-    // 2. Master volume
-    let vol_exp = adw::ExpanderRow::new();
-    vol_exp.set_title("Volume");
-    vol_exp.set_subtitle("Master output level");
-    vol_exp.add_prefix(&gtk4::Image::from_icon_name("audio-volume-high-symbolic"));
-
-    let scale = gtk4::Scale::with_range(gtk4::Orientation::Horizontal, 0.0, 100.0, 1.0);
-    scale.set_value(70.0);
-    scale.set_size_request(360, -1);
-    scale.set_hexpand(true);
-    scale.set_draw_value(true);
-    scale.set_value_pos(gtk4::PositionType::Right);
-    let scale_clone = scale.clone();
-    scale.connect_value_changed(move |s| {
-        set_volume(s.value() as u32);
-        let _ = scale_clone;
+    // Pick up apps that start or stop playing while the page is open; stops
+    // itself once the page is destroyed.
+    let weak = apps.downgrade();
+    glib::timeout_add_seconds_local(3, move || match weak.upgrade() {
+        Some(list) => {
+            if list.is_mapped() {
+                refresh_apps(&list, &sig, false);
+            }
+            glib::ControlFlow::Continue
+        }
+        None => glib::ControlFlow::Break,
     });
-    let vol_row = adw::ActionRow::new();
-    vol_row.set_title("Master volume");
-    vol_row.add_suffix(&scale);
-    vol_row.set_activatable(false);
-    vol_exp.add_row(&vol_row);
-    rows.append(&vol_exp);
 
-    // 3. Mute toggle
-    let mute = adw::SwitchRow::new();
-    mute.set_title("Mute");
-    mute.set_subtitle("Silence all output");
-    mute.connect_active_notify(|row| toggle_mute(row.is_active()));
-    rows.append(&mute);
-
-    // 4. Input device section
-    let in_exp = adw::ExpanderRow::new();
-    in_exp.set_title("Input device");
-    in_exp.set_subtitle("Choose your microphone");
-    in_exp.add_prefix(&gtk4::Image::from_icon_name("audio-input-microphone-symbolic"));
-    let mic_row = adw::ActionRow::new();
-    mic_row.set_title("Built-in audio (default)");
-    mic_row.set_activatable(false);
-    in_exp.add_row(&mic_row);
-    rows.append(&in_exp);
-
-    root.append(&rows);
     scroll.set_child(Some(&root));
     scroll.upcast()
 }

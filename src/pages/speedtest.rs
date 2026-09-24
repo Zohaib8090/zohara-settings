@@ -22,19 +22,28 @@ fn curl(args: &[&str]) -> Option<String> {
 }
 
 struct ServerInfo {
-    location: String,
-    isp: String,
+    /// Cloudflare data centre code, e.g. "KHI".
+    colo: String,
+    asn: String,
 }
 
+/// Cloudflare reports the serving data centre and the client's network in
+/// response headers (its `/meta` endpoint no longer carries this).
 fn server_info() -> Option<ServerInfo> {
-    let o = Command::new("curl").args(["-s", "--max-time", "5", &format!("{BASE}/meta")]).output().ok()?;
-    let v: serde_json::Value = serde_json::from_slice(&o.stdout).ok()?;
-    let s = |k: &str| v[k].as_str().unwrap_or_default().to_string();
-    let location = match (s("city"), s("colo")) {
-        (c, colo) if !c.is_empty() => format!("{c} ({colo})"),
-        (_, colo) => colo,
+    let o = Command::new("curl")
+        .args(["-s", "-D", "-", "-o", "/dev/null", "--max-time", "5", &format!("{BASE}/__down?bytes=0")])
+        .output()
+        .ok()?;
+    let headers = String::from_utf8_lossy(&o.stdout);
+    let header = |name: &str| {
+        headers.lines().find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.trim().eq_ignore_ascii_case(name).then(|| v.trim().to_string())
+        })
     };
-    Some(ServerInfo { location, isp: s("asOrganization") })
+    let colo = header("colo")
+        .or_else(|| header("cf-ray").and_then(|r| r.rsplit('-').next().map(str::to_string)))?;
+    Some(ServerInfo { colo, asn: header("asn").unwrap_or_default() })
 }
 
 /// (latency ms, jitter ms): time from TLS established to first byte, i.e. one round trip.
@@ -193,10 +202,10 @@ pub fn group() -> adw::PreferencesGroup {
                 ping.set_label(&format!("{lat:.0} ms"));
                 jitter.set_label(&format!("{jit:.1} ms"));
                 if let Some(info) = info {
-                    let server = if info.isp.is_empty() {
-                        format!("Server: {}", info.location)
+                    let server = if info.asn.is_empty() {
+                        format!("Cloudflare server {}", info.colo)
                     } else {
-                        format!("Server: {} · Provider: {}", info.location, info.isp)
+                        format!("Cloudflare server {} · Your network AS{}", info.colo, info.asn)
                     };
                     status.set_subtitle(&server);
                 }

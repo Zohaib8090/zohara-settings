@@ -165,7 +165,14 @@ fn build_layouts_group() -> adw::PreferencesGroup {
     let add_model: Vec<String> = names.iter().map(|(c, d)| format!("{d} ({c})")).collect();
     let add_refs: Vec<&str> = add_model.iter().map(String::as_str).collect();
     let picker = gtk4::DropDown::from_strings(&add_refs);
+    // Search only works once the dropdown knows which property to match on.
+    picker.set_expression(Some(gtk4::PropertyExpression::new(
+        gtk4::StringObject::static_type(),
+        None::<gtk4::Expression>,
+        "string",
+    )));
     picker.set_enable_search(true);
+    picker.set_search_match_mode(gtk4::StringFilterMatchMode::Substring);
     picker.set_valign(gtk4::Align::Center);
     let add_btn = gtk4::Button::with_label("Add");
     add_btn.set_valign(gtk4::Align::Center);

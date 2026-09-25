@@ -180,6 +180,181 @@ fn security_group() -> adw::PreferencesGroup {
     g
 }
 
+// ── Firewall rules ─────────────────────────────────────────────────────────
+
+/// A port or range like `8080` or `8000:8100`.
+fn valid_port(p: &str) -> bool {
+    let ok = |s: &str| !s.is_empty() && s.len() <= 5 && s.bytes().all(|b| b.is_ascii_digit()) && s.parse::<u32>().map(|n| (1..=65535).contains(&n)).unwrap_or(false);
+    match p.split_once(':') {
+        Some((a, b)) => ok(a) && ok(b) && a.parse::<u32>().unwrap_or(0) < b.parse::<u32>().unwrap_or(0),
+        None => ok(p),
+    }
+}
+
+/// Numbered rules from `ufw status numbered`: (number, description).
+fn parse_rules(text: &str) -> Vec<(u32, String)> {
+    text.lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let rest = l.strip_prefix('[')?;
+            let (num, desc) = rest.split_once(']')?;
+            Some((num.trim().parse().ok()?, desc.split_whitespace().collect::<Vec<_>>().join(" ")))
+        })
+        .collect()
+}
+
+/// Runs ufw as administrator. `Ok(None)` means the password prompt was dismissed.
+fn ufw(args: &[&str]) -> Result<Option<String>, String> {
+    let o = Command::new("pkexec").arg("ufw").args(args).output().map_err(|e| format!("pkexec: {e}"))?;
+    match o.status.code() {
+        Some(0) => Ok(Some(String::from_utf8_lossy(&o.stdout).into_owned())),
+        Some(126) | Some(127) => Ok(None),
+        _ => {
+            let e = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            Err(if e.is_empty() { "ufw failed".into() } else { e })
+        }
+    }
+}
+
+type Reload = Rc<std::cell::RefCell<Option<Rc<dyn Fn()>>>>;
+
+fn firewall_rules_group() -> adw::PreferencesGroup {
+    let g = adw::PreferencesGroup::new();
+    g.set_title("Firewall rules");
+    g.set_description(Some("Allow or block traffic on a port. Viewing and changing rules asks for your password."));
+    if !std::path::Path::new("/usr/bin/ufw").exists() {
+        return g;
+    }
+
+    let list = adw::ExpanderRow::new();
+    list.set_title("Current rules");
+    list.set_subtitle("Load them to see what's allowed or blocked");
+    list.add_prefix(&gtk4::Image::from_icon_name("view-list-symbolic"));
+    g.add(&list);
+    let shown: Rc<std::cell::RefCell<Vec<gtk4::Widget>>> = Default::default();
+
+    // Deleting a rule renumbers the rest, so the list is reloaded after each change.
+    let load: Reload = Default::default();
+    let reload: Rc<dyn Fn()> = {
+        let (list, shown, load) = (list.clone(), shown.clone(), load.clone());
+        Rc::new(move || {
+            let (list, shown, load) = (list.clone(), shown.clone(), load.clone());
+            in_background(
+                || ufw(&["status", "numbered"]),
+                move |r| {
+                    for w in shown.borrow_mut().drain(..) {
+                        list.remove(&w);
+                    }
+                    let note = |text: &str| {
+                        let row = adw::ActionRow::new();
+                        row.set_title(text);
+                        list.add_row(&row);
+                        shown.borrow_mut().push(row.upcast());
+                    };
+                    match r {
+                        Ok(Some(out)) if out.contains("inactive") => note("The firewall is off. Turn it on above to use rules."),
+                        Ok(Some(out)) => {
+                            let rules = parse_rules(&out);
+                            if rules.is_empty() {
+                                note("No rules yet");
+                            }
+                            for (n, desc) in rules {
+                                let row = adw::ActionRow::new();
+                                row.set_title(&glib::markup_escape_text(&desc));
+                                let del = gtk4::Button::from_icon_name("user-trash-symbolic");
+                                del.add_css_class("flat");
+                                del.set_valign(gtk4::Align::Center);
+                                del.set_tooltip_text(Some("Delete this rule"));
+                                let load2 = load.clone();
+                                del.connect_clicked(move |b| {
+                                    b.set_sensitive(false);
+                                    let load3 = load2.clone();
+                                    in_background(
+                                        move || ufw(&["--force", "delete", &n.to_string()]),
+                                        move |_| {
+                                            let f = load3.borrow().clone();
+                                            if let Some(f) = f {
+                                                f();
+                                            }
+                                        },
+                                    );
+                                });
+                                row.add_suffix(&del);
+                                list.add_row(&row);
+                                shown.borrow_mut().push(row.upcast());
+                            }
+                            list.set_subtitle("");
+                            list.set_expanded(true);
+                        }
+                        Ok(None) => list.set_subtitle("Password prompt cancelled"),
+                        Err(e) => list.set_subtitle(&glib::markup_escape_text(&e)),
+                    }
+                },
+            );
+        })
+    };
+    *load.borrow_mut() = Some(reload.clone());
+    let refresh = gtk4::Button::with_label("Load rules");
+    refresh.set_valign(gtk4::Align::Center);
+    let reload2 = reload.clone();
+    refresh.connect_clicked(move |_| reload2());
+    list.add_suffix(&refresh);
+
+    // Add a rule.
+    let port = adw::EntryRow::new();
+    port.set_title("Port or range, like 8080 or 8000:8100");
+    let proto = adw::ComboRow::new();
+    proto.set_title("Protocol");
+    proto.set_model(Some(&gtk4::StringList::new(&["TCP and UDP", "TCP", "UDP"])));
+    let action = adw::ComboRow::new();
+    action.set_title("Action");
+    action.set_model(Some(&gtk4::StringList::new(&["Allow", "Block"])));
+    let add = gtk4::Button::with_label("Add rule");
+    add.add_css_class("suggested-action");
+    add.set_valign(gtk4::Align::Center);
+    port.add_suffix(&add);
+    g.add(&port);
+    g.add(&proto);
+    g.add(&action);
+
+    let (port2, proto2, action2) = (port.clone(), proto.clone(), action.clone());
+    add.connect_clicked(move |b| {
+        let p = port2.text().trim().to_string();
+        if !valid_port(&p) {
+            port2.add_css_class("error");
+            return;
+        }
+        port2.remove_css_class("error");
+        let target = match proto2.selected() {
+            1 => format!("{p}/tcp"),
+            2 => format!("{p}/udp"),
+            _ => p,
+        };
+        let verb = if action2.selected() == 1 { "deny" } else { "allow" };
+        b.set_sensitive(false);
+        let (b2, port3, reload3) = (b.clone(), port2.clone(), reload.clone());
+        in_background(
+            move || ufw(&[verb, &target]),
+            move |r| {
+                b2.set_sensitive(true);
+                match r {
+                    Ok(Some(_)) => {
+                        port3.set_text("");
+                        reload3();
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        let d = adw::AlertDialog::new(Some("Couldn't add the rule"), Some(&e));
+                        d.add_response("ok", "OK");
+                        d.present(Some(&b2));
+                    }
+                }
+            },
+        );
+    });
+    g
+}
+
 fn devices_group() -> adw::PreferencesGroup {
     let g = adw::PreferencesGroup::new();
     g.set_title("Device access");
@@ -236,7 +411,7 @@ fn indicators_group() -> adw::PreferencesGroup {
     use crate::backend::privacy_indicator as pi;
     let g = adw::PreferencesGroup::new();
     g.set_title("Access indicators");
-    g.set_description(Some("Shows an icon in the system tray while an app is using your microphone, camera or location. Click it to come back here."));
+    g.set_description(Some("Shows an icon in the system tray while an app is using your camera or location (Plasma shows the microphone one itself). Every use is also kept in Recent activity below."));
     let cfg = pi::load_config();
 
     let master = adw::SwitchRow::new();
@@ -246,14 +421,14 @@ fn indicators_group() -> adw::PreferencesGroup {
     g.add(&master);
 
     let mut switches: Vec<adw::SwitchRow> = Vec::new();
-    for (key, title, icon, on) in [
-        ("Microphone", "Microphone", "audio-input-microphone-symbolic", cfg.microphone),
-        ("Camera", "Camera", "camera-web-symbolic", cfg.camera),
-        ("Location", "Location", "find-location-symbolic", cfg.location),
+    for (key, title, sub, icon, on) in [
+        ("Microphone", "Microphone", "Plasma already shows its own microphone icon. Turn this on to add a Zohara one too", "audio-input-microphone-symbolic", cfg.microphone),
+        ("Camera", "Camera", "Show an icon while an app is using the camera", "camera-web-symbolic", cfg.camera),
+        ("Location", "Location", "Show an icon while an app is using your location", "find-location-symbolic", cfg.location),
     ] {
         let r = adw::SwitchRow::new();
         r.set_title(title);
-        r.set_subtitle("Show an icon while in use");
+        r.set_subtitle(sub);
         r.add_prefix(&gtk4::Image::from_icon_name(icon));
         r.set_active(on);
         r.connect_active_notify(move |r| {
@@ -464,6 +639,7 @@ pub fn build() -> gtk4::Widget {
             .build(),
     );
     root.append(&security_group());
+    root.append(&firewall_rules_group());
     root.append(&devices_group());
     root.append(&indicators_group());
     root.append(&activity_group());
@@ -474,4 +650,28 @@ pub fn build() -> gtk4::Widget {
 
     scroll.set_child(Some(&root));
     scroll.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ports() {
+        for ok in ["80", "65535", "8000:8100"] {
+            assert!(valid_port(ok), "{ok}");
+        }
+        for bad in ["", "0", "65536", "abc", "80:", "9000:8000", "8000:8000", "1 2", "-1", "80/tcp"] {
+            assert!(!valid_port(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn rules() {
+        let out = "Status: active\n\n     To                         Action      From\n     --                         ------      ----\n[ 1] 22/tcp                     ALLOW IN    Anywhere\n[ 2] 8080                       DENY IN     Anywhere\n";
+        assert_eq!(
+            parse_rules(out),
+            vec![(1, "22/tcp ALLOW IN Anywhere".to_string()), (2, "8080 DENY IN Anywhere".to_string())]
+        );
+    }
 }

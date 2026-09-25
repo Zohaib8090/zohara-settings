@@ -13,6 +13,10 @@
 //!   paused streams, monitors of speakers and Plasma's own level meter;
 //! - camera: processes holding `/dev/video*` open, plus PipeWire video
 //!   capture streams (camera access through the portal);
+//!
+//! Plasma already shows its own microphone icon in the system tray, so the
+//! Zohara microphone icon is off by default (Settings can turn it on). Usage of
+//! all three is still recorded in the activity history.
 //! - location: GeoClue's `InUse` property.
 //!
 //! Each time an app starts or stops using a device it is appended to
@@ -46,7 +50,8 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { enabled: true, microphone: true, camera: true, location: true }
+        // Plasma's Audio Volume applet already shows a microphone icon, so ours is opt-in.
+        Config { enabled: true, microphone: false, camera: true, location: true }
     }
 }
 
@@ -182,6 +187,11 @@ fn pipewire_video_apps() -> Vec<String> {
 
 /// Programs (other than PipeWire and this one) that have a camera device open.
 fn v4l2_holders() -> Vec<String> {
+    // No camera device at all: nothing to scan for.
+    let has_camera = fs::read_dir("/dev").map(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("video"))).unwrap_or(false);
+    if !has_camera {
+        return Vec::new();
+    }
     let me = std::process::id().to_string();
     let Ok(procs) = fs::read_dir("/proc") else { return Vec::new() };
     let mut out = Vec::new();
@@ -196,13 +206,16 @@ fn v4l2_holders() -> Vec<String> {
         if !uses_camera {
             continue;
         }
+        // `comm` is cut at 15 characters; the executable's name isn't.
+        let exe = fs::read_link(p.path().join("exe")).ok().and_then(|e| e.file_name().map(|n| n.to_string_lossy().into_owned()));
         let comm = fs::read_to_string(p.path().join("comm")).unwrap_or_default();
-        let comm = comm.trim();
-        // PipeWire opens cameras on behalf of apps; those are named from its streams.
-        if comm.is_empty() || comm == "wireplumber" || comm.starts_with("pipewire") {
+        let name = exe.filter(|e| !e.is_empty() && !e.starts_with("ld-")).unwrap_or_else(|| comm.trim().to_string());
+        // PipeWire opens cameras on behalf of apps (they're named from its
+        // streams), and these system pieces aren't apps.
+        if name.is_empty() || name == "wireplumber" || name.starts_with("pipewire") || name.starts_with("xdg-desktop-portal") || name == "systemd" {
             continue;
         }
-        out.push(tidy(comm));
+        out.push(tidy(&name));
     }
     dedupe(out)
 }
@@ -475,12 +488,8 @@ pub fn run() -> i32 {
 
             let cfg = load_config();
             let now = if cfg.enabled {
-                let (mic, cam) = tokio::task::spawn_blocking(move || {
-                    (cfg.microphone.then(microphone_apps).unwrap_or_default(), cfg.camera.then(camera_apps).unwrap_or_default())
-                })
-                .await
-                .unwrap_or_default();
-                Snapshot { microphone: mic, camera: cam, location: cfg.location && location_in_use().await }
+                let (mic, cam) = tokio::task::spawn_blocking(|| (microphone_apps(), camera_apps())).await.unwrap_or_default();
+                Snapshot { microphone: mic, camera: cam, location: location_in_use().await }
             } else {
                 Snapshot::default()
             };
@@ -488,9 +497,9 @@ pub fn run() -> i32 {
             let server = conn.object_server();
             let loc_apps: Vec<String> = Vec::new();
             let sets: [(&Device, &[String], bool); 3] = [
-                (&DEVICES[0], now.microphone.as_slice(), !now.microphone.is_empty()),
-                (&DEVICES[1], now.camera.as_slice(), !now.camera.is_empty()),
-                (&DEVICES[2], loc_apps.as_slice(), now.location),
+                (&DEVICES[0], now.microphone.as_slice(), cfg.microphone && !now.microphone.is_empty()),
+                (&DEVICES[1], now.camera.as_slice(), cfg.camera && !now.camera.is_empty()),
+                (&DEVICES[2], loc_apps.as_slice(), cfg.location && now.location),
             ];
             for (d, apps, active) in sets {
                 if let Err(e) = set_item(server, d, active.then_some(apps)).await {
@@ -524,6 +533,7 @@ mod tests {
     #[test]
     fn config_defaults_and_overrides() {
         assert_eq!(parse_config(""), Config::default());
+        assert!(!Config::default().microphone, "Plasma already shows a microphone icon");
         let c = parse_config("[Other]\nCamera=false\n[Indicators]\nMicrophone=false\nEnabled=true\n");
         assert!(c.camera && !c.microphone && c.enabled);
     }

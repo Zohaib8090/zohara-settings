@@ -93,6 +93,10 @@ package() {
   install -d "$pkgdir/usr/share/kglobalaccel"
   ln -s /usr/share/applications/zohara-dictation.desktop     "$pkgdir/usr/share/kglobalaccel/zohara-dictation.desktop"
 
+  # Tray indicators for microphone / camera / location use (autostarted).
+  install -Dm644 "$startdir/data/zohara-privacy-indicator.desktop" \
+    "$pkgdir/etc/xdg/autostart/zohara-privacy-indicator.desktop"
+
   # License
   if [ -f "$startdir/LICENSE" ]; then
     install -Dm644 "$startdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

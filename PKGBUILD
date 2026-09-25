@@ -35,6 +35,7 @@ optdepends=(
   'bluez: Bluetooth settings page'
   'upower: Power settings page'
 )
+options=(!debug)
 provides=('zohara-settings')
 conflicts=('zohara-settings-git')
 
@@ -51,7 +52,7 @@ pkgver() {
   if [ -n "${_PKGVER:-}" ]; then
     echo "$_PKGVER"
   else
-    grep '^version' Cargo.toml | head -1 | cut -d'"' -f2
+    grep '^version' "$startdir/Cargo.toml" | head -1 | cut -d'"' -f2
   fi
 }
 

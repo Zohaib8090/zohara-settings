@@ -85,11 +85,14 @@ jobs:
         id: version
         run: |
           # Read version from Cargo.toml. The PKGBUILD will use this.
-          VER=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
-          if [ -z "$VER" ]; then
+          BASE=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
+          if [ -z "$BASE" ]; then
             echo "::error::Could not read version from Cargo.toml"
             exit 1
           fi
+          # Cargo version + build time: always newer than the last build, so
+          # pacman on installed systems sees it as an update.
+          VER="$BASE.$(date -u +%Y%m%d%H%M)"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "::notice::Building zohara-settings $VER"
 

@@ -106,6 +106,23 @@ pub fn build() -> gtk4::Widget {
         .build();
     root_box.append(&title_lbl);
 
+    // Every update goes through Zohara Store, where you pick what to update
+    // and can go back to an earlier version.
+    let store_group = adw::PreferencesGroup::new();
+    let store_row = adw::ActionRow::new();
+    store_row.set_title("Updates are in Zohara Store");
+    store_row.set_subtitle("See what's new, choose what to update, and go back if something goes wrong");
+    store_row.add_prefix(&gtk4::Image::from_icon_name("system-software-install-symbolic"));
+    let store_btn = gtk4::Button::with_label("Open Updates");
+    store_btn.add_css_class("suggested-action");
+    store_btn.set_valign(gtk4::Align::Center);
+    store_btn.connect_clicked(|_| {
+        let _ = std::process::Command::new("zohara-store").args(["--page", "updates"]).spawn();
+    });
+    store_row.add_suffix(&store_btn);
+    store_group.add(&store_row);
+    root_box.append(&store_group);
+
     // ── Hero Update Status Banner ────────────────────────────────────────────
     let hero_card = gtk4::Box::new(gtk4::Orientation::Horizontal, 20);
     hero_card.set_css_classes(&["win11-hero-card"]);

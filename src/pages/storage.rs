@@ -3,6 +3,7 @@
 //! cleanup of trash, app caches and the pacman package cache. Storage Sense
 //! uses Plasma's own trash time limit plus a systemd user tmpfiles rule for
 //! ~/.cache, so the cleanup keeps running without Settings being open.
+//! System restore points (Btrfs snapshots) are managed here too.
 
 use crate::backend::kconfig;
 use crate::backend::worker::in_background;
@@ -10,7 +11,9 @@ use adw::prelude::*;
 use gtk4::prelude::*;
 use libadwaita as adw;
 use serde_json::Value;
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::process::Command;
 
 fn home() -> PathBuf {
@@ -526,6 +529,169 @@ fn sense_group() -> adw::PreferencesGroup {
     g
 }
 
+// ── System restore points (Btrfs snapshots) ────────────────────────────────
+
+/// Runs `zohara-snapshots ARGS` as administrator. `Ok(None)`: the password prompt was dismissed.
+fn snapshots_admin(args: &[&str]) -> Result<Option<String>, String> {
+    let o = Command::new("pkexec").arg("zohara-snapshots").args(args).output().map_err(|e| format!("pkexec: {e}"))?;
+    match o.status.code() {
+        Some(0) => Ok(Some(String::from_utf8_lossy(&o.stdout).into_owned())),
+        Some(126) | Some(127) => Ok(None),
+        _ => {
+            let e = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            Err(if e.is_empty() { "zohara-snapshots failed".into() } else { e })
+        }
+    }
+}
+
+/// How many snapshots to keep; a pair (before + after an update) counts as two.
+const SNAPSHOT_LIMITS: [u32; 4] = [6, 10, 20, 30];
+
+fn info_row(title: &str, sub: &str, icon: &str) -> adw::ActionRow {
+    let r = adw::ActionRow::new();
+    r.set_title(title);
+    r.set_subtitle(sub);
+    r.add_prefix(&gtk4::Image::from_icon_name(icon));
+    r
+}
+
+fn snapshots_group() -> adw::PreferencesGroup {
+    let g = adw::PreferencesGroup::new();
+    g.set_title("System restore points");
+    g.set_description(Some(
+        "Zohara saves a restore point before and after every update. If an update goes wrong, restore one from Zohara Store › Updates, or from the boot menu.",
+    ));
+    let status: Value = Command::new("zohara-snapshots")
+        .arg("status")
+        .output()
+        .ok()
+        .and_then(|o| serde_json::from_slice(&o.stdout).ok())
+        .unwrap_or(Value::Null);
+    if !status["supported"].as_bool().unwrap_or(false) {
+        g.add(&info_row("Not available", "This computer isn't on the Btrfs file system, which restore points need. A fresh install with Btrfs (the default) turns them on.", "dialog-information-symbolic"));
+        return g;
+    }
+    if !status["configured"].as_bool().unwrap_or(false) {
+        g.add(&info_row("Setting up…", "It finishes the next time you restart.", "emblem-synchronizing-symbolic"));
+        return g;
+    }
+
+    // Automatic restore points around every update.
+    let auto = adw::SwitchRow::new();
+    auto.set_title("Save restore points automatically");
+    auto.set_subtitle("Before and after every update or install");
+    auto.add_prefix(&gtk4::Image::from_icon_name("document-open-recent-symbolic"));
+    auto.set_active(status["auto"].as_bool().unwrap_or(true));
+    let reverting = Rc::new(Cell::new(false));
+    {
+        let reverting = reverting.clone();
+        auto.connect_active_notify(move |r| {
+            if reverting.get() {
+                return;
+            }
+            let on = r.is_active();
+            let (r2, rev) = (r.clone(), reverting.clone());
+            in_background(
+                move || snapshots_admin(&["auto", if on { "on" } else { "off" }]),
+                move |res| {
+                    if !matches!(res, Ok(Some(_))) {
+                        rev.set(true);
+                        r2.set_active(!on);
+                        rev.set(false);
+                    }
+                },
+            );
+        });
+    }
+    g.add(&auto);
+
+    // How many to keep.
+    let limit = status["limit"].as_u64().unwrap_or(10) as u32;
+    let keep = adw::ComboRow::new();
+    keep.set_title("Keep");
+    keep.set_subtitle("Older ones are deleted automatically to save space");
+    let labels: Vec<String> = SNAPSHOT_LIMITS.iter().map(|n| format!("{n} restore points (about {} updates)", n / 2)).collect();
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    keep.set_model(Some(&gtk4::StringList::new(&refs)));
+    let start = SNAPSHOT_LIMITS.iter().position(|n| *n == limit).unwrap_or(1) as u32;
+    keep.set_selected(start);
+    let prev = Rc::new(Cell::new(start));
+    {
+        let (prev, reverting) = (prev.clone(), reverting.clone());
+        keep.connect_selected_notify(move |r| {
+            if reverting.get() {
+                return;
+            }
+            let idx = r.selected();
+            let Some(n) = SNAPSHOT_LIMITS.get(idx as usize).copied() else { return };
+            let (r2, prev2, rev) = (r.clone(), prev.clone(), reverting.clone());
+            in_background(
+                move || snapshots_admin(&["set-limit", &n.to_string()]),
+                move |res| {
+                    if matches!(res, Ok(Some(_))) {
+                        prev2.set(idx);
+                    } else {
+                        rev.set(true);
+                        r2.set_selected(prev2.get());
+                        rev.set(false);
+                    }
+                },
+            );
+        });
+    }
+    g.add(&keep);
+
+    // How much space they use.
+    let space = info_row("Space used", "Check how much disk the restore points take", "drive-harddisk-symbolic");
+    let check = gtk4::Button::with_label("Check");
+    check.set_valign(gtk4::Align::Center);
+    {
+        let space = space.clone();
+        check.connect_clicked(move |b| {
+            b.set_sensitive(false);
+            space.set_subtitle("Measuring…");
+            let (space, b) = (space.clone(), b.clone());
+            in_background(
+                || snapshots_admin(&["size"]),
+                move |res| {
+                    b.set_sensitive(true);
+                    match res {
+                        Ok(Some(out)) => {
+                            let v: Value = serde_json::from_str(out.trim()).unwrap_or(Value::Null);
+                            let excl = v["exclusive"].as_u64().unwrap_or(0);
+                            space.set_subtitle(&format!("About {}. Deleting all of them would free that much.", human(excl)));
+                        }
+                        Ok(None) => space.set_subtitle("Password prompt cancelled"),
+                        Err(e) => space.set_subtitle(&glib::markup_escape_text(&e)),
+                    }
+                },
+            );
+        });
+    }
+    space.add_suffix(&check);
+    g.add(&space);
+
+    // Free space now.
+    let prune = info_row("Delete old restore points", "Keeps only the 3 newest", "edit-delete-symbolic");
+    let del = gtk4::Button::with_label("Delete…");
+    del.set_valign(gtk4::Align::Center);
+    del.connect_clicked(|b| {
+        confirm(
+            b,
+            "Delete old restore points?",
+            "Only the 3 newest are kept. You won't be able to go back to the older ones.",
+            "Delete",
+            || {
+                let _ = snapshots_admin(&["prune", "3"]);
+            },
+            || {},
+        );
+    });
+    prune.add_suffix(&del);
+    g.add(&prune);
+    g
+}
+
 pub fn build() -> gtk4::Widget {
     let scroll = gtk4::ScrolledWindow::builder()
         .hscrollbar_policy(gtk4::PolicyType::Never)
@@ -548,6 +714,7 @@ pub fn build() -> gtk4::Widget {
     root.append(&drives_group(&root));
     root.append(&usage_group());
     root.append(&cleanup_group());
+    root.append(&snapshots_group());
     root.append(&sense_group());
 
     scroll.set_child(Some(&root));

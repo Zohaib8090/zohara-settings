@@ -1,5 +1,6 @@
 //! Privacy & security: firewall (ufw), device access (camera, microphone,
-//! location), file search indexing (Baloo) and Plasma's usage feedback.
+//! location) with tray indicators and a live "in use" view, file search
+//! indexing (Baloo) and Plasma's usage feedback.
 //! Every switch starts from the system's real state and snaps back if the
 //! change is cancelled or fails.
 
@@ -213,6 +214,179 @@ fn devices_group() -> adw::PreferencesGroup {
     g
 }
 
+// ── Access indicators ──────────────────────────────────────────────────────
+
+fn use_text(apps: &[String], none: &str) -> String {
+    if apps.is_empty() {
+        none.to_string()
+    } else {
+        format!("In use by {}", apps.join(", "))
+    }
+}
+
+fn device_label(d: &str) -> &'static str {
+    match d {
+        "microphone" => "Microphone",
+        "camera" => "Camera",
+        _ => "Location",
+    }
+}
+
+fn indicators_group() -> adw::PreferencesGroup {
+    use crate::backend::privacy_indicator as pi;
+    let g = adw::PreferencesGroup::new();
+    g.set_title("Access indicators");
+    g.set_description(Some("Shows an icon in the system tray while an app is using your microphone, camera or location. Click it to come back here."));
+    let cfg = pi::load_config();
+
+    let master = adw::SwitchRow::new();
+    master.set_title("Show indicators");
+    master.add_prefix(&gtk4::Image::from_icon_name("view-reveal-symbolic"));
+    master.set_active(cfg.enabled);
+    g.add(&master);
+
+    let mut switches: Vec<adw::SwitchRow> = Vec::new();
+    for (key, title, icon, on) in [
+        ("Microphone", "Microphone", "audio-input-microphone-symbolic", cfg.microphone),
+        ("Camera", "Camera", "camera-web-symbolic", cfg.camera),
+        ("Location", "Location", "find-location-symbolic", cfg.location),
+    ] {
+        let r = adw::SwitchRow::new();
+        r.set_title(title);
+        r.set_subtitle("Show an icon while in use");
+        r.add_prefix(&gtk4::Image::from_icon_name(icon));
+        r.set_active(on);
+        r.connect_active_notify(move |r| {
+            let v = r.is_active();
+            kconfig::spawn(move || pi::save_config(key, v));
+        });
+        master.bind_property("active", &r, "sensitive").sync_create().build();
+        g.add(&r);
+        switches.push(r);
+    }
+
+    // The tray program starts at sign-in; offer to start it if it isn't running.
+    let warn = adw::ActionRow::new();
+    warn.set_title("The indicator isn't running");
+    warn.set_subtitle("It starts automatically when you sign in");
+    warn.add_prefix(&gtk4::Image::from_icon_name("dialog-warning-symbolic"));
+    let start = gtk4::Button::with_label("Start now");
+    start.set_valign(gtk4::Align::Center);
+    warn.add_suffix(&start);
+    warn.set_visible(false);
+    g.add(&warn);
+    {
+        let warn2 = warn.clone();
+        start.connect_clicked(move |_| {
+            pi::start_daemon();
+            warn2.set_visible(false);
+        });
+    }
+    {
+        let warn2 = warn.clone();
+        master.connect_active_notify(move |r| {
+            let v = r.is_active();
+            kconfig::spawn(move || pi::save_config("Enabled", v));
+            if v && !pi::daemon_running() {
+                pi::start_daemon();
+            }
+            warn2.set_visible(false);
+        });
+    }
+    let (warn3, master3) = (warn.clone(), master.clone());
+    in_background(pi::daemon_running, move |running| warn3.set_visible(!running && master3.is_active()));
+    g
+}
+
+/// Live "in use right now" rows and the recent activity list.
+fn activity_group() -> adw::PreferencesGroup {
+    use crate::backend::privacy_indicator as pi;
+    let g = adw::PreferencesGroup::new();
+    g.set_title("Right now");
+
+    let mk = |title: &str, icon: &str| {
+        let r = adw::ActionRow::new();
+        r.set_title(title);
+        r.set_subtitle("Checking…");
+        r.add_prefix(&gtk4::Image::from_icon_name(icon));
+        g.add(&r);
+        r
+    };
+    let mic = mk("Microphone", "audio-input-microphone-symbolic");
+    let cam = mk("Camera", "camera-web-symbolic");
+    let loc = mk("Location", "find-location-symbolic");
+
+    let history = adw::ExpanderRow::new();
+    history.set_title("Recent activity");
+    history.set_subtitle("When apps started and stopped using these");
+    history.add_prefix(&gtk4::Image::from_icon_name("document-open-recent-symbolic"));
+    g.add(&history);
+    let history_rows: std::rc::Rc<std::cell::RefCell<Vec<gtk4::Widget>>> = Default::default();
+
+    let fill_history = {
+        let (history, rows) = (history.clone(), history_rows.clone());
+        move || {
+            for w in rows.borrow_mut().drain(..) {
+                history.remove(&w);
+            }
+            let entries = pi::recent_activity(15);
+            if entries.is_empty() {
+                let r = adw::ActionRow::new();
+                r.set_title("Nothing yet");
+                history.add_row(&r);
+                rows.borrow_mut().push(r.upcast());
+                return;
+            }
+            for e in entries {
+                let r = adw::ActionRow::new();
+                r.set_title(&glib::markup_escape_text(&format!("{} {}", e.app, if e.started { "started using" } else { "stopped using" })));
+                r.set_subtitle(&glib::markup_escape_text(&format!("{} · {}", device_label(&e.device), e.time)));
+                history.add_row(&r);
+                rows.borrow_mut().push(r.upcast());
+            }
+            let clear = adw::ActionRow::new();
+            clear.set_title("Clear history");
+            clear.set_activatable(true);
+            clear.add_prefix(&gtk4::Image::from_icon_name("edit-clear-all-symbolic"));
+            let rows2 = rows.clone();
+            let history2 = history.clone();
+            clear.connect_activated(move |_| {
+                pi::clear_activity();
+                for w in rows2.borrow_mut().drain(..) {
+                    history2.remove(&w);
+                }
+            });
+            history.add_row(&clear);
+            rows.borrow_mut().push(clear.upcast());
+        }
+    };
+    fill_history();
+
+    let refresh = {
+        let (mic, cam, loc) = (mic.clone(), cam.clone(), loc.clone());
+        move || {
+            let (mic, cam, loc) = (mic.clone(), cam.clone(), loc.clone());
+            in_background(pi::scan_now, move |s| {
+                mic.set_subtitle(&glib::markup_escape_text(&use_text(&s.microphone, "Not in use")));
+                cam.set_subtitle(&glib::markup_escape_text(&use_text(&s.camera, "Not in use")));
+                loc.set_subtitle(if s.location { "In use by an app" } else { "Not in use" });
+            });
+        }
+    };
+    refresh();
+    // Keep it live while this page is on screen.
+    let weak = g.downgrade();
+    glib::timeout_add_local(std::time::Duration::from_secs(3), move || {
+        let Some(g) = weak.upgrade() else { return glib::ControlFlow::Break };
+        if g.is_mapped() {
+            refresh();
+            fill_history();
+        }
+        glib::ControlFlow::Continue
+    });
+    g
+}
+
 fn search_group() -> adw::PreferencesGroup {
     let g = adw::PreferencesGroup::new();
     g.set_title("Search");
@@ -291,6 +465,8 @@ pub fn build() -> gtk4::Widget {
     );
     root.append(&security_group());
     root.append(&devices_group());
+    root.append(&indicators_group());
+    root.append(&activity_group());
     root.append(&search_group());
     if kconfig::available() {
         root.append(&feedback_group());

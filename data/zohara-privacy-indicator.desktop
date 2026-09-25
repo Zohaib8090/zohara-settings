@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Privacy indicators
+Comment=Shows a tray icon while the microphone, camera or location is in use
+Exec=zohara-settings --privacy-indicator
+Icon=preferences-desktop-privacy
+NoDisplay=true
+Terminal=false
+StartupNotify=false
+X-KDE-autostart-after=panel
+X-KDE-autostart-phase=2

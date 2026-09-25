@@ -38,6 +38,10 @@ fn main() -> glib::ExitCode {
     if args.iter().any(|a| a == "--health-check") {
         std::process::exit(backend::health::background_check());
     }
+    // Tray indicators for microphone / camera / location use: no window.
+    if args.iter().any(|a| a == "--privacy-indicator") {
+        std::process::exit(backend::privacy_indicator::run());
+    }
     // Voice typing (Meta+H): no window, just listen and type.
     if args.iter().any(|a| a == "--dictate") {
         std::process::exit(backend::dictation::run());

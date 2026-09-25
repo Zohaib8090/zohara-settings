@@ -422,7 +422,7 @@ fn indicators_group() -> adw::PreferencesGroup {
 
     let mut switches: Vec<adw::SwitchRow> = Vec::new();
     for (key, title, sub, icon, on) in [
-        ("Microphone", "Microphone", "An orange dot. Plasma also shows its own microphone icon; turn this off to keep only that one", "audio-input-microphone-symbolic", cfg.microphone),
+        ("Microphone", "Microphone", "An orange dot while an app is using the microphone", "audio-input-microphone-symbolic", cfg.microphone),
         ("Camera", "Camera", "A green dot while an app is using the camera", "camera-web-symbolic", cfg.camera),
         ("Location", "Location", "A red dot while an app is using your location", "find-location-symbolic", cfg.location),
     ] {
@@ -439,6 +439,20 @@ fn indicators_group() -> adw::PreferencesGroup {
         g.add(&r);
         switches.push(r);
     }
+
+    let hide = adw::SwitchRow::new();
+    hide.set_title("Hide Plasma's own indicators");
+    hide.set_subtitle("Plasma's camera and microphone tray icons would show the same thing twice");
+    hide.add_prefix(&gtk4::Image::from_icon_name("view-hidden-symbolic"));
+    hide.set_active(cfg.hide_plasma);
+    hide.connect_active_notify(|r| {
+        let v = r.is_active();
+        kconfig::spawn(move || {
+            pi::save_config("HidePlasma", v);
+            pi::set_plasma_indicators_hidden(v);
+        });
+    });
+    g.add(&hide);
 
     // The tray program starts at sign-in; offer to start it if it isn't running.
     let warn = adw::ActionRow::new();

@@ -46,11 +46,13 @@ pub struct Config {
     pub microphone: bool,
     pub camera: bool,
     pub location: bool,
+    /// Hide Plasma's own camera and microphone tray icons (ours replace them).
+    pub hide_plasma: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { enabled: true, microphone: true, camera: true, location: true }
+        Config { enabled: true, microphone: true, camera: true, location: true, hide_plasma: true }
     }
 }
 
@@ -77,6 +79,7 @@ pub fn parse_config(text: &str) -> Config {
                     "Microphone" => c.microphone = on,
                     "Camera" => c.camera = on,
                     "Location" => c.location = on,
+                    "HidePlasma" => c.hide_plasma = on,
                     _ => {}
                 }
             }
@@ -92,6 +95,57 @@ pub fn load_config() -> Config {
 /// Saves one key (`Enabled`, `Microphone`, `Camera`, `Location`).
 pub fn save_config(key: &str, on: bool) {
     crate::backend::kconfig::write(CONFIG, &["Indicators"], key, if on { "true" } else { "false" });
+}
+
+// ── Plasma's own indicators ────────────────────────────────────────────────
+
+/// Plasma's camera indicator (a tray applet) and microphone indicator (a
+/// StatusNotifier with the id "microphone").
+const PLASMA_ITEMS: [&str; 2] = ["org.kde.plasma.cameraindicator", "microphone"];
+
+/// Plasma scripting code that adds (or removes) those two to the system
+/// tray's "always hidden" list, leaving everything else in it alone.
+fn plasma_script(hide: bool) -> String {
+    let want = PLASMA_ITEMS.map(|i| format!("\"{i}\"")).join(",");
+    format!(
+        r#"var want = [{want}];
+var hide = {hide};
+var found = 0;
+panels().forEach(function (p) {{
+  p.widgets().forEach(function (w) {{
+    if (w.type != "org.kde.plasma.systemtray") return;
+    var c = desktopById(w.readConfig("SystrayContainmentId"));
+    if (!c) return;
+    c.currentConfigGroup = ["General"];
+    var cur = String(c.readConfig("hiddenItems") || "").split(",").filter(function (s) {{ return s.length > 0; }});
+    var next = cur.filter(function (s) {{ return want.indexOf(s) < 0; }});
+    if (hide) next = next.concat(want);
+    c.writeConfig("hiddenItems", next.join(","));
+    found++;
+  }});
+}});
+found;"#
+    )
+}
+
+/// Hides (or shows again) Plasma's built-in camera and microphone tray icons.
+/// Returns whether Plasma accepted the change.
+pub fn set_plasma_indicators_hidden(hide: bool) -> bool {
+    let out = Command::new("dbus-send")
+        .args(["--session", "--print-reply", "--dest=org.kde.plasmashell", "/PlasmaShell", "org.kde.PlasmaShell.evaluateScript"])
+        .arg(format!("string:{}", plasma_script(hide)))
+        .output();
+    match out {
+        Ok(o) if o.status.success() => true,
+        Ok(o) => {
+            log::warn!("privacy indicator: plasmashell refused the script: {}", String::from_utf8_lossy(&o.stderr).trim());
+            false
+        }
+        Err(e) => {
+            log::warn!("privacy indicator: couldn't reach plasmashell: {e}");
+            false
+        }
+    }
 }
 
 // ── Detection ──────────────────────────────────────────────────────────────
@@ -503,6 +557,7 @@ pub fn run() -> i32 {
 
         let mut before = Snapshot::default();
         let mut tick: u32 = 0;
+        let mut plasma_done = false;
         loop {
             // Plasma may not be ready yet at sign-in, and can restart later.
             if tick % 10 == 0 && !registered(&conn).await {
@@ -511,6 +566,10 @@ pub fn run() -> i32 {
             tick = tick.wrapping_add(1);
 
             let cfg = load_config();
+            // Once per session (Plasma may still be starting, so try a few times).
+            if !plasma_done && cfg.hide_plasma && tick % 5 == 1 {
+                plasma_done = tokio::task::spawn_blocking(|| set_plasma_indicators_hidden(true)).await.unwrap_or(false);
+            }
             let now = if cfg.enabled {
                 let (mic, cam) = tokio::task::spawn_blocking(|| (microphone_apps(), camera_apps())).await.unwrap_or_default();
                 Snapshot { microphone: mic, camera: cam, location: location_in_use().await }
@@ -604,6 +663,15 @@ mod tests {
         assert_eq!(at(11, 11), &[255, 0x2E, 0xCC, 0x71], "opaque green in the middle");
         assert_eq!(at(0, 0)[0], 0, "transparent corner");
         assert_ne!(dot(22, RED), px);
+    }
+
+    #[test]
+    fn plasma_script_hides_and_unhides() {
+        let hide = plasma_script(true);
+        assert!(hide.contains("var hide = true;"));
+        assert!(hide.contains("\"org.kde.plasma.cameraindicator\",\"microphone\""));
+        assert!(plasma_script(false).contains("var hide = false;"));
+        assert!(parse_config("[Indicators]\nHidePlasma=false\n").hide_plasma == false && Config::default().hide_plasma);
     }
 
     #[test]

@@ -14,9 +14,9 @@
 //! - camera: processes holding `/dev/video*` open, plus PipeWire video
 //!   capture streams (camera access through the portal);
 //!
-//! Plasma already shows its own microphone icon in the system tray, so the
-//! Zohara microphone icon is off by default (Settings can turn it on). Usage of
-//! all three is still recorded in the activity history.
+//! The icons are solid coloured dots, like Android's privacy indicators:
+//! green for the camera, orange for the microphone, red for location.
+//! Usage of all three is also recorded in the activity history.
 //! - location: GeoClue's `InUse` property.
 //!
 //! Each time an app starts or stops using a device it is appended to
@@ -50,8 +50,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        // Plasma's Audio Volume applet already shows a microphone icon, so ours is opt-in.
-        Config { enabled: true, microphone: false, camera: true, location: true }
+        Config { enabled: true, microphone: true, camera: true, location: true }
     }
 }
 
@@ -325,9 +324,30 @@ pub fn changes(before: &[String], after: &[String]) -> (Vec<String>, Vec<String>
 struct Item {
     id: &'static str,
     title: &'static str,
-    icon: &'static str,
+    color: [u8; 3],
     active: bool,
     tip: String,
+}
+
+const GREEN: [u8; 3] = [0x2E, 0xCC, 0x71];
+const ORANGE: [u8; 3] = [0xFF, 0x9F, 0x0A];
+const RED: [u8; 3] = [0xE7, 0x4C, 0x3C];
+
+/// A solid dot with a thin light ring, as ARGB32 bytes (the format StatusNotifier wants).
+fn dot(size: i32, rgb: [u8; 3]) -> Vec<u8> {
+    let mid = size as f32 / 2.0;
+    let outer = mid - 1.0;
+    let ring = (size as f32 / 12.0).max(1.5);
+    let mut out = Vec::with_capacity((size * size * 4) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            let d = ((x as f32 + 0.5 - mid).powi(2) + (y as f32 + 0.5 - mid).powi(2)).sqrt();
+            let cover = (outer - d + 0.5).clamp(0.0, 1.0);
+            let (r, g, b) = if d > outer - ring { (255, 255, 255) } else { (rgb[0], rgb[1], rgb[2]) };
+            out.extend_from_slice(&[(cover * 255.0).round() as u8, r, g, b]);
+        }
+    }
+    out
 }
 
 fn tooltip_text(what: &str, apps: &[String]) -> String {
@@ -363,7 +383,11 @@ impl Item {
     }
     #[zbus(property)]
     fn icon_name(&self) -> String {
-        self.icon.into()
+        String::new()
+    }
+    #[zbus(property)]
+    fn icon_pixmap(&self) -> Vec<(i32, i32, Vec<u8>)> {
+        [22, 32, 48].into_iter().map(|s| (s, s, dot(s, self.color))).collect()
     }
     #[zbus(property)]
     fn item_is_menu(&self) -> bool {
@@ -375,7 +399,7 @@ impl Item {
     }
     #[zbus(property)]
     fn tool_tip(&self) -> (String, Vec<(i32, i32, Vec<u8>)>, String, String) {
-        (self.icon.into(), Vec::new(), self.title.into(), self.tip.clone())
+        (String::new(), Vec::new(), self.title.into(), self.tip.clone())
     }
 
     fn activate(&self, _x: i32, _y: i32) {
@@ -457,9 +481,9 @@ pub fn run() -> i32 {
                 return 1;
             }
         };
-        let items = [("Microphone in use", "audio-input-microphone", "zohara-privacy-microphone"), ("Camera in use", "camera-web", "zohara-privacy-camera"), ("Location in use", "find-location", "zohara-privacy-location")];
-        for (d, (title, icon, id)) in DEVICES.iter().zip(items) {
-            builder = match builder.serve_at(d.path, Item { id, title, icon, active: false, tip: String::new() }) {
+        let items = [("Microphone in use", ORANGE, "zohara-privacy-microphone"), ("Camera in use", GREEN, "zohara-privacy-camera"), ("Location in use", RED, "zohara-privacy-location")];
+        for (d, (title, color, id)) in DEVICES.iter().zip(items) {
+            builder = match builder.serve_at(d.path, Item { id, title, color, active: false, tip: String::new() }) {
                 Ok(b) => b,
                 Err(e) => {
                     log::error!("privacy indicator: {e}");
@@ -533,7 +557,6 @@ mod tests {
     #[test]
     fn config_defaults_and_overrides() {
         assert_eq!(parse_config(""), Config::default());
-        assert!(!Config::default().microphone, "Plasma already shows a microphone icon");
         let c = parse_config("[Other]\nCamera=false\n[Indicators]\nMicrophone=false\nEnabled=true\n");
         assert!(c.camera && !c.microphone && c.enabled);
     }
@@ -571,6 +594,16 @@ mod tests {
         let log = parse_log("2026-09-25 10:00:00\tcamera\tZoom\tstarted\nbroken line\n2026-09-25 10:05:00\tcamera\tZoom\tstopped\n");
         assert_eq!(log.len(), 2);
         assert!(log[0].started && !log[1].started);
+    }
+
+    #[test]
+    fn dots_are_round_and_coloured() {
+        let px = dot(22, GREEN);
+        assert_eq!(px.len(), 22 * 22 * 4);
+        let at = |x: usize, y: usize| &px[(y * 22 + x) * 4..(y * 22 + x) * 4 + 4];
+        assert_eq!(at(11, 11), &[255, 0x2E, 0xCC, 0x71], "opaque green in the middle");
+        assert_eq!(at(0, 0)[0], 0, "transparent corner");
+        assert_ne!(dot(22, RED), px);
     }
 
     #[test]

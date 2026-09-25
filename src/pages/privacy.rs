@@ -411,7 +411,7 @@ fn indicators_group() -> adw::PreferencesGroup {
     use crate::backend::privacy_indicator as pi;
     let g = adw::PreferencesGroup::new();
     g.set_title("Access indicators");
-    g.set_description(Some("Shows an icon in the system tray while an app is using your camera or location (Plasma shows the microphone one itself). Every use is also kept in Recent activity below."));
+    g.set_description(Some("Shows a coloured dot in the system tray while an app is using your camera (green), microphone (orange) or location (red). Every use is also kept in Recent activity below."));
     let cfg = pi::load_config();
 
     let master = adw::SwitchRow::new();
@@ -422,9 +422,9 @@ fn indicators_group() -> adw::PreferencesGroup {
 
     let mut switches: Vec<adw::SwitchRow> = Vec::new();
     for (key, title, sub, icon, on) in [
-        ("Microphone", "Microphone", "Plasma already shows its own microphone icon. Turn this on to add a Zohara one too", "audio-input-microphone-symbolic", cfg.microphone),
-        ("Camera", "Camera", "Show an icon while an app is using the camera", "camera-web-symbolic", cfg.camera),
-        ("Location", "Location", "Show an icon while an app is using your location", "find-location-symbolic", cfg.location),
+        ("Microphone", "Microphone", "An orange dot. Plasma also shows its own microphone icon; turn this off to keep only that one", "audio-input-microphone-symbolic", cfg.microphone),
+        ("Camera", "Camera", "A green dot while an app is using the camera", "camera-web-symbolic", cfg.camera),
+        ("Location", "Location", "A red dot while an app is using your location", "find-location-symbolic", cfg.location),
     ] {
         let r = adw::SwitchRow::new();
         r.set_title(title);

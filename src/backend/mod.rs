@@ -4,6 +4,7 @@ pub mod dictation;
 pub mod health;
 pub mod kconfig;
 pub mod network;
+pub mod platform;
 pub mod privacy_indicator;
 pub mod process;
 pub mod system;

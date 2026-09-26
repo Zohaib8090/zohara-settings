@@ -354,7 +354,10 @@ pub fn build() -> gtk4::Widget {
         root.append(&vision_group());
         root.append(&hearing_group());
         root.append(&speech_group());
-        root.append(&voice_typing_group());
+        // Typing into apps needs /dev/uinput, which phones (proot) don't have.
+        if !crate::backend::platform::is_phone() {
+            root.append(&voice_typing_group());
+        }
     }
 
     scroll.set_child(Some(&root));

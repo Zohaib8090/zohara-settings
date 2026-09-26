@@ -714,7 +714,10 @@ pub fn build() -> gtk4::Widget {
     root.append(&drives_group(&root));
     root.append(&usage_group());
     root.append(&cleanup_group());
-    root.append(&snapshots_group());
+    // Restore points need Btrfs and a boot menu, which phones (proot) don't have.
+    if !crate::backend::platform::is_phone() {
+        root.append(&snapshots_group());
+    }
     root.append(&sense_group());
 
     scroll.set_child(Some(&root));

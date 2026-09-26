@@ -240,6 +240,10 @@ fn build_ui(app: &adw::Application) {
     nav_list.set_selection_mode(gtk4::SelectionMode::Single);
 
     for (i, page_def) in PAGES.iter().enumerate() {
+        // On Zohara for phones, pages that need hardware or systemd are left out.
+        if backend::platform::page_hidden(page_def.label) {
+            continue;
+        }
         let row_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
         let icon = gtk4::Image::from_icon_name(page_def.icon);
         icon.set_pixel_size(18);
@@ -372,9 +376,17 @@ fn build_ui(app: &adw::Application) {
     goto.connect_activate(move |_, param| {
         let Some(label) = param.and_then(|p| p.get::<String>()) else { return };
         let Some(idx) = PAGES.iter().position(|p| p.label == label) else { return };
-        if let Some(row) = nav_for_goto.row_at_index(idx as i32) {
-            nav_for_goto.select_row(Some(&row));
-            row.activate();
+        // Rows are named by page index; hidden pages have no row, so positions
+        // in the list can differ from page indices.
+        let name = idx.to_string();
+        let mut i = 0;
+        while let Some(row) = nav_for_goto.row_at_index(i) {
+            if row.widget_name() == name {
+                nav_for_goto.select_row(Some(&row));
+                row.activate();
+                break;
+            }
+            i += 1;
         }
     });
     window.add_action(&goto);

@@ -38,6 +38,10 @@ fn main() -> glib::ExitCode {
     if args.iter().any(|a| a == "--health-check") {
         std::process::exit(backend::health::background_check());
     }
+    // Machine-readable health report for the update pipeline (Store, VM tests, canary).
+    if args.iter().any(|a| a == "--health-json") {
+        std::process::exit(backend::health::json_report());
+    }
     // Tray indicators for microphone / camera / location use: no window.
     if args.iter().any(|a| a == "--privacy-indicator") {
         std::process::exit(backend::privacy_indicator::run());

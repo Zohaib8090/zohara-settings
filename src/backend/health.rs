@@ -353,3 +353,92 @@ pub fn background_check() -> i32 {
     }
     0
 }
+
+// ── Machine-readable check (`--health-json`) ───────────────────────────────
+//
+// Used by the update pipeline: Zohara Store after an update, the VM upgrade
+// tests and the hardware canary all run this one check and read its JSON.
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Check {
+    pub name: &'static str,
+    pub pass: bool,
+    pub detail: String,
+}
+
+#[derive(Serialize, Debug)]
+pub struct Report {
+    pub healthy: bool,
+    pub checks: Vec<Check>,
+    pub issues: Vec<Issue>,
+}
+
+/// Healthy when every check passes and no issue is Critical.
+pub fn build_report(checks: Vec<Check>, issues: Vec<Issue>) -> Report {
+    let healthy = checks.iter().all(|c| c.pass) && !issues.iter().any(|i| i.severity == Severity::Critical);
+    Report { healthy, checks, issues }
+}
+
+fn check(name: &'static str, pass: bool, detail: impl Into<String>) -> Check {
+    Check { name, pass, detail: detail.into() }
+}
+
+/// Does the desktop actually work: the checks the plan calls for.
+fn pipeline_checks() -> Vec<Check> {
+    let mut v = Vec::new();
+    let state = run("systemctl", &["is-system-running"]).unwrap_or_default().trim().to_string();
+    v.push(check("system_state", state == "running", state));
+    let sddm = run("systemctl", &["is-active", "sddm"]).unwrap_or_default().trim().to_string();
+    v.push(check("login_manager", sddm == "active", sddm));
+    let plasma = Command::new("pgrep").args(["-x", "plasmashell"]).output().map(|o| o.status.success()).unwrap_or(false);
+    v.push(check("desktop", plasma, if plasma { "plasmashell running" } else { "plasmashell not running" }));
+    let audio = run("wpctl", &["status"]).unwrap_or_default();
+    let sinks = audio.lines().filter(|l| l.contains("[vol:")).count();
+    v.push(check("audio", sinks > 0, format!("{sinks} audio device(s)")));
+    let net = run("nmcli", &["-t", "-f", "STATE", "general"]).unwrap_or_default().trim().to_string();
+    v.push(check("network", net.starts_with("connected"), net));
+    // Informational: only the trend across updates matters, so it never fails.
+    let errors = run("journalctl", &["-p", "err", "-b", "--no-pager", "-q"]).map(|t| t.lines().count()).unwrap_or(0);
+    v.push(check("journal_errors", true, format!("{errors} error line(s) this boot")));
+    v
+}
+
+/// Prints the report as JSON. Exit code: 0 healthy, 1 not.
+pub fn json_report() -> i32 {
+    let report = build_report(pipeline_checks(), check_all());
+    println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
+    if report.healthy {
+        0
+    } else {
+        1
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    fn issue(sev: Severity) -> Issue {
+        Issue { id: "x".into(), severity: sev, title: "t".into(), detail: "d".into(), fix: None, log_cmd: None }
+    }
+
+    #[test]
+    fn healthy_when_everything_passes() {
+        let r = build_report(vec![check("a", true, "ok")], vec![issue(Severity::Info), issue(Severity::Warning)]);
+        assert!(r.healthy);
+    }
+
+    #[test]
+    fn failed_check_or_critical_issue_is_unhealthy() {
+        assert!(!build_report(vec![check("a", true, ""), check("b", false, "down")], vec![]).healthy);
+        assert!(!build_report(vec![check("a", true, "")], vec![issue(Severity::Critical)]).healthy);
+    }
+
+    #[test]
+    fn report_serialises_to_json() {
+        let r = build_report(vec![check("desktop", false, "plasmashell not running")], vec![]);
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(v["healthy"], false);
+        assert_eq!(v["checks"][0]["name"], "desktop");
+    }
+}

@@ -199,7 +199,8 @@ fn build_ui(app: &adw::Application) {
     // ΓöÇΓöÇ Left Navigation Sidebar ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     let sidebar_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     sidebar_box.set_css_classes(&["win11-sidebar"]);
-    sidebar_box.set_size_request(260, -1);
+    // A phone screen is narrow: the sidebar takes less room there.
+    sidebar_box.set_size_request(if backend::platform::is_phone() { 200 } else { 260 }, -1);
 
     // 1. User Profile Header Card
     let user_name = std::env::var("USER")

@@ -8,6 +8,11 @@ across this repo, `zohara-link`, and `zohara-apps` (welcome) — see
 [docs/UI-REDESIGN.md](docs/UI-REDESIGN.md) for the design language, what's
 shipped, and what's left. Read that first if you're picking this up cold.
 
+This app also runs on Zohara for phones (Termux + proot on Android), built
+from the `arm-main` branch — see [docs/PHONE.md](docs/PHONE.md) for what's
+phone-specific here, and the `zohara` repo's `zohara-proot/README.md` for the
+whole phone build.
+
 ## Build
 
 Local:

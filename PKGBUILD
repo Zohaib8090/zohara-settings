@@ -73,6 +73,11 @@ package() {
   install -Dm755 "$startdir/target/release/zohara-settings" \
     "$pkgdir/usr/bin/zohara-settings"
 
+  # App icon: zohara-settings.desktop's Icon=zohara-settings resolves to
+  # this, in the hicolor theme's standard scalable/apps location.
+  install -Dm644 "$startdir/data/icons/scalable/apps/zohara-settings.svg" \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/zohara-settings.svg"
+
   # Desktop entry
   install -Dm644 "$startdir/data/zohara-settings.desktop" \
     "$pkgdir/usr/share/applications/zohara-settings.desktop"

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Zohara Settings app icon.
+
+  Matches the reference (a grey 8-tooth gear with a filled blue center)
+  while staying inside the project's binding design rule: flat fills only,
+  no gradients (docs/UI-REDESIGN.md). The bevel look in the reference comes
+  from a light-to-dark gradient across the gear body; here that's
+  approximated with two flat grey tones instead — a lighter top ring behind
+  a slightly darker body — which reads as depth without blending colors.
+
+  Install path: /usr/share/icons/hicolor/scalable/apps/zohara-settings.svg
+  (see PKGBUILD). Referenced by data/zohara-settings.desktop's Icon= key.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <!-- One gear tooth, rotated around the icon's center to make all eight. -->
+    <rect id="tooth" x="112" y="14" width="32" height="52" rx="9" />
+  </defs>
+
+  <g fill="#9aa1ab">
+    <!-- Two flat tones instead of the reference's gradient bevel: a
+         slightly lighter ring shows through at the gear's own edge. -->
+    <circle cx="128" cy="128" r="82" fill="#a7aeb8" />
+    <use href="#tooth" transform="rotate(0 128 128)" />
+    <use href="#tooth" transform="rotate(45 128 128)" />
+    <use href="#tooth" transform="rotate(90 128 128)" />
+    <use href="#tooth" transform="rotate(135 128 128)" />
+    <use href="#tooth" transform="rotate(180 128 128)" />
+    <use href="#tooth" transform="rotate(225 128 128)" />
+    <use href="#tooth" transform="rotate(270 128 128)" />
+    <use href="#tooth" transform="rotate(315 128 128)" />
+  </g>
+  <circle cx="128" cy="128" r="70" fill="#8b929d" />
+
+  <!-- The accent center. Solid fill — no radial gradient — sized to read
+       clearly at 16–24px in a taskbar or menu, same as the reference. -->
+  <circle cx="128" cy="128" r="46" fill="#2f7bf6" />
+</svg>

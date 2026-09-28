@@ -233,6 +233,35 @@ jobs:
             exit 0
           fi
 
+      - name: Dispatch a fresh ISO build to zohara
+        # Stable only: an alpha/beta push shouldn't trigger a ~25 minute ISO
+        # rebuild on every commit. Only zohara-settings needs this, of the
+        # app repos outside zohara itself -- it's the one compiled straight
+        # into the image (ZOHARA_SETTINGS_SHA build arg in the Dockerfile),
+        # so a stable push here means the ISO is now building stale code
+        # until this fires. build-iso.yml listens for this event.
+        if: steps.channel.outputs.channel == 'stable'
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGES_DISPATCH_TOKEN }}
+          VER: ${{ steps.version.outputs.version }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::PACKAGES_DISPATCH_TOKEN not set; skipping ISO rebuild dispatch."
+            exit 0
+          fi
+          curl -fsSL -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/Zohaib8090/zohara/dispatches" \
+            -d "{
+              \"event_type\": \"app-published\",
+              \"client_payload\": {
+                \"package_name\": \"zohara-settings\",
+                \"version\": \"$VER\",
+                \"source_repo\": \"Zohaib8090/zohara-settings\"
+              }
+            }" || echo "::warning::ISO rebuild dispatch failed; trigger build-iso.yml manually if needed."
+
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:

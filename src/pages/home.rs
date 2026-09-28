@@ -150,7 +150,7 @@ pub fn build() -> gtk4::Widget {
             wifi_sub_clone.set_text("Connected, secured");
         } else {
             wifi_title_clone.set_text("Network");
-            wifi_sub_clone.set_text("Online");
+            wifi_sub_clone.set_text("Not connected");
         }
     });
 

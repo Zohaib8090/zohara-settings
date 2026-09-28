@@ -11,6 +11,7 @@
 //! same `theme.json` at startup so the whole OS shares one accent instead of
 //! each app hardcoding its own.
 
+use libadwaita as adw;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -143,11 +144,30 @@ thread_local! {
     static PROVIDER: gtk4::CssProvider = gtk4::CssProvider::new();
 }
 
+/// Our `@define-color` overrides (window_bg_color, window_fg_color, …) only
+/// reach widgets styled with our own `.win11-*` classes. Everything native
+/// -- ExpanderRow's revealed content, popovers, and the window's own header
+/// bar (minimize/maximize/close live there) -- is drawn from libadwaita's
+/// *own* palette (@card_bg_color, @headerbar_bg_color, …), which stays on
+/// its light default until the StyleManager itself is told to prefer dark.
+/// Without this call those surfaces render light no matter what `to_css`
+/// says, which is exactly the white ExpanderRow content and the
+/// wrong-looking header bar controls seen on real hardware (2026-09-28).
+fn apply_native_color_scheme(mode: &str) {
+    let scheme = if mode == "light" {
+        adw::ColorScheme::PreferLight
+    } else {
+        adw::ColorScheme::PreferDark
+    };
+    adw::StyleManager::default().set_color_scheme(scheme);
+}
+
 /// Call once at startup: registers the dynamic-theme provider on the given
 /// display and loads the persisted config into it. Returns the config so
 /// callers (Personalization) can seed their controls from it.
 pub fn apply(display: &gtk4::gdk::Display) -> ThemeConfig {
     let cfg = load();
+    apply_native_color_scheme(&cfg.mode);
     PROVIDER.with(|p| {
         p.load_from_string(&to_css(&cfg));
         gtk4::style_context_add_provider_for_display(
@@ -163,5 +183,6 @@ pub fn apply(display: &gtk4::gdk::Display) -> ThemeConfig {
 /// open window picks up the change immediately.
 pub fn set_and_apply(cfg: &ThemeConfig) {
     save(cfg);
+    apply_native_color_scheme(&cfg.mode);
     PROVIDER.with(|p| p.load_from_string(&to_css(cfg)));
 }

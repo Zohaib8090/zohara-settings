@@ -8,6 +8,35 @@ fn read_info() -> SystemInfo {
     system::read()
 }
 
+/// Display/Sound/Notifications/Power & battery/Storage used to also be
+/// separate top-level sidebar entries alongside System, which just
+/// duplicated them (Windows groups these under System too) and made an
+/// already ~25-item sidebar longer. They're real pages, just reached from
+/// here now instead of the sidebar -- same pattern bluetooth.rs already
+/// uses for Mouse/Touchpad/Keyboard/Printers.
+fn system_links_group(page: &gtk4::Box) -> adw::PreferencesGroup {
+    let g = adw::PreferencesGroup::new();
+    g.set_title("Settings");
+    for (title, sub, icon, target) in [
+        ("Display", "Monitors, brightness, scale", "video-display-symbolic", "Display"),
+        ("Sound", "Volume, devices, speaker test", "audio-speakers-symbolic", "Sound"),
+        ("Notifications", "App notifications, do not disturb", "preferences-system-notifications-symbolic", "Notifications"),
+        ("Power & battery", "Sleep, screen timeout, battery", "battery-level-80-symbolic", "Power & battery"),
+        ("Storage", "See what's using space, free some up", "drive-harddisk-symbolic", "Storage"),
+    ] {
+        let r = adw::ActionRow::new();
+        r.set_title(title);
+        r.set_subtitle(sub);
+        r.add_prefix(&gtk4::Image::from_icon_name(icon));
+        r.add_suffix(&gtk4::Image::from_icon_name("go-next-symbolic"));
+        r.set_activatable(true);
+        let page = page.clone();
+        r.connect_activated(move |_| super::goto(&page, target));
+        g.add(&r);
+    }
+    g
+}
+
 pub fn build() -> gtk4::Widget {
     let scroll = gtk4::ScrolledWindow::builder()
         .hscrollbar_policy(gtk4::PolicyType::Never)
@@ -123,6 +152,7 @@ pub fn build() -> gtk4::Widget {
         },
     ));
     rows_box.append(&about_card);
+    rows_box.append(&system_links_group(&root_box));
 
     // 2) Hardware specs
     let ram_total_h = system::human_bytes(info.ram_total_bytes);

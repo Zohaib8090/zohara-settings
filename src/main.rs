@@ -73,34 +73,44 @@ fn main() -> glib::ExitCode {
 struct PageDef {
     label: &'static str,
     icon:  &'static str,
+    /// Not shown as its own sidebar row. Still a real, fully routable page
+    /// (goto() and build_page_inner() both key off PAGES, not the sidebar) --
+    /// just reached from its parent page instead of the top level, the same
+    /// way Mouse/Touchpad/Keyboard/Printers already only show up inside
+    /// Bluetooth & devices, not the sidebar. Kept in PAGES at all rather
+    /// than removed so nothing else has to change to reach them.
+    hidden: bool,
 }
 
 static PAGES: &[PageDef] = &[
-    PageDef { label: "Home",                 icon: "user-home-symbolic" },
-    PageDef { label: "System",               icon: "computer-symbolic" },
-    PageDef { label: "Bluetooth & devices",  icon: "bluetooth-symbolic" },
-    PageDef { label: "Network & internet",   icon: "network-wireless-symbolic" },
-    PageDef { label: "Personalization",      icon: "preferences-desktop-symbolic" },
-    PageDef { label: "Apps",                 icon: "application-x-executable-symbolic" },
-    PageDef { label: "Accounts",             icon: "system-users-symbolic" },
-    PageDef { label: "Time & language",      icon: "preferences-system-time-symbolic" },
-    PageDef { label: "Gaming",               icon: "applications-games-symbolic" },
-    PageDef { label: "Accessibility",        icon: "preferences-desktop-accessibility-symbolic" },
-    PageDef { label: "Privacy & security",   icon: "security-high-symbolic" },
-    PageDef { label: "Zohara Update",        icon: "system-software-update-symbolic" },
-    PageDef { label: "Display",              icon: "video-display-symbolic" },
-    PageDef { label: "Sound",                icon: "audio-speakers-symbolic" },
-    PageDef { label: "Notifications",        icon: "preferences-system-notifications-symbolic" },
-    PageDef { label: "Power & battery",      icon: "battery-level-80-symbolic" },
-    PageDef { label: "Storage",              icon: "drive-harddisk-symbolic" },
-    PageDef { label: "Mouse",                icon: "input-mouse-symbolic" },
-    PageDef { label: "Touchpad",             icon: "input-touchpad-symbolic" },
-    PageDef { label: "Keyboard",             icon: "input-keyboard-symbolic" },
-    PageDef { label: "Printers",             icon: "printer-symbolic" },
-    PageDef { label: "Default apps",         icon: "preferences-desktop-default-applications-symbolic" },
-    PageDef { label: "About",                icon: "help-about-symbolic" },
-    PageDef { label: "Zohara Link",          icon: "phone-symbolic" },
-    PageDef { label: "Troubleshoot",         icon: "system-help-symbolic" },
+    PageDef { label: "Home",                 icon: "user-home-symbolic",                          hidden: false },
+    PageDef { label: "System",               icon: "computer-symbolic",                           hidden: false },
+    PageDef { label: "Bluetooth & devices",  icon: "bluetooth-symbolic",                           hidden: false },
+    PageDef { label: "Network & internet",   icon: "network-wireless-symbolic",                    hidden: false },
+    PageDef { label: "Personalization",      icon: "preferences-desktop-symbolic",                 hidden: false },
+    PageDef { label: "Apps",                 icon: "application-x-executable-symbolic",            hidden: false },
+    PageDef { label: "Accounts",             icon: "system-users-symbolic",                        hidden: false },
+    PageDef { label: "Time & language",      icon: "preferences-system-time-symbolic",             hidden: false },
+    PageDef { label: "Gaming",               icon: "applications-games-symbolic",                  hidden: false },
+    PageDef { label: "Accessibility",        icon: "preferences-desktop-accessibility-symbolic",   hidden: false },
+    PageDef { label: "Privacy & security",   icon: "security-high-symbolic",                       hidden: false },
+    PageDef { label: "Zohara Update",        icon: "system-software-update-symbolic",              hidden: false },
+    // Reached from System's "Settings" group (system_links_group in system.rs).
+    PageDef { label: "Display",              icon: "video-display-symbolic",                       hidden: true },
+    PageDef { label: "Sound",                icon: "audio-speakers-symbolic",                      hidden: true },
+    PageDef { label: "Notifications",        icon: "preferences-system-notifications-symbolic",    hidden: true },
+    PageDef { label: "Power & battery",      icon: "battery-level-80-symbolic",                    hidden: true },
+    PageDef { label: "Storage",              icon: "drive-harddisk-symbolic",                      hidden: true },
+    // Reached from Bluetooth & devices' "Other devices" group (already existed).
+    PageDef { label: "Mouse",                icon: "input-mouse-symbolic",                         hidden: true },
+    PageDef { label: "Touchpad",             icon: "input-touchpad-symbolic",                      hidden: true },
+    PageDef { label: "Keyboard",             icon: "input-keyboard-symbolic",                      hidden: true },
+    PageDef { label: "Printers",             icon: "printer-symbolic",                             hidden: true },
+    // Reached from Apps' own "Default apps" row (already existed).
+    PageDef { label: "Default apps",         icon: "preferences-desktop-default-applications-symbolic", hidden: true },
+    PageDef { label: "About",                icon: "help-about-symbolic",                          hidden: false },
+    PageDef { label: "Zohara Link",          icon: "phone-symbolic",                               hidden: false },
+    PageDef { label: "Troubleshoot",         icon: "system-help-symbolic",                         hidden: false },
 ];
 
 /// Build a page, isolating failures: a page that panics while being built
@@ -239,27 +249,61 @@ fn build_ui(app: &adw::Application) {
     nav_list.set_css_classes(&["win11-nav-list"]);
     nav_list.set_selection_mode(gtk4::SelectionMode::Single);
 
+    // Home..About is the main settings list; Zohara Link and Troubleshoot
+    // are tools rather than settings, so they sit in their own section at
+    // the bottom behind a divider instead of reading as more of the list.
+    nav_list.set_header_func(|row, _before| {
+        let starts_tools = row
+            .widget_name()
+            .parse::<usize>()
+            .ok()
+            .and_then(|i| PAGES.get(i))
+            .map(|p| p.label == "Zohara Link")
+            .unwrap_or(false);
+        if starts_tools {
+            let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+            sep.set_css_classes(&["win11-nav-separator"]);
+            row.set_header(Some(&sep));
+        } else {
+            row.set_header(None::<&gtk4::Widget>);
+        }
+    });
+
     for (i, page_def) in PAGES.iter().enumerate() {
+        // Not a sidebar row -- still fully routable (see goto()/build_page(),
+        // both keyed off PAGES directly), just reached from its parent page.
+        if page_def.hidden {
+            continue;
+        }
+
         let row_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
         let icon = gtk4::Image::from_icon_name(page_def.icon);
         icon.set_pixel_size(18);
 
-        // Icon accent color styling
-        match i {
-            0 => icon.set_css_classes(&["accent-orange"]),
-            1 => icon.set_css_classes(&["accent-blue"]),
-            2 => icon.set_css_classes(&["accent-blue"]),
-            3 => icon.set_css_classes(&["accent-blue"]),
-            4 => icon.set_css_classes(&["accent-orange"]),
-            5 => icon.set_css_classes(&["accent-blue"]),
-            6 => icon.set_css_classes(&["accent-green"]),
-            7 => icon.set_css_classes(&["accent-blue"]),
-            8 => icon.set_css_classes(&["accent-purple"]),
-            9 => icon.set_css_classes(&["accent-blue"]),
-            10 => icon.set_css_classes(&["accent-blue"]),
-            11 => icon.set_css_classes(&["accent-cyan"]),
-            _ => (),
-        }
+        // Icon accent color styling. Matched on the label, not position: a
+        // match on `i` silently ran out at index 11 (Zohara Update) and left
+        // every later row with no color class at all -- exactly the
+        // "some icons colorful, some plain white" inconsistency reported on
+        // real hardware. Every *visible* row gets an explicit class now.
+        let accent = match page_def.label {
+            "Home" => "accent-orange",
+            "System" => "accent-blue",
+            "Bluetooth & devices" => "accent-blue",
+            "Network & internet" => "accent-blue",
+            "Personalization" => "accent-orange",
+            "Apps" => "accent-blue",
+            "Accounts" => "accent-green",
+            "Time & language" => "accent-blue",
+            "Gaming" => "accent-purple",
+            "Accessibility" => "accent-blue",
+            "Privacy & security" => "accent-blue",
+            "Zohara Update" => "accent-cyan",
+            "About" => "accent-blue",
+            "Zohara Link" => "accent-green",
+            "Troubleshoot" => "accent-orange",
+            _ => "accent-blue",
+        };
+        icon.set_css_classes(&[accent]);
 
         let lbl = gtk4::Label::builder()
             .label(page_def.label)
@@ -367,14 +411,47 @@ fn build_ui(app: &adw::Application) {
         .build();
 
     // Lets any page open another one: `pages::goto(widget, "Mouse")`.
-    let goto = gtk4::gio::SimpleAction::new("goto", Some(glib::VariantTy::STRING));
+    // idx is PAGES's own index, which no longer lines up with the sidebar
+    // ListBox's row positions now that hidden pages don't get a row at all
+    // -- row_at_index(idx) would silently jump to the wrong page for
+    // anything after a hidden one. Rows still carry their true PAGES index
+    // in widget_name (set when built above), so look a matching row up by
+    // that instead of assuming position; a hidden target has no row to
+    // select, so just switch the content directly.
     let nav_for_goto = nav_list.clone();
+    let cache_for_goto = page_cache.clone();
+    let stack_for_goto = content_stack.clone();
+    let goto = gtk4::gio::SimpleAction::new("goto", Some(glib::VariantTy::STRING));
     goto.connect_activate(move |_, param| {
         let Some(label) = param.and_then(|p| p.get::<String>()) else { return };
         let Some(idx) = PAGES.iter().position(|p| p.label == label) else { return };
-        if let Some(row) = nav_for_goto.row_at_index(idx as i32) {
+
+        let mut found_row = None;
+        let mut child = nav_for_goto.first_child();
+        while let Some(c) = child {
+            if let Some(row) = c.downcast_ref::<gtk4::ListBoxRow>() {
+                if row.widget_name() == idx.to_string() {
+                    found_row = Some(row.clone());
+                    break;
+                }
+            }
+            child = c.next_sibling();
+        }
+
+        if let Some(row) = found_row {
             nav_for_goto.select_row(Some(&row));
             row.activate();
+        } else {
+            // Hidden page: no sidebar row to activate, switch directly.
+            let page_tag = format!("page_{}", idx);
+            let mut cache = cache_for_goto.borrow_mut();
+            if cache[idx].is_none() {
+                let widget = build_page(idx);
+                stack_for_goto.add_named(&widget, Some(&page_tag));
+                cache[idx] = Some(widget);
+            }
+            stack_for_goto.set_visible_child_name(&page_tag);
+            nav_for_goto.unselect_all();
         }
     });
     window.add_action(&goto);

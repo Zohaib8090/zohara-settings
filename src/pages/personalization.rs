@@ -148,11 +148,12 @@ pub fn build() -> gtk4::Widget {
 
     let mode_row = adw::ComboRow::new();
     mode_row.set_title("Choose your mode");
-    let mode_list = gtk4::StringList::new(&["Dark (Recommended)", "Light", "Custom"]);
+    let mode_list = gtk4::StringList::new(&["Match the system (Recommended)", "Dark", "Light", "Custom"]);
     mode_row.set_model(Some(&mode_list));
     mode_row.set_selected(match current.borrow().mode.as_str() {
-        "light" => 1,
-        "custom" => 2,
+        "dark" => 1,
+        "light" => 2,
+        "custom" => 3,
         _ => 0,
     });
     {
@@ -160,9 +161,10 @@ pub fn build() -> gtk4::Widget {
         mode_row.connect_selected_notify(move |row| {
             let mut cfg = current_clone.borrow_mut();
             cfg.mode = match row.selected() {
-                1 => "light",
-                2 => "custom",
-                _ => "dark",
+                1 => "dark",
+                2 => "light",
+                3 => "custom",
+                _ => "system",
             }
             .to_string();
             theme::set_and_apply(&cfg);

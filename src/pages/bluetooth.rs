@@ -245,16 +245,21 @@ fn refresh(ui: &Rc<Ui>) {
     });
 }
 
-fn cameras_group() -> Option<adw::PreferencesGroup> {
+/// Names of connected cameras. Runs `v4l2-ctl`, which can take a second or more, so call it off the UI thread.
+fn camera_names() -> Option<Vec<String>> {
     let out = Command::new("v4l2-ctl").arg("--list-devices").output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     // Device names are unindented lines ending in ":"; skip non-camera platform codecs.
-    let names: Vec<String> = text
-        .lines()
-        .filter(|l| !l.starts_with(char::is_whitespace) && l.trim_end().ends_with(':'))
-        .map(|l| l.trim_end().trim_end_matches(':').split(" (").next().unwrap_or(l).trim().to_string())
-        .filter(|n| !n.to_lowercase().contains("codec") && !n.to_lowercase().contains("isp"))
-        .collect();
+    Some(
+        text.lines()
+            .filter(|l| !l.starts_with(char::is_whitespace) && l.trim_end().ends_with(':'))
+            .map(|l| l.trim_end().trim_end_matches(':').split(" (").next().unwrap_or(l).trim().to_string())
+            .filter(|n| !n.to_lowercase().contains("codec") && !n.to_lowercase().contains("isp"))
+            .collect(),
+    )
+}
+
+fn cameras_group(names: Vec<String>) -> adw::PreferencesGroup {
     let g = adw::PreferencesGroup::new();
     g.set_title("Cameras");
     if names.is_empty() {
@@ -268,7 +273,7 @@ fn cameras_group() -> Option<adw::PreferencesGroup> {
         r.add_prefix(&gtk4::Image::from_icon_name("camera-web-symbolic"));
         g.add(&r);
     }
-    Some(g)
+    g
 }
 
 fn other_devices_group(page: &gtk4::Box) -> adw::PreferencesGroup {
@@ -334,16 +339,41 @@ pub fn build() -> gtk4::Widget {
 
     let ui = Rc::new(Ui { page: root.clone(), paired: paired.clone(), found: found.clone(), rows: RefCell::new(Vec::new()) });
 
-    let adapter = has_adapter();
-    let on = adapter && powered();
-    power.set_active(on);
-    power.set_subtitle(if adapter { "Connect wireless headphones, mice, keyboards and phones" } else { "No Bluetooth adapter found" });
-    power.set_sensitive(adapter);
-    paired.set_visible(on);
-    found.set_visible(on);
+    // Opening the page must not wait for `bluetoothctl` or `v4l2-ctl` (each can take a while, and a stuck
+    // bluetoothd would freeze the whole window), so the page appears at once and these fill in from a thread.
+    power.set_subtitle("Checking…");
+    power.set_sensitive(false);
+    paired.set_visible(false);
+    found.set_visible(false);
+    // The switch handler below must ignore the programmatic set_active that applies the real state.
+    let ready = Rc::new(std::cell::Cell::new(false));
+    {
+        let (ui, power, paired, found, ready) = (ui.clone(), power.clone(), paired.clone(), found.clone(), ready.clone());
+        in_background(
+            || {
+                let adapter = has_adapter();
+                (adapter, adapter && powered())
+            },
+            move |(adapter, on)| {
+                power.set_active(on);
+                power.set_subtitle(if adapter { "Connect wireless headphones, mice, keyboards and phones" } else { "No Bluetooth adapter found" });
+                power.set_sensitive(adapter);
+                paired.set_visible(on);
+                found.set_visible(on);
+                ready.set(true);
+                if on {
+                    refresh(&ui);
+                }
+            },
+        );
+    }
     {
         let (ui, paired, found) = (ui.clone(), paired.clone(), found.clone());
+        let ready = ready.clone();
         power.connect_active_notify(move |r| {
+            if !ready.get() {
+                return;
+            }
             let want = r.is_active();
             r.set_sensitive(false);
             let (r, ui, paired, found) = (r.clone(), ui.clone(), paired.clone(), found.clone());
@@ -390,12 +420,14 @@ pub fn build() -> gtk4::Widget {
         });
     }
 
-    if on {
-        refresh(&ui);
-    }
-    if let Some(cams) = cameras_group() {
-        root.append(&cams);
-    }
+    // Cameras: a slot now, the list when `v4l2-ctl` has answered.
+    let cams_slot = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    root.append(&cams_slot);
+    in_background(camera_names, move |names| {
+        if let Some(names) = names {
+            cams_slot.append(&cameras_group(names));
+        }
+    });
     root.append(&other_devices_group(&root));
 
     scroll.set_child(Some(&root));

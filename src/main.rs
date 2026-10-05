@@ -357,7 +357,6 @@ fn build_ui(app: &adw::Application) {
 
     // Centered Top Header Bar with Windows 11 Pill Search Bar
     let header = adw::HeaderBar::new();
-    header.set_show_title(false);
 
     let search_entry = gtk4::SearchEntry::builder()
         .placeholder_text("Find a setting")

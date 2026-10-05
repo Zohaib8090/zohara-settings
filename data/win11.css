@@ -459,3 +459,6 @@ list.boxed-list > row .subtitle {
 .accent-green { color: #4ade80; }
 .accent-orange { color: #fb923c; }
 .accent-pink { color: #f472b6; }
+
+/* One-row lists that make the Personalization action rows clickable: no background of their own. */
+.win11-action-list { background: transparent; }

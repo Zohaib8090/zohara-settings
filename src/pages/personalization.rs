@@ -194,27 +194,27 @@ pub fn build() -> gtk4::Widget {
     // 3. Themes
     let themes_row = build_action_row("Themes", "Install, create, and manage desktop themes", "applications-graphics-symbolic");
     themes_row.connect_activated(open_themes_window);
-    rows_box.append(&themes_row);
+    rows_box.append(&in_list(&themes_row));
 
     // 4. Dynamic Lighting
     let lighting_row = build_action_row("Dynamic Lighting", "Connected RGB devices, effects, app settings", "weather-clear-symbolic");
     lighting_row.connect_activated(open_dynamic_lighting_window);
-    rows_box.append(&lighting_row);
+    rows_box.append(&in_list(&lighting_row));
 
     // 5. Lock Screen
     let lock_row = build_action_row("Lock screen", "Lock screen images, apps, timeout status", "system-lock-screen-symbolic");
     lock_row.connect_activated(open_lock_screen_window);
-    rows_box.append(&lock_row);
+    rows_box.append(&in_list(&lock_row));
 
     // 6. Text Input
     let text_row = build_action_row("Text input", "Touch keyboard, voice typing, emoji and more", "input-keyboard-symbolic");
     text_row.connect_activated(open_text_input_window);
-    rows_box.append(&text_row);
+    rows_box.append(&in_list(&text_row));
 
     // 7. Start
     let start_row = build_action_row("Start", "Recent apps and items, folders, start menu layout", "view-app-grid-symbolic");
     start_row.connect_activated(open_start_window);
-    rows_box.append(&start_row);
+    rows_box.append(&in_list(&start_row));
 
     // 8. Taskbar (with In-App Alignment Toggle)
     let taskbar_exp = adw::ExpanderRow::new();
@@ -235,11 +235,22 @@ pub fn build() -> gtk4::Widget {
     // 9. Fonts
     let fonts_row = build_action_row("Fonts", "Font family, font sizes, ClearType text", "preferences-desktop-font-symbolic");
     fonts_row.connect_activated(open_fonts_window);
-    rows_box.append(&fonts_row);
+    rows_box.append(&in_list(&fonts_row));
 
     root_box.append(&rows_box);
     scroll.set_child(Some(&root_box));
     scroll.upcast()
+}
+
+/// An `ActionRow` only reacts to clicks and Enter while it sits inside a `ListBox` (the list is what turns a click
+/// into "row activated"). These rows are laid out in a plain Box next to the expander rows, so each gets a
+/// one-row list of its own; without it, hovering highlighted the row and clicking did nothing at all.
+fn in_list(row: &adw::ActionRow) -> gtk4::ListBox {
+    let list = gtk4::ListBox::new();
+    list.set_selection_mode(gtk4::SelectionMode::None);
+    list.set_css_classes(&["win11-action-list"]);
+    list.append(row);
+    list
 }
 
 fn build_action_row(title: &str, subtitle: &str, icon_name: &str) -> adw::ActionRow {

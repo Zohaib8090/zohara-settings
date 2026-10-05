@@ -175,6 +175,26 @@ fn build_page_inner(index: usize) -> gtk4::Widget {
 
 // ΓöÇΓöÇ UI ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
+/// Words that should find a page in the sidebar search besides its own name: the things on the page, and the pages
+/// that are reached from it. Without this, typing "firewall" or "wifi" found nothing.
+fn search_keywords(label: &str) -> &'static str {
+    match label {
+        "System" => "display screen resolution brightness night light sound volume audio power battery sleep storage disk drive notifications",
+        "Bluetooth & devices" => "bluetooth pairing mouse touchpad keyboard printer printers camera webcam phone",
+        "Network & internet" => "wifi wi-fi wireless ethernet cable vpn proxy hotspot airplane mode speed test internet",
+        "Personalization" => "theme themes color colours background wallpaper accent dark light mode lock screen fonts font taskbar start text input lighting",
+        "Apps" => "installed apps default apps startup web apps offline maps uninstall",
+        "Accounts" => "user users account password login sign-in sign in",
+        "Time & language" => "date time clock timezone time zone language region keyboard layout",
+        "Gaming" => "game games gaming controller game mode",
+        "Accessibility" => "text size contrast magnifier narrator captions cursor",
+        "Privacy & security" => "firewall ufw ports rules camera microphone location permissions history clear",
+        "Zohara Update" => "update updates upgrade restore snapshot snapshots channel history",
+        "Troubleshoot" => "fix problem problems repair logs report",
+        _ => "",
+    }
+}
+
 fn build_ui(app: &adw::Application) {
     if let Some(settings) = gtk4::Settings::default() {
         settings.set_gtk_decoration_layout(Some("icon:minimize,maximize,close"));
@@ -369,7 +389,7 @@ fn build_ui(app: &adw::Application) {
         if q.is_empty() { return true; }
         if let Ok(idx) = row.widget_name().parse::<usize>() {
             if idx < PAGES.len() {
-                return PAGES[idx].label.to_lowercase().contains(&q);
+                return PAGES[idx].label.to_lowercase().contains(&q) || search_keywords(PAGES[idx].label).contains(&q);
             }
         }
         true
@@ -479,5 +499,19 @@ fn build_ui(app: &adw::Application) {
         });
         d.present(Some(&window));
         log::info!("previous crash report: {}", report.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_finds_pages_by_what_is_on_them() {
+        assert!(search_keywords("Privacy & security").contains("firewall"));
+        assert!(search_keywords("Network & internet").contains("wifi"));
+        assert!(search_keywords("Network & internet").contains("ethernet"));
+        assert!(search_keywords("Personalization").contains("fonts"));
+        assert_eq!(search_keywords("Home"), "");
     }
 }

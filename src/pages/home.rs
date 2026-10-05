@@ -130,25 +130,22 @@ pub fn build() -> gtk4::Widget {
     wifi_badge.append(&wifi_texts);
     badges_box.append(&wifi_badge);
 
-    // Fetch real wifi ssid async
+    // The active connection, Wi-Fi or Ethernet (this used to look for a Wi-Fi network only, so a wired
+    // connection always read "Not connected").
     let wifi_title_clone = wifi_title.clone();
     let wifi_sub_clone = wifi_sub.clone();
-    glib::spawn_future_local(async move {
-        let ssid = tokio::process::Command::new("nmcli")
-            .args(["-t", "-f", "active,ssid", "dev", "wifi"])
-            .output()
-            .await
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .unwrap_or_default();
-        let connected_ssid = ssid.lines()
-            .find(|l| l.starts_with("yes:"))
-            .map(|l| l.trim_start_matches("yes:").to_string());
-
-        if let Some(name) = connected_ssid {
-            wifi_title_clone.set_text(&name);
-            wifi_sub_clone.set_text("Connected, secured");
-        } else {
+    let wifi_icon_clone = wifi_icon.clone();
+    crate::backend::worker::in_background(super::network_extra::active_connection, move |active| match active {
+        Some(a) if a.kind == "802-3-ethernet" => {
+            wifi_title_clone.set_text("Ethernet");
+            wifi_sub_clone.set_text("Connected");
+            wifi_icon_clone.set_icon_name(Some("network-wired-symbolic"));
+        }
+        Some(a) => {
+            wifi_title_clone.set_text(&a.name);
+            wifi_sub_clone.set_text("Connected");
+        }
+        None => {
             wifi_title_clone.set_text("Network");
             wifi_sub_clone.set_text("Not connected");
         }

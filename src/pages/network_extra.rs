@@ -70,9 +70,9 @@ fn info_row(title: &str, value: &str) -> adw::ActionRow {
 // ── Status ─────────────────────────────────────────────────────────────────
 
 #[derive(Default)]
-struct Active {
-    name: String,
-    kind: String,
+pub struct Active {
+    pub name: String,
+    pub kind: String,
     device: String,
     ip: String,
     gateway: String,
@@ -81,7 +81,7 @@ struct Active {
     wifi: Option<(u32, u32, String)>, // signal %, frequency MHz, security
 }
 
-fn active_connection() -> Option<Active> {
+pub fn active_connection() -> Option<Active> {
     let line = nmcli(&["-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"])
         .lines()
         .map(fields)

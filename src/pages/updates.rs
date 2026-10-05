@@ -308,7 +308,7 @@ pub fn build() -> gtk4::Widget {
         "document-open-recent-symbolic",
     );
     hist_row.connect_activated(open_update_history_window);
-    more_box.append(&hist_row);
+    more_box.append(&super::in_list(&hist_row));
 
     // Advanced Options — real: shows the current channel and package
     // cache size, with a safe cache cleanup action.
@@ -318,7 +318,7 @@ pub fn build() -> gtk4::Widget {
         "preferences-system-symbolic",
     );
     adv_row.connect_activated(open_advanced_update_window);
-    more_box.append(&adv_row);
+    more_box.append(&super::in_list(&adv_row));
 
     // Zohara Insider Program — REMOVED. There is no insider program; the
     // previous UI implied one existed and clicking the row did nothing.

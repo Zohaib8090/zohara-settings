@@ -120,7 +120,7 @@ jobs:
           ln -s /home/builder/target target
           chown -h builder:builder target
           sudo -u builder env _PKGVER="${{ steps.version.outputs.version }}" \
-            makepkg --nocheck --skippgpcheck
+            makepkg --nocheck --skippgpcheck --nodeps
           ls -lh *.pkg.tar.zst
           PKG_FILE=$(ls *.pkg.tar.zst | head -1)
           echo "package_file=$PKG_FILE" >> "$GITHUB_ENV"

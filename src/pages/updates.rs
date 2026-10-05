@@ -137,13 +137,13 @@ pub fn build() -> gtk4::Widget {
     info_box.set_valign(gtk4::Align::Center);
 
     let status_title = gtk4::Label::builder()
-        .label(active_pause_message().unwrap_or_else(|| "You're up to date".to_string()))
+        .label(active_pause_message().unwrap_or_else(|| "Updates are checked in Zohara Store".to_string()))
         .halign(gtk4::Align::Start)
         .css_classes(vec!["win11-device-name".to_string()])
         .build();
 
     let last_check_lbl = gtk4::Label::builder()
-        .label("Last checked: never")
+        .label("The Store checks against the version your computer is approved for, then installs what you choose")
         .halign(gtk4::Align::Start)
         .css_classes(vec!["win11-device-sub".to_string()])
         .build();
@@ -158,7 +158,7 @@ pub fn build() -> gtk4::Widget {
 
     // Right "Check for updates" Button
     let check_btn = gtk4::Button::builder()
-        .label("Check for updates")
+        .label("Check in Zohara Store")
         .css_classes(vec!["win11-update-btn".to_string()])
         .valign(gtk4::Align::Center)
         .build();
@@ -358,97 +358,12 @@ pub fn build() -> gtk4::Widget {
     root_box.append(&support_box);
 
     // ── Check-for-updates handler ──────────────────────────────────────────────
-    let status_title_clone = status_title.clone();
-    let last_check_clone = last_check_lbl.clone();
-    let check_btn_clone = check_btn.clone();
-    let download_btn_clone = download_btn.clone();
-    let ota_store_clone = ota_url_store.clone();
 
-    check_btn.connect_clicked(move |btn| {
-        btn.set_sensitive(false);
-        status_title_clone.set_text("Checking for updates…");
-        last_check_clone.set_text("Synchronizing repositories…");
-        download_btn_clone.set_visible(false);
-
-        let title_c = status_title_clone.clone();
-        let last_c = last_check_clone.clone();
-        let check_c = check_btn_clone.clone();
-        let dl_c = download_btn_clone.clone();
-        let store_c = ota_store_clone.clone();
-
-        glib::spawn_future_local(async move {
-            // Step 1: ask the OTA manifest what the newest published Zohara OS
-            // bundle is. We fetch it over the network with `curl` (present on
-            // the ISO) rather than adding a Rust HTTP dependency. A failure
-            // here is non-fatal: we just can't report an OS update.
-            let (ota_available, ota_url) = fetch_ota_manifest().await;
-
-            // Step 2: sync the package databases, then query for out-of-date
-            // packages. "Check for updates" intentionally does NOT install.
-            let sync = tokio::process::Command::new("pacman")
-                .args(["-Sy"])
-                .output()
-                .await;
-
-            if sync.is_err() || !sync.as_ref().unwrap().status.success() {
-                let err_line = match sync {
-                    Ok(out) => String::from_utf8_lossy(&out.stderr)
-                        .lines()
-                        .next()
-                        .unwrap_or("pacman exited non-zero")
-                        .to_string(),
-                    Err(e) => e.to_string(),
-                };
-                title_c.set_text("Check failed");
-                last_c.set_text(&format!("Error: {}", err_line));
-                check_c.set_sensitive(true);
-                return;
-            }
-
-            let qu = tokio::process::Command::new("pacman")
-                .args(["-Qu"])
-                .output()
-                .await
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .unwrap_or_default();
-
-            let upgrades: Vec<&str> = qu.lines().filter(|l| !l.is_empty()).collect();
-            let pkg_count = upgrades.len();
-
-            let now = glib::DateTime::now_local()
-                .and_then(|t| t.format("%Y-%m-%d %H:%M"))
-                .unwrap_or_else(|_| "now".into());
-
-            // Store the OTA URL and reveal the Download button if there is one.
-            *store_c.borrow_mut() = ota_url.clone();
-            dl_c.set_visible(ota_available && ota_url.is_some());
-
-            // Compose the status banner from both channels.
-            if ota_available {
-                title_c.set_text("A Zohara OS update is available");
-                last_c.set_text(&format!(
-                    "Last checked: {}  •  {} package update{}",
-                    now,
-                    pkg_count,
-                    if pkg_count == 1 { "" } else { "s" }
-                ));
-            } else if pkg_count == 0 {
-                title_c.set_text("You're up to date");
-                last_c.set_text(&format!("Last checked: {}", now));
-            } else if pkg_count == 1 {
-                title_c.set_text("1 package update available");
-                last_c.set_text(&format!(
-                    "Last checked: {}  •  {}",
-                    now,
-                    upgrades[0].split_whitespace().next().unwrap_or("(unknown)")
-                ));
-            } else {
-                title_c.set_text(&format!("{} package updates available", pkg_count));
-                last_c.set_text(&format!("Last checked: {}", now));
-            }
-            check_c.set_sensitive(true);
-        });
+    // Checking is the Store's job: it knows the approved date, verifies the signed list and installs what you pick. A
+    // plain `pacman -Sy` here could never work (it needs administrator rights) and would look at live Arch, not the
+    // approved date. So this button just opens the Store's Updates page, which checks as it opens.
+    check_btn.connect_clicked(move |_btn| {
+        let _ = std::process::Command::new("zohara-store").args(["--page", "updates"]).spawn();
     });
 
     scroll.set_child(Some(&root_box));

@@ -3,17 +3,12 @@ name: Build & Publish Zohara Settings
 # This workflow:
 #   1. Builds zohara-settings (cargo build --release)
 #   2. Packages it as a .pkg.tar.zst via makepkg
-#   3. Determines the channel (stable for main, beta for beta branch,
-#      alpha only via manual dispatch)
-#   4. Uploads the .pkg.tar.zst to the channel's GitHub release in
-#      Zohaib8090/zohara-packages
-#   5. Dispatches a repository_dispatch event to that repo so its
-#      publish.yml runs repo-add and patches apps.json
+#   3. Uploads the package as the run's artifact (zohara-settings-arch-x86_64)
+#   4. On main, asks zohara to rebuild the ISO (it compiles Settings from this repo's main)
 #
-# Channel mapping:
-#   main branch    -> stable
-#   beta branch    -> beta
-#   workflow_dispatch with channel=alpha -> alpha
+# It does NOT publish anything. Releasing a build to alpha, beta or stable is done on purpose, from the release
+# admin site (https://zohara-updates-system.onrender.com/), which starts the publish workflow in
+# Zohaib8090/zohara-packages for the chosen run. Until 2026-10-05 every push to main published to stable by itself.
 
 on:
   push:
@@ -32,7 +27,7 @@ env:
 
 jobs:
   build:
-    name: Build + package + publish
+    name: Build + package
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
@@ -128,110 +123,6 @@ jobs:
           ls -lh *.pkg.tar.zst
           PKG_FILE=$(ls *.pkg.tar.zst | head -1)
           echo "package_file=$PKG_FILE" >> "$GITHUB_ENV"
-
-      - name: Get or create channel release in zohara-packages
-        env:
-          # The default GITHUB_TOKEN cannot write to other repos. Use
-          # the user-supplied PAT (PACKAGES_DISPATCH_TOKEN) for every
-          # cross-repo step -- release create, release upload, and
-          # the dispatch below.
-          GH_TOKEN: ${{ secrets.PACKAGES_DISPATCH_TOKEN }}
-          CHANNEL: ${{ steps.channel.outputs.channel }}
-        run: |
-          pacman -S --noconfirm --needed github-cli
-          if [ "$CHANNEL" = "stable" ]; then
-            TAG="stable"
-          else
-            TAG="channel-$CHANNEL"
-          fi
-          REL_ID=$(gh release view "$TAG" --repo "$PACKAGES_REPO" --json id -q '.id' 2>/dev/null || true)
-          if [ -z "$REL_ID" ]; then
-            PRE=$([ "$CHANNEL" != "stable" ] && echo "--prerelease" || echo "")
-            if gh release create "$TAG" \
-              --repo "$PACKAGES_REPO" \
-              --title "Zohara Packages — $CHANNEL" \
-              --notes "Auto-managed Arch package repository for the **$CHANNEL** channel. Files here are the source of truth for \`pacman -Syu\` on Zohara OS systems on this channel." \
-              $PRE; then
-              echo "Created channel release $TAG"
-            else
-              echo "::warning::Could not create the channel release in $PACKAGES_REPO. The .pkg.tar.zst is in the build artifacts."
-            fi
-          else
-            echo "Channel release $TAG already exists (id=$REL_ID)"
-          fi
-          echo "release_tag=$TAG" >> "$GITHUB_ENV"
-
-      - name: Upload .pkg.tar.zst to the channel release
-        env:
-          GH_TOKEN: ${{ secrets.PACKAGES_DISPATCH_TOKEN }}
-          TAG: ${{ env.release_tag }}
-        run: |
-          PKG="${{ env.package_file }}"
-          if gh release upload "$TAG" "$PKG" --repo "$PACKAGES_REPO" --clobber 2>&1; then
-            echo "Uploaded $PKG to $TAG in $PACKAGES_REPO"
-          else
-            echo "::warning::Could not upload $PKG to $TAG. The build artifact"
-            echo "::warning::(zohara-settings-arch-x86_64 below) still contains the"
-            echo "::warning::.pkg.tar.zst; install it manually."
-          fi
-
-      - name: Dispatch to zohara-packages publish workflow
-        env:
-          # The token needs repo scope on the target repo. The default
-          # GITHUB_TOKEN doesn't have cross-repo dispatch rights, so we
-          # expect a PAT stored in PACKAGES_DISPATCH_TOKEN. Document in
-          # the repo's README.
-          GH_TOKEN: ${{ secrets.PACKAGES_DISPATCH_TOKEN }}
-          PKG: zohara-settings
-          VER: ${{ steps.version.outputs.version }}
-          CHANNEL: ${{ steps.channel.outputs.channel }}
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::notice::PACKAGES_DISPATCH_TOKEN not set; skipping repository_dispatch."
-            echo "The .pkg.tar.zst is uploaded to the channel release (or in the"
-            echo "build artifact if the cross-repo upload also failed), but"
-            echo "zohara-db / apps.json will not be auto-updated until someone"
-            echo "runs the publish workflow manually:"
-            echo "  gh workflow run publish.yml --repo $PACKAGES_REPO \\"
-            echo "    -f package_name=zohara-settings -f version=$VER \\"
-            echo "    -f artifact_url=https://github.com/$PACKAGES_REPO/releases/download/${{ env.release_tag }}/${{ env.package_file }} \\"
-            echo "    -f channel=$CHANNEL"
-            exit 0
-          fi
-          # The new zohara-packages/publish.yml reads run_id + source_repo
-          # from the dispatch payload and uses 'gh run download' to fetch
-          # the .pkg.tar.zst directly from this run's artifacts (no
-          # pre-signed URL to leak a token, and the URL doesn't expire).
-          # We still send artifact_url for backward compatibility with the
-          # older workflow_dispatch path.
-          ARTIFACT_URL="https://github.com/$PACKAGES_REPO/releases/download/${{ env.release_tag }}/${{ env.package_file }}"
-          echo "Dispatching to $PACKAGES_REPO: package=$PKG version=$VER channel=$CHANNEL run_id=${{ github.run_id }}"
-          # Use -i so we see the response headers in the log (helps
-          # diagnose 401s -- -f alone hides the body).
-          if curl -fsSL -i -X POST \
-            -H "Authorization: token $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$PACKAGES_REPO/dispatches" \
-            -d "{
-              \"event_type\": \"package-published\",
-              \"client_payload\": {
-                \"package_name\": \"$PKG\",
-                \"version\": \"$VER\",
-                \"artifact_url\": \"$ARTIFACT_URL\",
-                \"run_id\": \"${{ github.run_id }}\",
-                \"source_repo\": \"Zohaib8090/zohara-settings\",
-                \"artifact_name\": \"zohara-settings-arch-x86_64\",
-                \"pkg_filename\": \"${{ env.package_file }}\",
-                \"channel\": \"$CHANNEL\"
-              }
-            }"; then
-            echo "Dispatch sent. The zohara-packages publish.yml will pick it up."
-          else
-            echo "::warning::Cross-repo dispatch failed (token probably lacks"
-            echo "::warning::'repo' scope on $PACKAGES_REPO). The .pkg.tar.zst is"
-            echo "::warning::in the build artifact; install it manually."
-            exit 0
-          fi
 
       - name: Dispatch a fresh ISO build to zohara
         # Stable only: an alpha/beta push shouldn't trigger a ~25 minute ISO

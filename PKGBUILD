@@ -21,6 +21,7 @@ depends=(
   'libadwaita'
   'glib2'
   'dbus'
+  'zohara-keyring' # Zohara's package-signing key; a new package only reaches existing machines if an installed one needs it
 )
 makedepends=(
   'rust'

@@ -318,6 +318,22 @@ const STORES: [(&str, &str, &str); 4] = [
     ("Bottles", "com.usebottles.bottles", "Run Windows games and apps"),
 ];
 
+/// Makes sure the Flathub source exists and is on before installing from it. The installer adds it once at the end
+/// of setup (and ignores failure), so a machine installed without internet, or one where the source was switched
+/// off, would otherwise fail every install with a vague message.
+fn ensure_flathub() {
+    let _ = Command::new("flatpak")
+        .args(["remote-add", "--if-not-exists", "flathub", "https://dl.flathub.org/repo/flathub.flatpakrepo"])
+        .output();
+    let _ = Command::new("flatpak").args(["remote-modify", "--enable", "flathub"]).output();
+}
+
+/// The last line flatpak printed on stderr, trimmed, for the error dialog.
+fn last_error_line(stderr: &str) -> String {
+    let line = stderr.lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    line.chars().take(200).collect()
+}
+
 fn flatpak_installed(id: &str) -> bool {
     Command::new("flatpak").args(["info", id]).output().map(|o| o.status.success()).unwrap_or(false)
 }
@@ -356,6 +372,7 @@ fn stores_group(page: &gtk4::Box) -> adw::PreferencesGroup {
             let (b2, page3, set_state) = (b.clone(), page2.clone(), set_state.clone());
             in_background(
                 move || {
+                    ensure_flathub();
                     Command::new("flatpak")
                         .args(["install", "-y", "--noninteractive", "flathub", id])
                         .output()
@@ -367,7 +384,12 @@ fn stores_group(page: &gtk4::Box) -> adw::PreferencesGroup {
                     set_state(ok);
                     if !ok {
                         log::warn!("installing {id} failed: {err}");
-                        message(&page3, &format!("{name} not installed"), "Check your internet connection and that Flathub is turned on in Apps > App sources.");
+                        let why = last_error_line(&err);
+                        let mut body = String::from("Check your internet connection and that Flathub is turned on in Apps > App sources.");
+                        if !why.is_empty() {
+                            body.push_str(&format!("\n\nWhat flatpak said: {why}"));
+                        }
+                        message(&page3, &format!("{name} not installed"), &body);
                     }
                 },
             );
@@ -407,4 +429,16 @@ pub fn build() -> gtk4::Widget {
 
     scroll.set_child(Some(&root));
     scroll.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_line_is_the_last_non_empty_one() {
+        assert_eq!(last_error_line("a\nerror: no remote\n\n"), "error: no remote");
+        assert_eq!(last_error_line(""), "");
+        assert_eq!(last_error_line(&"x".repeat(500)).len(), 200);
+    }
 }

@@ -530,7 +530,16 @@ pub fn build() -> gtk4::Widget {
                 add.set_valign(gtk4::Align::Center);
                 let (root2, again2) = (root.clone(), again.clone());
                 add.connect_clicked(move |_| add_user_dialog(&root2, again2.clone()));
-                others.set_header_suffix(Some(&add));
+                let refresh = gtk4::Button::from_icon_name("view-refresh-symbolic");
+                refresh.set_valign(gtk4::Align::Center);
+                refresh.set_tooltip_text(Some("Reload the list of users"));
+                refresh.update_property(&[gtk4::accessible::Property::Label("Reload users")]);
+                let again3 = again.clone();
+                refresh.connect_clicked(move |_| again3());
+                let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+                buttons.append(&refresh);
+                buttons.append(&add);
+                others.set_header_suffix(Some(&buttons));
                 let list: Vec<&User> = users.iter().filter(|u| u.name != me_name).collect();
                 if list.is_empty() {
                     let r = adw::ActionRow::new();

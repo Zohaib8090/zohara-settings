@@ -14,8 +14,10 @@
 use adw::prelude::*;
 use gtk4::prelude::*;
 use libadwaita as adw;
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::process::Command;
+use std::rc::Rc;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Backend {
@@ -320,8 +322,8 @@ fn build_output_group(backend: Backend, out: &DisplayOutput) -> gtk4::Box {
         res.set_selected(out.current as u32);
         let ids: Vec<String> = out.modes.iter().map(|m| m.id.clone()).collect();
         let n = name.clone();
-        res.connect_selected_notify(move |r| {
-            if let Some(id) = ids.get(r.selected() as usize) {
+        guard_change(&res, move |i, r| {
+            if let Some(id) = ids.get(i as usize) {
                 apply_mode(backend, &n, id, r);
             }
         });
@@ -346,8 +348,8 @@ fn build_output_group(backend: Backend, out: &DisplayOutput) -> gtk4::Box {
         scale.set_sensitive(false);
     } else {
         let n = name.clone();
-        scale.connect_selected_notify(move |r| {
-            if let Some(s) = scales.get(r.selected() as usize) {
+        guard_change(&scale, move |i, r| {
+            if let Some(s) = scales.get(i as usize) {
                 apply_scale(backend, &n, *s, r);
             }
         });
@@ -359,10 +361,92 @@ fn build_output_group(backend: Backend, out: &DisplayOutput) -> gtk4::Box {
     rot.set_model(Some(&gtk4::StringList::new(&ROTATIONS)));
     rot.set_selected(out.rotation);
     let n = name;
-    rot.connect_selected_notify(move |r| apply_rotation(backend, &n, r.selected(), r));
+    guard_change(&rot, move |i, r| apply_rotation(backend, &n, i, r));
     group.append(&rot);
 
     group
+}
+
+// ── "Keep these display settings?" ──────────────────────────────────────────────────────────────────────────────
+
+/// How long the person has to say "keep" before the old setting comes back by itself. A resolution the screen cannot
+/// show would otherwise leave nothing on screen to click.
+const CONFIRM_SECONDS: u32 = 15;
+
+fn countdown_text(secs: u32) -> String {
+    format!("If you do nothing, your previous display settings come back in {secs} second{}.", if secs == 1 { "" } else { "s" })
+}
+
+/// Makes a display picker ask for confirmation. Choosing a new value applies it, then asks "Keep these display
+/// settings?" with a countdown; "Revert", closing the window or the countdown running out puts the old value back (and
+/// applies it), "Keep changes" makes the new value the one to go back to next time. `apply(index, row)` applies the
+/// value at `index`.
+fn guard_change(row: &adw::ComboRow, apply: impl Fn(u32, &adw::ComboRow) + 'static) {
+    let prev = Rc::new(Cell::new(row.selected()));
+    let reverting = Rc::new(Cell::new(false));
+    let apply = Rc::new(apply);
+    row.connect_selected_notify(move |r| {
+        // Putting the old value back moves the picker, which must not ask again.
+        if reverting.get() {
+            return;
+        }
+        let (new, old) = (r.selected(), prev.get());
+        if new == old {
+            return;
+        }
+        apply(new, r);
+
+        let secs = Rc::new(Cell::new(CONFIRM_SECONDS));
+        let finished = Rc::new(Cell::new(false));
+        let d = adw::AlertDialog::new(Some("Keep these display settings?"), Some(&countdown_text(CONFIRM_SECONDS)));
+        d.add_responses(&[("revert", "Revert"), ("keep", "Keep changes")]);
+        d.set_response_appearance("keep", adw::ResponseAppearance::Suggested);
+        d.set_default_response(Some("revert"));
+        d.set_close_response("revert");
+
+        let revert = {
+            let (row, apply, reverting) = (r.clone(), apply.clone(), reverting.clone());
+            Rc::new(move || {
+                reverting.set(true);
+                row.set_selected(old);
+                reverting.set(false);
+                apply(old, &row);
+            })
+        };
+        {
+            let (finished, prev, revert) = (finished.clone(), prev.clone(), revert.clone());
+            d.connect_response(None, move |_, response| {
+                if finished.replace(true) {
+                    return;
+                }
+                if response == "keep" {
+                    prev.set(new);
+                } else {
+                    revert();
+                }
+            });
+        }
+        {
+            let d = d.clone();
+            glib::timeout_add_seconds_local(1, move || {
+                if finished.get() {
+                    return glib::ControlFlow::Break;
+                }
+                let left = secs.get().saturating_sub(1);
+                secs.set(left);
+                d.set_body(&countdown_text(left));
+                if left == 0 {
+                    if !finished.replace(true) {
+                        revert();
+                        d.force_close();
+                    }
+                    return glib::ControlFlow::Break;
+                }
+                glib::ControlFlow::Continue
+            });
+        }
+        d.present(Some(r));
+    });
 }
 
 fn kreadconfig(file: &str, group: &str, key: &str) -> Option<String> {
@@ -450,4 +534,23 @@ pub fn build() -> gtk4::Widget {
 
     scroll.set_child(Some(&root));
     scroll.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn countdown_wording() {
+        assert!(countdown_text(15).contains("in 15 seconds"));
+        assert!(countdown_text(1).contains("in 1 second."));
+        assert!(!countdown_text(1).contains("seconds"));
+        assert!(countdown_text(0).contains("0 seconds"));
+    }
+
+    #[test]
+    fn there_is_enough_time_to_read_and_click() {
+        // Long enough to understand and press a button, short enough that a black screen does not feel broken.
+        assert!((10..=30).contains(&CONFIRM_SECONDS));
+    }
 }

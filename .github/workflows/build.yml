@@ -7,9 +7,9 @@ name: Build & Publish Zohara Settings
 #   4. On main, asks zohara to rebuild the ISO (it compiles Settings from this repo's main), but only when the
 #      repository variable ISO_REBUILD_ON_PUSH is true; it is off during development
 #
-# It does NOT publish anything. Releasing a build to alpha, beta or stable is done on purpose, from the release
-# admin site (https://zohara-updates-system.onrender.com/), which starts the publish workflow in
-# Zohaib8090/zohara-packages for the chosen run. Until 2026-10-05 every push to main published to stable by itself.
+# It does NOT publish anything itself. publish-alpha.yml sends every finished build on main to the alpha channel
+# (the development channel). Beta and stable are chosen on purpose from the release admin site
+# (https://zohara-updates-system.onrender.com/). Until 2026-10-05 every push to main published to stable by itself.
 
 on:
   push:

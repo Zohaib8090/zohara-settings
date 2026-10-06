@@ -1,0 +1,37 @@
+name: Publish to alpha
+
+# Every finished Settings build on main goes to the ALPHA channel by itself: alpha is the development channel, so
+# whatever is pushed reaches the people who chose to test it. Beta and stable never move from here: they are chosen
+# on purpose on the release admin site (https://zohara-updates-system.onrender.com/). The channel below is fixed to
+# alpha, so this workflow cannot publish anywhere else.
+#
+# build.yml only builds and uploads the package as an artifact; this workflow starts after it has finished
+# (zohara-packages only accepts a run that has completed) and asks zohara-packages/publish.yml to publish it.
+
+on:
+  workflow_run:
+    workflows: [Build & Publish Zohara Settings]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  to-alpha:
+    name: Send the build to alpha
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask zohara-packages to publish this build to alpha
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGES_DISPATCH_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::warning::PACKAGES_DISPATCH_TOKEN is not set; build #$RUN_ID was not published."; exit 0; }
+          jq -n --arg run "$RUN_ID" '{event_type: "package-published",
+            client_payload: {run_id: $run, source_repo: "Zohaib8090/zohara-settings", channel: "alpha"}}' \
+            | gh api repos/Zohaib8090/zohara-packages/dispatches --method POST --input -
+          echo "::notice::Settings build #$RUN_ID sent to the alpha channel"

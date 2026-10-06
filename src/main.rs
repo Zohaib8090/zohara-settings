@@ -1,6 +1,7 @@
 mod pages;
 mod backend;
 mod theme;
+mod search;
 
 use gtk4::prelude::*;
 use libadwaita as adw;
@@ -174,26 +175,6 @@ fn build_page_inner(index: usize) -> gtk4::Widget {
 }
 
 // ΓöÇΓöÇ UI ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-
-/// Words that should find a page in the sidebar search besides its own name: the things on the page, and the pages
-/// that are reached from it. Without this, typing "firewall" or "wifi" found nothing.
-fn search_keywords(label: &str) -> &'static str {
-    match label {
-        "System" => "display screen resolution brightness night light sound volume audio power battery sleep storage disk drive notifications",
-        "Bluetooth & devices" => "bluetooth pairing mouse touchpad keyboard printer printers camera webcam phone",
-        "Network & internet" => "wifi wi-fi wireless ethernet cable vpn proxy hotspot airplane mode speed test internet",
-        "Personalization" => "theme themes color colours background wallpaper accent dark light mode lock screen fonts font taskbar start text input lighting",
-        "Apps" => "installed apps default apps startup web apps offline maps uninstall",
-        "Accounts" => "user users account password login sign-in sign in",
-        "Time & language" => "date time clock timezone time zone language region keyboard layout",
-        "Gaming" => "game games gaming controller game mode",
-        "Accessibility" => "text size contrast magnifier narrator captions cursor",
-        "Privacy & security" => "firewall ufw ports rules camera microphone location permissions history clear",
-        "Zohara Update" => "update updates upgrade restore snapshot snapshots channel history",
-        "Troubleshoot" => "fix problem problems repair logs report",
-        _ => "",
-    }
-}
 
 fn build_ui(app: &adw::Application) {
     if let Some(settings) = gtk4::Settings::default() {
@@ -381,20 +362,28 @@ fn build_ui(app: &adw::Application) {
     main_content_box.append(&content_stack);
     root_h_box.append(&main_content_box);
 
-    // ΓöÇΓöÇ Search Filtering across Sidebar ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-    let search_clone = search_entry.clone();
-    nav_list.set_filter_func(move |row| {
-        let q = search_clone.text().to_lowercase();
-        if q.is_empty() { return true; }
-        if let Ok(idx) = row.widget_name().parse::<usize>() {
-            if idx < PAGES.len() {
-                return PAGES[idx].label.to_lowercase().contains(&q) || search_keywords(PAGES[idx].label).contains(&q);
-            }
-        }
-        true
-    });
-    let nav_list_for_search = nav_list.clone();
-    search_entry.connect_search_changed(move |_| nav_list_for_search.invalidate_filter());
+    // "Find a setting": results for single options, not only pages. Choosing one opens its page and flashes the row.
+    {
+        let stack = content_stack.clone();
+        let entry = search_entry.clone();
+        search::attach(
+            &search_entry,
+            |page| PAGES.iter().find(|p| p.label == page).map(|p| p.icon).unwrap_or("preferences-system-symbolic"),
+            move |hit| {
+                pages::goto(&entry, hit.page);
+                if hit.title != hit.page {
+                    let stack = stack.clone();
+                    let title = hit.title;
+                    // The page is built by now; give GTK a moment to show it before looking for the row.
+                    glib::idle_add_local_once(move || {
+                        if let Some(page) = stack.visible_child() {
+                            search::reveal(&page, title);
+                        }
+                    });
+                }
+            },
+        );
+    }
 
     // ΓöÇΓöÇ Row Navigation Switching ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     let cache = page_cache.clone();
@@ -505,12 +494,58 @@ fn build_ui(app: &adw::Application) {
 mod tests {
     use super::*;
 
+    fn top(q: &str) -> Vec<&'static str> {
+        search::find(search::ENTRIES, q, 8).into_iter().map(|e| e.title).collect()
+    }
+
     #[test]
-    fn search_finds_pages_by_what_is_on_them() {
-        assert!(search_keywords("Privacy & security").contains("firewall"));
-        assert!(search_keywords("Network & internet").contains("wifi"));
-        assert!(search_keywords("Network & internet").contains("ethernet"));
-        assert!(search_keywords("Personalization").contains("fonts"));
-        assert_eq!(search_keywords("Home"), "");
+    fn search_finds_single_options_not_just_pages() {
+        // The cases from the request: "wifi" must lead to the Wi-Fi setting, however it is typed.
+        assert_eq!(top("wifi")[0], "Wi-Fi");
+        assert_eq!(top("Wi-Fi")[0], "Wi-Fi");
+        assert_eq!(top("wi fi")[0], "Wi-Fi");
+        assert_eq!(top("hotspot")[0], "Mobile hotspot");
+        assert_eq!(top("bluetooth")[0], "Bluetooth");
+        assert_eq!(top("firewall")[0], "Firewall");
+        assert!(top("ethernet").contains(&"Network adapters"));
+        // Words people use for a setting that is named differently on the page.
+        assert!(top("screen timeout").contains(&"Turn off screen after"));
+        assert!(top("wallpaper").contains(&"Background"));
+        assert!(top("dark mode").contains(&"Choose your mode"));
+        assert!(top("microphone").contains(&"Input device"));
+        assert!(top("check for updates").contains(&"Check in Zohara Store"));
+    }
+
+    #[test]
+    fn search_ignores_nothing_and_matches_nothing_for_nonsense() {
+        assert!(top("").is_empty());
+        assert!(top("   ").is_empty());
+        assert!(top("qzxjvk").is_empty());
+        // Every word must match: a second unrelated word removes the result.
+        assert!(top("wifi qzxjvk").is_empty());
+    }
+
+    #[test]
+    fn every_entry_points_at_a_real_page() {
+        for e in search::ENTRIES {
+            assert!(PAGES.iter().any(|p| p.label == e.page), "'{}' points at unknown page '{}'", e.title, e.page);
+        }
+        for p in PAGES {
+            // Every page, including hidden ones (Display, Sound, ...), can itself be found.
+            assert!(search::ENTRIES.iter().any(|e| e.title == p.label && e.page == p.label), "page '{}' cannot be found by search", p.label);
+        }
+    }
+
+    #[test]
+    fn every_entry_is_on_its_page() {
+        // Drift guard: a row that was renamed in a page file but not in the index would open the page and highlight
+        // nothing. The title must appear in the page sources.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pages");
+        let mut all = String::new();
+        for f in std::fs::read_dir(dir).unwrap() {
+            all.push_str(&std::fs::read_to_string(f.unwrap().path()).unwrap_or_default());
+        }
+        let missing: Vec<&str> = search::ENTRIES.iter().filter(|e| e.title != e.page && !all.contains(&format!("\"{}\"", e.title))).map(|e| e.title).collect();
+        assert!(missing.is_empty(), "in the search index but not in any page file: {missing:?}");
     }
 }

@@ -462,3 +462,9 @@ list.boxed-list > row .subtitle {
 
 /* One-row lists that make the Personalization action rows clickable: no background of their own. */
 .win11-action-list { background: transparent; }
+
+/* "Find a setting": the results list under the search box, and the row that flashes when a result is opened. */
+popover.search-popover > contents { border-radius: 14px; padding: 4px; }
+.search-results { background: transparent; }
+.search-results row { border-radius: 10px; margin: 2px 4px; }
+.search-hit { background-color: alpha(@accent_bg_color, 0.28); border-radius: 12px; transition: background-color 400ms ease; }

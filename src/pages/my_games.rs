@@ -217,18 +217,27 @@ fn fill(holder: &gtk4::Box) {
     g.set_title("My games");
     g.set_description(Some("Games that didn't come from a store. Added games show up under Games in the Start menu."));
 
-    let add = gtk4::Button::with_label("Add a game");
-    add.add_css_class("suggested-action");
+    let from_apps = gtk4::Button::with_label("Add from my apps");
+    from_apps.add_css_class("suggested-action");
+    from_apps.set_valign(gtk4::Align::Center);
+    from_apps.set_tooltip_text(Some("Pick an app you already installed and mark it as a game"));
+    let h = holder.clone();
+    from_apps.connect_clicked(move |b| pick_installed_window(b, &h, None));
+    let add = gtk4::Button::with_label("Add a game file");
     add.set_valign(gtk4::Align::Center);
+    add.set_tooltip_text(Some("Choose a game's program file, AppImage or Windows .exe"));
     let h = holder.clone();
     add.connect_clicked(move |b| add_window(b, &h));
-    g.set_header_suffix(Some(&add));
+    let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    buttons.append(&from_apps);
+    buttons.append(&add);
+    g.set_header_suffix(Some(&buttons));
 
     let games = my_games();
     if games.is_empty() {
         let r = adw::ActionRow::new();
         r.set_title("No games added yet");
-        r.set_subtitle("Press Add a game, then pick the game's program file or an app you already installed.");
+        r.set_subtitle("Press Add from my apps to pick an app you installed, or Add a game file for a program you downloaded.");
         g.add(&r);
     }
     for game in games {
@@ -364,7 +373,7 @@ fn add_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box) {
     pb.set_valign(gtk4::Align::Center);
     {
         let (holder, win) = (holder.clone(), win.clone());
-        pb.connect_clicked(move |b| pick_installed_window(b, &holder, &win));
+        pb.connect_clicked(move |b| pick_installed_window(b, &holder, Some(&win)));
     }
     pick.add_suffix(&pb);
     inst.add(&pick);
@@ -375,9 +384,9 @@ fn add_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box) {
     win.present();
 }
 
-fn pick_installed_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box, add_win: &gtk4::Window) {
+fn pick_installed_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box, add_win: Option<&gtk4::Window>) {
     let Some(parent) = from.root().and_downcast::<gtk4::Window>() else { return };
-    let win = gtk4::Window::builder().title("Pick an app").transient_for(&parent).modal(true).default_width(480).default_height(560).build();
+    let win = gtk4::Window::builder().title("Pick an app to mark as a game").transient_for(&parent).modal(true).default_width(480).default_height(560).build();
     let col = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
     col.set_margin_top(12);
     col.set_margin_bottom(12);
@@ -405,12 +414,14 @@ fn pick_installed_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box, add_
             r.add_prefix(&img);
         }
         r.set_activatable(true);
-        let (holder, win, add_win, status) = (holder.clone(), win.clone(), add_win.clone(), status.clone());
+        let (holder, win, add_win, status) = (holder.clone(), win.clone(), add_win.cloned(), status.clone());
         r.connect_activated(move |_| match mark_installed(&info) {
             Ok(()) => {
                 fill(&holder);
                 win.close();
-                add_win.close();
+                if let Some(w) = &add_win {
+                    w.close();
+                }
             }
             Err(e) => status.set_text(&e),
         });

@@ -50,3 +50,13 @@ straight into a plain `gtk4::Box` (as these windows used to do) ignores clicks, 
   6 right).
 * Fonts: now an inline expander on the Personalization page (also opened from Accessibility). All `fc-list` families,
   searchable (the `ComboRow` needs an expression to search), sizes 8-24, plus a fixed-width font.
+
+## Gaming > My games (2026-10-06)
+
+`src/pages/my_games.rs`. A "game" is a desktop entry in `~/.local/share/applications` with `Categories=Game;` and the
+marker `X-Zohara-Game=true`; the page lists and removes only entries with that marker. Two ways in: **Add from my apps**
+(copies the installed app's own entry with `Game` added, same file name, so the user copy overrides it and removing it
+restores the original) and **Add a game file** (a program, AppImage or `.exe` via `wine`, optionally through
+`gamemoderun`). Tested in the VM by clicking: add by file, add from apps, Play (launched Dolphin), Remove with confirm,
+list survives a restart. Not tested: a real Windows `.exe` through Wine, a flatpak app marked as a game. Known nit: the
+app picker still lists entries already added.

@@ -34,17 +34,17 @@ pub fn caps_choice_of(options: &str) -> u32 {
 /// Num Lock at start-up: label and the value kcminputrc stores (0 on, 1 off, 2 leave as it was).
 pub const NUMLOCK_CHOICES: [(&str, &str); 3] = [("Turn on", "0"), ("Turn off", "1"), ("Leave as it was", "2")];
 
-/// Whether Plasma's touch keyboard (Maliit) is installed.
-fn maliit_installed() -> bool {
-    Command::new("pacman").args(["-Q", "maliit-keyboard"]).output().map(|o| o.status.success()).unwrap_or(false)
+/// Whether Plasma's touch keyboard is installed.
+fn touch_keyboard_installed() -> bool {
+    Command::new("pacman").args(["-Q", "plasma-keyboard"]).output().map(|o| o.status.success()).unwrap_or(false)
 }
 
-/// Installs Maliit and makes it Plasma's on-screen keyboard (it then shows when a text box is tapped on a touch screen).
-fn install_maliit() -> Result<(), String> {
-    let o = Command::new("pkexec").args(["sh", "-c", "pacman -S --needed --noconfirm maliit-keyboard"]).output().map_err(|e| e.to_string())?;
+/// Installs plasma-keyboard and makes it Plasma's on-screen keyboard (it then shows when a text box is tapped on a touch screen).
+fn install_touch_keyboard() -> Result<(), String> {
+    let o = Command::new("pkexec").args(["sh", "-c", "pacman -S --needed --noconfirm plasma-keyboard"]).output().map_err(|e| e.to_string())?;
     match o.status.code() {
         Some(0) => {
-            kconfig::write("kwinrc", &["Wayland"], "InputMethod", "/usr/share/applications/com.github.maliit.keyboard.desktop");
+            kconfig::write("kwinrc", &["Wayland"], "InputMethod", "/usr/share/applications/org.kde.plasma.keyboard.desktop");
             kconfig::kwin_reconfigure();
             Ok(())
         }
@@ -92,7 +92,7 @@ pub fn open(parent_row: &adw::ActionRow) {
             });
             osk.add_suffix(&b);
         }
-        None if maliit_installed() => osk.set_subtitle("Installed. It appears by itself when you tap a text box on a touch screen"),
+        None if touch_keyboard_installed() => osk.set_subtitle("Installed. It appears by itself when you tap a text box on a touch screen"),
         None => {
             osk.set_subtitle("Not installed yet. It lets you type by tapping keys on a touch screen");
             let b = gtk4::Button::with_label("Install");
@@ -104,7 +104,7 @@ pub fn open(parent_row: &adw::ActionRow) {
                 b.set_label("Installing…");
                 osk2.set_subtitle("Waiting for the password prompt, then downloading…");
                 let (b, osk3) = (b.clone(), osk2.clone());
-                in_background(install_maliit, move |res| match res {
+                in_background(install_touch_keyboard, move |res| match res {
                     Ok(()) => {
                         b.set_visible(false);
                         osk3.set_subtitle("Installed. It appears by itself when you tap a text box on a touch screen");

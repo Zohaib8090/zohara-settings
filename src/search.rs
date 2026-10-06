@@ -253,6 +253,9 @@ pub static ENTRIES: &[Entry] = &[
     e!("Speaking rate", "Accessibility", "speech speed voice"),
     e!("Voice typing", "Accessibility", "dictation speech to text"),
     e!("Test voice", "Accessibility", "speech sample"),
+    // Gaming
+    e!("My games", "Gaming", "add game manually custom non-steam app program exe appimage"),
+    e!("Add a game", "Gaming", "add game manually custom program"),
     // Accounts
     e!("Change password", "Accounts", "new password"),
     e!("Account picture", "Accounts", "avatar profile photo"),

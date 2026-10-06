@@ -426,6 +426,7 @@ pub fn build() -> gtk4::Widget {
     }
     root.append(&graphics_group());
     root.append(&stores_group(&root));
+    root.append(&super::my_games::build());
 
     scroll.set_child(Some(&root));
     scroll.upcast()

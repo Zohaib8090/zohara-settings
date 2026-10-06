@@ -293,13 +293,21 @@ fn identify_group(groups: Vec<(String, adw::PreferencesGroup, Option<&'static st
         row.set_subtitle("Move or click the device you want to find… (8 seconds)");
         let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<String>, String>>();
         std::thread::spawn(move || {
-            let out = std::process::Command::new("pkexec").args(["stdbuf", "-oL", "timeout", "8", "libinput", "debug-events"]).output();
+            // Say so up front instead of asking for a password to run something that is not there.
+            let tool = ["/usr/bin/libinput", "/usr/sbin/libinput"].iter().any(|p| std::path::Path::new(p).exists());
+            let out = if tool {
+                Some(std::process::Command::new("pkexec").args(["stdbuf", "-oL", "timeout", "8", "libinput", "debug-events"]).output())
+            } else {
+                None
+            };
             let r = match out {
+                None => Err("This needs the libinput-tools package. Update Zohara, then try again.".to_string()),
                 // `timeout` ends the tool on purpose, so its exit status says nothing; the text does.
-                Ok(o) if !o.stdout.is_empty() => Ok(parse_libinput_events(&String::from_utf8_lossy(&o.stdout))),
-                Ok(o) if o.status.code() == Some(126) || o.status.code() == Some(127) => Err("The password prompt was cancelled.".to_string()),
-                Ok(_) => Err("The device check could not start (is the libinput tool installed?).".to_string()),
-                Err(e) => Err(e.to_string()),
+                Some(Ok(o)) if !o.stdout.is_empty() => Ok(parse_libinput_events(&String::from_utf8_lossy(&o.stdout))),
+                // pkexec: 126 = not authorized or the prompt was dismissed; 127 = it could not run the command.
+                Some(Ok(o)) if o.status.code() == Some(126) => Err("The password prompt was cancelled.".to_string()),
+                Some(Ok(_)) => Err("The device check could not start. Try again, or open Troubleshoot.".to_string()),
+                Some(Err(e)) => Err(e.to_string()),
             };
             let _ = tx.send(r);
         });

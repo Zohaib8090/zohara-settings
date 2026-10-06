@@ -25,6 +25,7 @@ depends=(
   'polkit'         # the administrator prompt for system updates
   'curl'           # downloads the signed update approval list
   'fakeroot'       # lets the update check use a private copy of the package lists
+  'libinput-tools' # the Mouse page's "Which one am I using?" listens to input devices with `libinput debug-events`
 )
 makedepends=(
   'rust'

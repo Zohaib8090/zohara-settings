@@ -32,6 +32,15 @@ const CATEGORIES: &[Category] = &[
     Category { title: "Maps", icon: "find-location-symbolic", types: &["x-scheme-handler/geo"] },
 ];
 
+/// Names to show in the dropdown, made unique: two apps with the same name get their id added, so each entry maps back
+/// to exactly one app.
+fn unique_labels(items: Vec<(String, String)>) -> Vec<String> {
+    items
+        .iter()
+        .map(|(name, id)| if items.iter().filter(|(n, _)| n == name).count() > 1 { format!("{name} ({})", id.trim_end_matches(".desktop")) } else { name.clone() })
+        .collect()
+}
+
 fn same(a: &gio::AppInfo, b: &gio::AppInfo) -> bool {
     a.id().is_some() && a.id() == b.id()
 }
@@ -71,13 +80,13 @@ fn app_combo(title: &str, icon: &str, apps: Vec<gio::AppInfo>, current: Option<g
         row.set_sensitive(false);
         return row;
     }
-    let names: Vec<String> = apps.iter().map(|a| a.display_name().to_string()).collect();
+    let names = unique_labels(apps.iter().map(|a| (a.display_name().to_string(), a.id().map(|i| i.to_string()).unwrap_or_default())).collect());
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
     row.set_model(Some(&gtk4::StringList::new(&refs)));
     // Show each app's icon next to its name in the dropdown.
     let factory = gtk4::SignalListItemFactory::new();
     {
-        let apps = apps.clone();
+        let (apps, names) = (apps.clone(), names.clone());
         factory.connect_setup(|_, item| {
             let item = item.downcast_ref::<gtk4::ListItem>().expect("list item");
             let b = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
@@ -87,7 +96,11 @@ fn app_combo(title: &str, icon: &str, apps: Vec<gio::AppInfo>, current: Option<g
         });
         factory.connect_bind(move |_, item| {
             let item = item.downcast_ref::<gtk4::ListItem>().expect("list item");
-            let (Some(b), Some(app)) = (item.child().and_downcast::<gtk4::Box>(), apps.get(item.position() as usize)) else { return };
+            // Look the app up by what this item *is*, not by its position: the box that shows the selected app
+            // reports position 0 whatever is selected, which made the row keep showing the first app in the list
+            // (and so a changed default looked like it had not changed).
+            let label = item.item().and_downcast::<gtk4::StringObject>().map(|o| o.string().to_string()).unwrap_or_default();
+            let (Some(b), Some(app)) = (item.child().and_downcast::<gtk4::Box>(), names.iter().position(|n| *n == label).and_then(|i| apps.get(i))) else { return };
             if let Some(img) = b.first_child().and_downcast::<gtk4::Image>() {
                 match app.icon() {
                     Some(i) => img.set_from_gicon(&i),
@@ -96,7 +109,7 @@ fn app_combo(title: &str, icon: &str, apps: Vec<gio::AppInfo>, current: Option<g
                 img.set_pixel_size(20);
             }
             if let Some(lbl) = b.last_child().and_downcast::<gtk4::Label>() {
-                lbl.set_label(&app.display_name());
+                lbl.set_label(&label);
             }
         });
     }
@@ -233,4 +246,19 @@ pub fn build() -> gtk4::Widget {
 
     scroll.set_child(Some(&root));
     scroll.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_entry_maps_to_one_app() {
+        let l = unique_labels(vec![("Firefox".into(), "firefox.desktop".into()), ("Brave Origin".into(), "brave-origin.desktop".into())]);
+        assert_eq!(l, vec!["Firefox", "Brave Origin"]);
+        // Two apps called the same: the id tells them apart.
+        let l = unique_labels(vec![("Chrome".into(), "google-chrome.desktop".into()), ("Chrome".into(), "google-chrome-unstable.desktop".into())]);
+        assert_eq!(l, vec!["Chrome (google-chrome)", "Chrome (google-chrome-unstable)"]);
+        assert_ne!(l[0], l[1]);
+    }
 }

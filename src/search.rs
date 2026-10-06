@@ -318,8 +318,9 @@ pub fn attach(
     let shown: Rc<RefCell<Vec<&'static Entry>>> = Rc::new(RefCell::new(Vec::new()));
     let on_pick = Rc::new(on_pick);
 
+    let prev_rows = Rc::new(std::cell::Cell::new(0u32));
     let refresh = {
-        let (list, popover, shown, entry) = (list.clone(), popover.clone(), shown.clone(), entry.clone());
+        let (list, popover, shown, entry, prev_rows) = (list.clone(), popover.clone(), shown.clone(), entry.clone(), prev_rows.clone());
         move || {
             while let Some(c) = list.first_child() {
                 list.remove(&c);
@@ -363,6 +364,12 @@ pub fn attach(
                 *shown.borrow_mut() = hits;
                 list.select_row(list.row_at_index(0).as_ref());
             }
+            // A popover keeps the height of the longest list it has shown; closing and reopening makes it fit the
+            // new, shorter one (seen in the VM: one result under a tall empty box).
+            if popover.is_visible() && prev_rows.get() > list.observe_children().n_items() {
+                popover.popdown();
+            }
+            prev_rows.set(list.observe_children().n_items());
             popover.popup();
         }
     };

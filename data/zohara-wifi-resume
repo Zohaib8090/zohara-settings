@@ -1,0 +1,51 @@
+#!/bin/sh
+# systemd-sleep hook (installed in /usr/lib/systemd/system-sleep/): $1 is "pre" or "post", $2 the kind of sleep.
+#
+# Some Wi-Fi chips don't wake up after suspend: the interface is gone and Settings finds no Wi-Fi until the driver is
+# reloaded (reported on a real laptop, 2026-10-06). Before sleeping this remembers which driver the Wi-Fi uses; after
+# waking, if the Wi-Fi interface did not come back by itself, it reloads that driver and restarts NetworkManager.
+# When Wi-Fi is fine after resume it does nothing at all.
+#
+# The paths and tools can be replaced from the environment, which is how it is tested (tests/test-wifi-resume.sh).
+NET="${ZOHARA_NET:-/sys/class/net}"
+STATE="${ZOHARA_STATE:-/run/zohara-wifi-modules}"
+MODPROBE="${ZOHARA_MODPROBE:-modprobe}"
+SYSTEMCTL="${ZOHARA_SYSTEMCTL:-systemctl}"
+WAIT="${ZOHARA_WAIT:-5}"
+
+have_wifi() {
+    for d in "$NET"/*/wireless; do
+        [ -e "$d" ] && return 0
+    done
+    return 1
+}
+
+case "$1" in
+pre)
+    : > "$STATE"
+    for d in "$NET"/*/wireless; do
+        [ -e "$d" ] || continue
+        i="${d%/wireless}"
+        m="$(basename "$(readlink -f "$i/device/driver/module" 2>/dev/null)" 2>/dev/null)"
+        # Module names are letters, digits, "_" and "-" only.
+        case "$m" in
+        ''|*[!A-Za-z0-9_-]*) ;;
+        *) echo "$m" >> "$STATE" ;;
+        esac
+    done
+    sort -u "$STATE" -o "$STATE"
+    ;;
+post)
+    [ -s "$STATE" ] || exit 0
+    sleep "$WAIT"
+    have_wifi && exit 0
+    logger -t zohara-wifi-resume "Wi-Fi did not come back after resume; reloading: $(tr '\n' ' ' < "$STATE")" 2>/dev/null
+    while read -r m; do
+        "$MODPROBE" -r "$m" 2>/dev/null
+        "$MODPROBE" "$m" 2>/dev/null
+    done < "$STATE"
+    sleep 2
+    "$SYSTEMCTL" restart NetworkManager 2>/dev/null
+    ;;
+esac
+exit 0

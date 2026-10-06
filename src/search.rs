@@ -144,6 +144,7 @@ pub static ENTRIES: &[Entry] = &[
     e!("Proxy", "Network & internet", "proxy http https socks"),
     e!("Speed test", "Network & internet", "internet speed download upload ping bandwidth"),
     e!("Network adapters", "Network & internet", "ethernet cable lan adapter ip address"),
+    e!("Wi-Fi adapter", "Network & internet", "no wifi missing driver adapter not detected not working wireless card broken"),
     // System
     e!("Rename device", "System", "computer name hostname"),
     e!("User manager", "System", "users accounts add remove"),

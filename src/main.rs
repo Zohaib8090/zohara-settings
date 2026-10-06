@@ -148,7 +148,13 @@ fn build_page(index: usize) -> gtk4::Widget {
     let label = PAGES[index].label;
     backend::diag::set_current_page(label);
     match backend::diag::guard(label, || build_page_inner(index)) {
-        Ok(w) => w,
+        Ok(w) => {
+            let moved = pages::adopt_orphan_rows(&w);
+            if moved > 0 {
+                log::info!("{label}: {moved} row(s) were outside a list and were moved into one");
+            }
+            w
+        }
         Err(msg) => {
             let details = gtk4::Button::with_label("Open Troubleshoot");
             details.add_css_class("pill");

@@ -28,6 +28,8 @@ pub fn build() -> gtk4::Widget {
     root_box.append(&title_lbl);
 
     root_box.append(&super::network_extra::status_group());
+    // Only visible when something is wrong with Wi-Fi: says what, and how to fix it.
+    root_box.append(&super::wifi_check::group());
 
     // ── Grouped Rows ──────────────────────────────────────────────────────────
     let rows_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);

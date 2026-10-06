@@ -227,42 +227,68 @@ fn parse_xrandr(raw: &str) -> Vec<DisplayOutput> {
     outputs
 }
 
-fn run_bg(bin: &'static str, args: Vec<String>) {
+/// Runs a display command off the UI thread and tells the row how it went: nothing on success, the tool's own last
+/// line under the title when it fails (it used to be thrown away, so a change that did not apply looked like a
+/// dropdown that simply did nothing).
+fn run_checked(bin: &'static str, args: Vec<String>, row: &adw::ComboRow) {
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
     std::thread::spawn(move || {
-        let _ = Command::new(bin).args(&args).status();
+        let r = match Command::new(bin).args(&args).output() {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) => {
+                let text = format!("{}\n{}", String::from_utf8_lossy(&o.stderr), String::from_utf8_lossy(&o.stdout));
+                let last = text.lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or("it was refused").to_string();
+                Err(last)
+            }
+            Err(e) => Err(format!("{bin} could not be started ({e})")),
+        };
+        let _ = tx.send(r);
+    });
+    let row = row.clone();
+    glib::timeout_add_local(std::time::Duration::from_millis(150), move || match rx.try_recv() {
+        Ok(Ok(())) => {
+            row.set_subtitle("");
+            glib::ControlFlow::Break
+        }
+        Ok(Err(e)) => {
+            row.set_subtitle(&glib::markup_escape_text(&format!("Couldn't apply: {e}")));
+            glib::ControlFlow::Break
+        }
+        Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+        Err(_) => glib::ControlFlow::Break,
     });
 }
 
-fn apply_mode(b: Backend, out: &str, mode: &str) {
+fn apply_mode(b: Backend, out: &str, mode: &str, row: &adw::ComboRow) {
     match b {
-        Backend::Kscreen => run_bg("kscreen-doctor", vec![format!("output.{out}.mode.{mode}")]),
-        Backend::Wlr => run_bg("wlr-randr", vec!["--output".into(), out.into(), "--mode".into(), mode.into()]),
-        Backend::Xrandr => run_bg("xrandr", vec!["--output".into(), out.into(), "--mode".into(), mode.into()]),
+        Backend::Kscreen => run_checked("kscreen-doctor", vec![format!("output.{out}.mode.{mode}")], row),
+        Backend::Wlr => run_checked("wlr-randr", vec!["--output".into(), out.into(), "--mode".into(), mode.into()], row),
+        Backend::Xrandr => run_checked("xrandr", vec!["--output".into(), out.into(), "--mode".into(), mode.into()], row),
     }
 }
 
-fn apply_scale(b: Backend, out: &str, scale: f64) {
+fn apply_scale(b: Backend, out: &str, scale: f64, row: &adw::ComboRow) {
     match b {
-        Backend::Kscreen => run_bg("kscreen-doctor", vec![format!("output.{out}.scale.{scale}")]),
-        Backend::Wlr => run_bg("wlr-randr", vec!["--output".into(), out.into(), "--scale".into(), scale.to_string()]),
+        Backend::Kscreen => run_checked("kscreen-doctor", vec![format!("output.{out}.scale.{scale}")], row),
+        Backend::Wlr => run_checked("wlr-randr", vec!["--output".into(), out.into(), "--scale".into(), scale.to_string()], row),
         Backend::Xrandr => {}
     }
 }
 
-fn apply_rotation(b: Backend, out: &str, rot: u32) {
+fn apply_rotation(b: Backend, out: &str, rot: u32, row: &adw::ComboRow) {
     let idx = rot.min(3) as usize;
     match b {
         Backend::Kscreen => {
             let name = ["normal", "left", "inverted", "right"][idx];
-            run_bg("kscreen-doctor", vec![format!("output.{out}.rotation.{name}")]);
+            run_checked("kscreen-doctor", vec![format!("output.{out}.rotation.{name}")], row);
         }
         Backend::Wlr => {
             let t = ["normal", "90", "180", "270"][idx];
-            run_bg("wlr-randr", vec!["--output".into(), out.into(), "--transform".into(), t.into()]);
+            run_checked("wlr-randr", vec!["--output".into(), out.into(), "--transform".into(), t.into()], row);
         }
         Backend::Xrandr => {
             let r = ["normal", "left", "inverted", "right"][idx];
-            run_bg("xrandr", vec!["--output".into(), out.into(), "--rotate".into(), r.into()]);
+            run_checked("xrandr", vec!["--output".into(), out.into(), "--rotate".into(), r.into()], row);
         }
     }
 }
@@ -284,6 +310,7 @@ fn build_output_group(backend: Backend, out: &DisplayOutput) -> gtk4::Box {
     let name = out.name.clone();
 
     let res = adw::ComboRow::new();
+    res.set_use_markup(false);
     res.set_title("Resolution & refresh rate");
     let labels: Vec<&str> = out.modes.iter().map(|m| m.label.as_str()).collect();
     res.set_model(Some(&gtk4::StringList::new(&labels)));
@@ -295,7 +322,7 @@ fn build_output_group(backend: Backend, out: &DisplayOutput) -> gtk4::Box {
         let n = name.clone();
         res.connect_selected_notify(move |r| {
             if let Some(id) = ids.get(r.selected() as usize) {
-                apply_mode(backend, &n, id);
+                apply_mode(backend, &n, id, r);
             }
         });
     }
@@ -321,7 +348,7 @@ fn build_output_group(backend: Backend, out: &DisplayOutput) -> gtk4::Box {
         let n = name.clone();
         scale.connect_selected_notify(move |r| {
             if let Some(s) = scales.get(r.selected() as usize) {
-                apply_scale(backend, &n, *s);
+                apply_scale(backend, &n, *s, r);
             }
         });
     }
@@ -332,7 +359,7 @@ fn build_output_group(backend: Backend, out: &DisplayOutput) -> gtk4::Box {
     rot.set_model(Some(&gtk4::StringList::new(&ROTATIONS)));
     rot.set_selected(out.rotation);
     let n = name;
-    rot.connect_selected_notify(move |r| apply_rotation(backend, &n, r.selected()));
+    rot.connect_selected_notify(move |r| apply_rotation(backend, &n, r.selected(), r));
     group.append(&rot);
 
     group

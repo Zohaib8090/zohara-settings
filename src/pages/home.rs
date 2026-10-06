@@ -186,9 +186,9 @@ pub fn build() -> gtk4::Widget {
     // 1. Card: Recommended Settings
     let rec_card = build_card("Recommended settings", "Recent and commonly used settings");
     let rec_rows = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-    rec_rows.append(&build_nav_row("Display", "Monitors, brightness, night light", "video-display-symbolic"));
-    rec_rows.append(&build_nav_row("Sound", "Volume levels, output, sound devices", "audio-volume-high-symbolic"));
-    rec_rows.append(&build_nav_row("Power & battery", "Energy saver, power mode, sleep", "battery-level-80-symbolic"));
+    rec_rows.append(&build_nav_row("Display", "Monitors, brightness, night light", "video-display-symbolic", "Display"));
+    rec_rows.append(&build_nav_row("Sound", "Volume levels, output, sound devices", "audio-volume-high-symbolic", "Sound"));
+    rec_rows.append(&build_nav_row("Power & battery", "Energy saver, power mode, sleep", "battery-level-80-symbolic", "Power & battery"));
     rec_card.append(&rec_rows);
     grid.attach(&rec_card, 0, 0, 1, 1);
 
@@ -226,7 +226,7 @@ pub fn build() -> gtk4::Widget {
 
     storage_inner.append(&storage_labels);
     storage_inner.append(&storage_bar);
-    storage_inner.append(&build_nav_row("Storage space", "Drives, temporary files, cleanup rules", "drive-harddisk-symbolic"));
+    storage_inner.append(&build_nav_row("Storage space", "Drives, temporary files, cleanup rules", "drive-harddisk-symbolic", "Storage"));
     storage_card.append(&storage_inner);
     grid.attach(&storage_card, 1, 0, 1, 1);
 
@@ -305,6 +305,13 @@ pub fn build() -> gtk4::Widget {
         thumb.style_context().add_provider(&provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
         
         btn.set_child(Some(&thumb));
+        let (bg_owned, accent_owned) = (bg.to_string(), accent.to_string());
+        btn.connect_clicked(move |_| {
+            let mut cfg = crate::theme::load();
+            cfg.background = bg_owned.clone();
+            cfg.accent = accent_owned.clone();
+            crate::theme::set_and_apply(&cfg);
+        });
         let col = (i % 3) as i32;
         let row = (i / 3) as i32;
         themes_flow.attach(&btn, col, row, 1, 1);
@@ -320,8 +327,23 @@ pub fn build() -> gtk4::Widget {
         .halign(gtk4::Align::Start)
         .css_classes(vec!["win11-row-title".to_string()])
         .build();
-    let mode_combo = gtk4::DropDown::from_strings(&["Dark", "Light"]);
-    mode_combo.set_selected(0);
+    // Shows the real setting, and changes it (the same choice as Personalization > Colors > Choose your mode).
+    let mode_combo = gtk4::DropDown::from_strings(&["Match the system", "Dark", "Light"]);
+    mode_combo.set_selected(match crate::theme::load().mode.as_str() {
+        "dark" => 1,
+        "light" => 2,
+        _ => 0,
+    });
+    mode_combo.connect_selected_notify(|dd| {
+        let mut cfg = crate::theme::load();
+        cfg.mode = match dd.selected() {
+            1 => "dark",
+            2 => "light",
+            _ => "system",
+        }
+        .to_string();
+        crate::theme::set_and_apply(&cfg);
+    });
     mode_combo.set_halign(gtk4::Align::End);
     mode_combo.set_hexpand(true);
 
@@ -384,6 +406,7 @@ pub fn build() -> gtk4::Widget {
         .css_classes(vec!["win11-primary-btn".to_string()])
         .hexpand(true)
         .build();
+    add_dev_btn.connect_clicked(|b| super::goto(b, "Bluetooth & devices"));
     actions_row.append(&add_dev_btn);
 
     bt_inner.append(&actions_row);
@@ -415,7 +438,8 @@ fn build_card(title: &str, subtitle: &str) -> gtk4::Box {
     card
 }
 
-fn build_nav_row(title: &str, subtitle: &str, icon_name: &str) -> gtk4::Button {
+/// A row that opens the page called `target` when clicked.
+fn build_nav_row(title: &str, subtitle: &str, icon_name: &str, target: &'static str) -> gtk4::Button {
     let btn = gtk4::Button::builder()
         .css_classes(vec!["win11-list-row".to_string()])
         .build();
@@ -455,6 +479,7 @@ fn build_nav_row(title: &str, subtitle: &str, icon_name: &str) -> gtk4::Button {
     h.append(&chevron);
 
     btn.set_child(Some(&h));
+    btn.connect_clicked(move |b| super::goto(b, target));
     btn
 }
 

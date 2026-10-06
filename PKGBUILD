@@ -102,6 +102,9 @@ package() {
   install -Dm644 "$startdir/data/zohara-settings-update-check.service" "$pkgdir/usr/lib/systemd/user/zohara-settings-update-check.service"
   install -Dm644 "$startdir/data/zohara-settings-update-check.timer" "$pkgdir/usr/lib/systemd/user/zohara-settings-update-check.timer"
 
+  # After sleep, if the Wi-Fi chip did not wake up, reload its driver (does nothing when Wi-Fi is fine).
+  install -Dm755 "$startdir/data/zohara-wifi-resume" "$pkgdir/usr/lib/systemd/system-sleep/zohara-wifi-resume"
+
   # Voice typing (Meta+H). kglobalaccel picks up the default shortcut from
   # desktop files linked into its own directory.
   install -Dm644 "$startdir/data/zohara-dictation.desktop"     "$pkgdir/usr/share/applications/zohara-dictation.desktop"

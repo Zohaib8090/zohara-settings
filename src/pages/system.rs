@@ -25,6 +25,8 @@ fn system_links_group(page: &gtk4::Box) -> adw::PreferencesGroup {
         ("Storage", "See what's using space, free some up", "drive-harddisk-symbolic", "Storage"),
     ] {
         let r = adw::ActionRow::new();
+        // "Power & battery" has an ampersand: read as markup it is invalid and the whole title disappears.
+        r.set_use_markup(false);
         r.set_title(title);
         r.set_subtitle(sub);
         r.add_prefix(&gtk4::Image::from_icon_name(icon));

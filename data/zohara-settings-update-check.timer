@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodically check for system updates
+
+[Timer]
+# Shortly after login, then every 6 hours, spread by up to 30 minutes so machines don't all check at the same moment.
+# While a computer is on the approved date, a check only reads Zohara's own repository (the Arch Linux Archive's
+# databases for a fixed day never change); the Archive is only contacted after a new date is approved.
+OnStartupSec=5min
+OnUnitActiveSec=6h
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

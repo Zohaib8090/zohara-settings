@@ -25,6 +25,8 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
+# Checks the signature on the update approval list (the same minisign format the pipeline signs with).
+minisign-verify = "0.2"
 env_logger = "0.11"
 
 [profile.release]

@@ -1,0 +1,818 @@
+//! The system update engine behind Settings' "Zohara Update" page.
+//!
+//! This is the operating system's updates: everything that comes from pacman (the system, Zohara's own packages, and
+//! the apps that were installed from the Arch repositories). Apps from Flathub are updated in Zohara Store, which has
+//! its own, separate engine; the two programs share no code and can be used one without the other.
+//!
+//! Every action is a click:
+//!
+//! - Available updates are found with a private copy of the package databases, so looking for updates never touches
+//!   the system (`check_pacman_pinned`).
+//! - System packages are updated together: on Arch, updating a few of them and not the rest can leave libraries out of
+//!   step and break programs. Zohara's own packages can be updated one at a time.
+//!
+//! Going back: pacman keeps every package it installed in `/var/cache/pacman/pkg`, so an older version is one
+//! `pacman -U` away, and `/var/log/pacman.log` says exactly what the last update changed, which is what "Undo the last
+//! update" reverses. Restore points (snapshots) bring back the whole system.
+
+use super::manifest;
+use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::mpsc::Sender;
+
+/// Updates and undo queue behind each other here (pacman allows one change at a time; a second would fail on its lock).
+static PACKAGE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+const CACHE_DIR: &str = "/var/cache/pacman/pkg";
+const PACMAN_LOG: &str = "/var/log/pacman.log";
+
+// ── What's available ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PkgUpdate {
+    pub name: String,
+    pub old: String,
+    pub new: String,
+}
+
+impl PkgUpdate {
+    pub fn is_zohara(&self) -> bool {
+        self.name.starts_with("zohara-")
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct UpdateSet {
+    /// Zohara's own packages: can be updated one at a time.
+    pub zohara: Vec<PkgUpdate>,
+    /// Everything else from pacman: updated together.
+    pub system: Vec<PkgUpdate>,
+    /// Sources that couldn't be checked (offline, tool missing).
+    pub errors: Vec<String>,
+}
+
+impl UpdateSet {
+    pub fn total(&self) -> usize {
+        self.zohara.len() + self.system.len()
+    }
+
+    /// Whether installing all of `system` needs a restart to take effect.
+    pub fn system_needs_restart(&self) -> bool {
+        needs_restart(&self.system)
+    }
+}
+
+pub fn needs_restart(pkgs: &[PkgUpdate]) -> bool {
+    pkgs.iter().any(|p| {
+        let n = p.name.as_str();
+        n == "linux"
+            || n == "systemd"
+            || n.starts_with("nvidia")
+            || ["-zen", "-lts", "-hardened", "-rt"].iter().any(|s| n.starts_with("linux") && n.ends_with(s) && !n.contains("headers") && !n.contains("docs"))
+    })
+}
+
+/// `checkupdates` output: `name old -> new`, one per line.
+pub fn parse_checkupdates(text: &str) -> Vec<PkgUpdate> {
+    text.lines()
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let (name, old, arrow, new) = (f.next()?, f.next()?, f.next()?, f.next()?);
+            (arrow == "->").then(|| PkgUpdate { name: name.into(), old: old.into(), new: new.into() })
+        })
+        .collect()
+}
+
+/// Checks against the approved date instead of live Arch: `checkupdates`
+/// reads the system's mirrorlist, so this repeats what it does with a
+/// pacman.conf whose mirrorlist is the pinned one (nothing on the system is touched).
+fn check_pacman_pinned() -> Result<Vec<PkgUpdate>, String> {
+    let signed = manifest::fetch_verified()?;
+    let m = &signed.manifest;
+    let decision = manifest::decide(manifest::current_pinned_date().as_deref(), m, env!("CARGO_PKG_VERSION"))?;
+    // Already on the approved date: the archive snapshot for that day never
+    // changes, so only the non-archive repositories need checking.
+    let up_to_date = decision == manifest::Decision::UpToDate;
+
+    let dir = std::env::temp_dir().join(format!("zohara-check-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("db")).map_err(|e| format!("Couldn't prepare the update check ({e})"))?;
+    let result = (|| {
+        let list = dir.join("mirrorlist");
+        let conf = dir.join("pacman.conf");
+        let system_conf = std::fs::read_to_string("/etc/pacman.conf").map_err(|e| format!("Couldn't read pacman.conf ({e})"))?;
+        std::fs::write(&list, manifest::mirrorlist(m)).map_err(|e| e.to_string())?;
+        let check_conf = if up_to_date {
+            manifest::conf_without_mirrorlist_repos(&system_conf)
+        } else {
+            manifest::conf_with_mirrorlist(&system_conf, &list.to_string_lossy())
+        };
+        std::fs::write(&conf, check_conf).map_err(|e| e.to_string())?;
+        // Same trick as checkupdates: a private copy of the databases that
+        // shares the installed-package list. The sync only downloads into that
+        // private folder, so pacman's download sandbox is switched off: under
+        // fakeroot it can't apply Landlock or switch to the `alpm` user, and
+        // the check failed on real installs ("Landlock ruleset could not be applied").
+        std::os::unix::fs::symlink("/var/lib/pacman/local", dir.join("db/local")).map_err(|e| e.to_string())?;
+        let (conf, db) = (conf.to_string_lossy().into_owned(), dir.join("db").to_string_lossy().into_owned());
+        let sync = Command::new("fakeroot")
+            .args(["--", "pacman", "--disable-sandbox", "--config", &conf, "--dbpath", &db, "--logfile", "/dev/null", "-Sy"])
+            .output()
+            .map_err(|_| "Checking for system updates needs fakeroot, which isn't installed".to_string())?;
+        if !sync.status.success() {
+            // Say what pacman said, so "are you online?" is not a guess.
+            let said = String::from_utf8_lossy(&sync.stderr);
+            let last = said.lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+            return Err(if last.is_empty() {
+                "Couldn't check for system updates. Are you online?".to_string()
+            } else {
+                format!("Couldn't check for system updates ({}).", last.chars().take(200).collect::<String>())
+            });
+        }
+        let mut q = Command::new("pacman");
+        q.args(["--config", &conf, "--dbpath", &db, "-Qu"]);
+        if !m.held_packages.is_empty() {
+            q.args(["--ignore", &m.held_packages.join(",")]);
+        }
+        let o = q.output().map_err(|e| e.to_string())?;
+        // -Qu exits 1 when there is nothing to update.
+        Ok(parse_checkupdates(&String::from_utf8_lossy(&o.stdout)))
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+fn check_pacman() -> Result<Vec<PkgUpdate>, String> {
+    if manifest::enabled() {
+        return check_pacman_pinned();
+    }
+    let o = Command::new("checkupdates").output().map_err(|_| "Checking for system updates needs pacman-contrib, which isn't installed".to_string())?;
+    match o.status.code() {
+        Some(0) => Ok(parse_checkupdates(&String::from_utf8_lossy(&o.stdout))),
+        Some(2) => Ok(Vec::new()),
+        _ => {
+            let e = String::from_utf8_lossy(&o.stderr);
+            let last = e.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("unknown error");
+            Err(format!("Couldn't check for system updates ({last}). Are you online?"))
+        }
+    }
+}
+
+/// Looks for updates everywhere. Slow (network); call off the UI thread.
+pub fn check_all() -> UpdateSet {
+    let mut set = UpdateSet::default();
+    match check_pacman() {
+        Ok(all) => {
+            let (zohara, system): (Vec<_>, Vec<_>) = all.into_iter().partition(PkgUpdate::is_zohara);
+            set.zohara = zohara;
+            set.system = system;
+        }
+        Err(e) => set.errors.push(e),
+    }
+    set
+}
+
+// ── Running things, with live output ───────────────────────────────────────
+
+fn safe_name(s: &str) -> bool {
+    !s.is_empty() && s.len() < 200 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"@._+-".contains(&b))
+}
+
+/// Runs `cmd`, sending each output line to `tx`. pkexec's "dismissed" codes
+/// become a friendly message.
+pub fn run_logged(mut cmd: Command, tx: &Sender<String>) -> Result<(), String> {
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| format!("{e}"))?;
+    let stderr = child.stderr.take();
+    let tx2 = tx.clone();
+    let err_thread = std::thread::spawn(move || {
+        if let Some(e) = stderr {
+            for l in BufReader::new(e).lines().map_while(Result::ok) {
+                let _ = tx2.send(l);
+            }
+        }
+    });
+    if let Some(out) = child.stdout.take() {
+        for l in BufReader::new(out).lines().map_while(Result::ok) {
+            let _ = tx.send(l);
+        }
+    }
+    let _ = err_thread.join();
+    let status = child.wait().map_err(|e| e.to_string())?;
+    match status.code() {
+        Some(0) => Ok(()),
+        Some(126) | Some(127) => Err("The password prompt was cancelled, so nothing was changed.".into()),
+        _ => Err("It didn't finish. The details above say why.".into()),
+    }
+}
+
+fn pkexec(args: &[&str]) -> Command {
+    let mut c = Command::new("pkexec");
+    c.args(args);
+    c
+}
+
+/// The system update on an approved-date system, as one administrator prompt:
+/// verify the signed manifest and move the mirror to its date, refresh the
+/// keyring (so new packages verify), then a full upgrade. pacman's own hooks
+/// (snap-pac) save a restore point before and after.
+fn apply_system_pinned(tx: &Sender<String>) -> Result<(), String> {
+    let _ = tx.send("Checking that this update was approved…".into());
+    let signed = manifest::fetch_verified()?;
+    manifest::decide(manifest::current_pinned_date().as_deref(), &signed.manifest, env!("CARGO_PKG_VERSION"))?;
+
+    let mut upgrade = vec!["-Su", "--noconfirm"];
+    let held = signed.manifest.held_packages.join(",");
+    if !held.is_empty() {
+        upgrade.extend(["--ignore", &held]);
+    }
+    // The date is pinned by the time these run, so the refresh is safe; the
+    // check still guards against anyone editing the arguments unsafely later.
+    if !manifest::sync_args_safe(&["-Sy", "--noconfirm", "--needed", "archlinux-keyring"], true) || !manifest::sync_args_safe(&upgrade, true) {
+        return Err("Refused: an update step wasn't safe.".into());
+    }
+
+    let dir = std::env::temp_dir().join(format!("zohara-update-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).map_err(|e| format!("Couldn't prepare the update ({e})"))?;
+    }
+    let (m_path, s_path) = (dir.join("manifest.json"), dir.join("manifest.json.minisig"));
+    let run = (|| {
+        std::fs::write(&m_path, &signed.body).map_err(|e| e.to_string())?;
+        std::fs::write(&s_path, &signed.sig).map_err(|e| e.to_string())?;
+        let script = "store=\"$1\"; m=\"$2\"; s=\"$3\"; shift 3; \
+            \"$store\" --pin-date \"$m\" \"$s\" && pacman -Sy --noconfirm --needed archlinux-keyring && exec pacman \"$@\"";
+        let mut c = pkexec(&["sh", "-c", script, "sh", "/usr/bin/zohara-settings", &m_path.to_string_lossy(), &s_path.to_string_lossy()]);
+        c.args(&upgrade);
+        run_logged(c, tx)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    run
+}
+
+/// Installs what was chosen. `system` updates all of pacman's packages
+/// (Zohara's included); otherwise only the named Zohara packages are updated.
+pub fn apply(system: bool, system_pending: bool, zohara: &[String], tx: &Sender<String>) -> Result<(), String> {
+    // Queue behind any update or undo already running here (pacman
+    // allows one at a time; a second would fail on its database lock).
+    let _guard = PACKAGE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    if zohara.iter().any(|n| !safe_name(n)) {
+        return Err("A package name looked wrong, so nothing was changed.".into());
+    }
+    let mut failures: Vec<String> = Vec::new();
+
+    if system {
+        let _ = tx.send("Updating the system…".into());
+        let done = if manifest::enabled() { apply_system_pinned(tx) } else { run_logged(pkexec(&["pacman", "-Syu", "--noconfirm"]), tx) };
+        match done {
+            Ok(()) => mark_post_update(),
+            Err(e) => failures.push(e),
+        }
+    } else if !zohara.is_empty() {
+        // Zohara's apps are built for the approved system date. While the
+        // system is behind it, they are updated together with it.
+        if manifest::enabled() && system_pending {
+            return Err("Update the system together with Zohara's apps: they're built for the newest approved system.".into());
+        }
+        let _ = tx.send(format!("Updating {}…", zohara.join(", ")));
+        // On the approved date `-Sy` changes nothing in the official
+        // repositories, it only finds the new Zohara packages. This must be
+        // "actually pinned right now", nothing weaker: earlier this also
+        // accepted "pinning isn't enabled at all" as safe, which is backwards
+        // — an unpinned system (pinning off, or on but not yet applied)
+        // tracks live repositories, where `-Sy` without `-u` is exactly the
+        // partial-upgrade risk sync_args_safe exists to catch.
+        let pinned = manifest::current_pinned_date().is_some();
+        if !manifest::sync_args_safe(&["-Sy", "--noconfirm"], pinned) {
+            return Err("Refused: refreshing the package lists without a full upgrade could break the system.".into());
+        }
+        let mut c = pkexec(&["sh", "-c", "pacman -Sy --noconfirm && exec pacman -S --noconfirm --needed \"$@\"", "sh"]);
+        c.args(zohara);
+        if let Err(e) = run_logged(c, tx) {
+            failures.push(e);
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n"))
+    }
+}
+
+/// Whether a newer kernel (or other core piece) is installed than the one running.
+pub fn restart_pending() -> bool {
+    let release = Command::new("uname").arg("-r").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    !release.is_empty() && !Path::new("/usr/lib/modules").join(&release).exists()
+}
+
+// ── Going back ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cached {
+    pub name: String,
+    /// `pkgver-pkgrel`, like pacman prints it.
+    pub version: String,
+    pub path: PathBuf,
+}
+
+/// `foo-bar-1.2.3-1-x86_64.pkg.tar.zst` -> (`foo-bar`, `1.2.3-1`).
+pub fn parse_cache_filename(file: &str) -> Option<(String, String)> {
+    let stem = [".pkg.tar.zst", ".pkg.tar.xz", ".pkg.tar.gz", ".pkg.tar"].iter().find_map(|s| file.strip_suffix(s))?;
+    let mut parts = stem.rsplitn(3, '-');
+    let _arch = parts.next()?;
+    let rel = parts.next()?;
+    let rest = parts.next()?;
+    let (name, ver) = rest.rsplit_once('-')?;
+    Some((name.into(), format!("{ver}-{rel}")))
+}
+
+pub fn vercmp(a: &str, b: &str) -> Ordering {
+    let o = Command::new("vercmp").args([a, b]).output();
+    match o.ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).as_deref() {
+        Some("-1") => Ordering::Less,
+        Some("1") => Ordering::Greater,
+        _ => Ordering::Equal,
+    }
+}
+
+pub fn installed_version(pkg: &str) -> Option<String> {
+    let o = Command::new("pacman").args(["-Q", pkg]).output().ok()?;
+    o.status.success().then(|| String::from_utf8_lossy(&o.stdout).split_whitespace().nth(1).map(str::to_string)).flatten()
+}
+
+/// Older copies of `pkg` still in pacman's cache, newest first.
+pub fn older_versions(pkg: &str) -> Vec<Cached> {
+    let Some(current) = installed_version(pkg) else { return Vec::new() };
+    let mut found: Vec<Cached> = std::fs::read_dir(CACHE_DIR)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let file = e.file_name().to_string_lossy().into_owned();
+            let (name, version) = parse_cache_filename(&file)?;
+            (name == pkg && vercmp(&version, &current) == Ordering::Less).then(|| Cached { name, version, path: e.path() })
+        })
+        .collect();
+    found.sort_by(|a, b| vercmp(&b.version, &a.version));
+    found.dedup_by(|a, b| a.version == b.version);
+    found
+}
+
+/// Installs the given cached package files (an older version).
+pub fn downgrade(files: &[PathBuf], tx: &Sender<String>) -> Result<(), String> {
+    let _guard = PACKAGE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    if files.is_empty() {
+        return Err("Nothing to go back to.".into());
+    }
+    let _ = tx.send("Going back to the earlier version…".into());
+    let mut c = pkexec(&["pacman", "-U", "--noconfirm"]);
+    c.args(files);
+    run_logged(c, tx)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Upgrade {
+    pub name: String,
+    pub old: String,
+    pub new: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Transaction {
+    pub when: String,
+    pub upgraded: Vec<Upgrade>,
+    pub downgraded: usize,
+}
+
+/// Groups `/var/log/pacman.log` into transactions.
+pub fn parse_pacman_log(text: &str) -> Vec<Transaction> {
+    let mut out = Vec::new();
+    let mut cur: Option<Transaction> = None;
+    for line in text.lines() {
+        let Some((stamp, rest)) = line.strip_prefix('[').and_then(|l| l.split_once("] ")) else { continue };
+        if let Some(what) = rest.strip_prefix("[ALPM] ") {
+            if what == "transaction started" {
+                cur = Some(Transaction { when: stamp.replace('T', " ").chars().take(16).collect(), ..Default::default() });
+            } else if what == "transaction completed" {
+                if let Some(t) = cur.take() {
+                    out.push(t);
+                }
+            } else if let Some(t) = cur.as_mut() {
+                if let Some(u) = what.strip_prefix("upgraded ") {
+                    // name (old -> new)
+                    if let Some((name, ver)) = u.split_once(" (") {
+                        if let Some((old, new)) = ver.trim_end_matches(')').split_once(" -> ") {
+                            t.upgraded.push(Upgrade { name: name.into(), old: old.into(), new: new.into() });
+                        }
+                    }
+                } else if what.starts_with("downgraded ") {
+                    t.downgraded += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The newest update that hasn't been undone, if any.
+pub fn last_update() -> Option<Transaction> {
+    let text = std::fs::read_to_string(PACMAN_LOG).ok()?;
+    let all = parse_pacman_log(&text);
+    let idx = all.iter().rposition(|t| !t.upgraded.is_empty())?;
+    // Something was downgraded after it: it was already undone.
+    if all[idx + 1..].iter().any(|t| t.downgraded > 0) {
+        return None;
+    }
+    Some(all[idx].clone())
+}
+
+/// Cached files for the versions an update replaced, and names that are missing.
+pub fn files_to_undo(t: &Transaction) -> (Vec<PathBuf>, Vec<String>) {
+    let mut files = Vec::new();
+    let mut missing = Vec::new();
+    for u in &t.upgraded {
+        let hit = std::fs::read_dir(CACHE_DIR).into_iter().flatten().flatten().find(|e| {
+            parse_cache_filename(&e.file_name().to_string_lossy()).map(|(n, v)| n == u.name && v == u.old).unwrap_or(false)
+        });
+        match hit {
+            Some(e) => files.push(e.path()),
+            None => missing.push(format!("{} {}", u.name, u.old)),
+        }
+    }
+    (files, missing)
+}
+
+
+// ── System snapshots (Btrfs restore points) ────────────────────────────────
+
+/// What `zohara-snapshots status` reports.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SnapStatus {
+    /// The system is on Btrfs.
+    pub supported: bool,
+    /// The snapshot area is mounted and snapper is configured.
+    pub configured: bool,
+    /// A snapshot is taken around every package change.
+    pub auto: bool,
+    pub limit: u32,
+}
+
+pub fn parse_snap_status(text: &str) -> SnapStatus {
+    let v: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+    SnapStatus {
+        supported: v["supported"].as_bool().unwrap_or(false),
+        configured: v["configured"].as_bool().unwrap_or(false),
+        auto: v["auto"].as_bool().unwrap_or(true),
+        limit: v["limit"].as_u64().unwrap_or(10) as u32,
+    }
+}
+
+pub fn snapshot_status() -> SnapStatus {
+    let out = Command::new("zohara-snapshots").arg("status").output();
+    match out {
+        Ok(o) => parse_snap_status(&String::from_utf8_lossy(&o.stdout)),
+        Err(_) => SnapStatus { supported: false, configured: false, auto: false, limit: 10 },
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Snapshot {
+    pub number: u32,
+    /// `single`, `pre` (before a change) or `post` (after it).
+    pub kind: String,
+    pub date: String,
+    pub description: String,
+}
+
+impl Snapshot {
+    /// A name a person can read: "Before: pacman -Syu".
+    pub fn title(&self) -> String {
+        let d = self.description.trim();
+        match self.kind.as_str() {
+            "pre" => format!("Before: {}", if d.is_empty() { "a change" } else { d }),
+            "post" => format!("After: {}", if d.is_empty() { "a change" } else { d }),
+            _ => if d.is_empty() { format!("Restore point {}", self.number) } else { d.to_string() },
+        }
+    }
+}
+
+fn json_u32(v: &serde_json::Value) -> Option<u32> {
+    v.as_u64().map(|n| n as u32).or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+}
+
+/// `snapper --jsonout list`: an object whose value is the array of snapshots.
+/// Snapshot 0 is the running system and is left out. Newest first.
+pub fn parse_snapshots(text: &str) -> Vec<Snapshot> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else { return Vec::new() };
+    let arr = match &v {
+        serde_json::Value::Array(a) => Some(a),
+        serde_json::Value::Object(o) => o.values().find_map(|x| x.as_array()),
+        _ => None,
+    };
+    let mut out: Vec<Snapshot> = arr
+        .into_iter()
+        .flatten()
+        .filter_map(|s| {
+            let number = json_u32(&s["number"])?;
+            (number > 0).then(|| Snapshot {
+                number,
+                kind: s["type"].as_str().unwrap_or("single").to_string(),
+                date: s["date"].as_str().unwrap_or("").to_string(),
+                description: s["description"].as_str().unwrap_or("").to_string(),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.number.cmp(&a.number));
+    out
+}
+
+const SNAP_COLUMNS: &str = "number,type,pre-number,date,description,cleanup";
+
+/// Lists snapshots. Without `admin` this is silent (works for administrators);
+/// with it, asks for the password.
+pub fn list_snapshots(admin: bool) -> Result<Vec<Snapshot>, String> {
+    let out = if admin {
+        Command::new("pkexec").args(["zohara-snapshots", "list-json"]).output()
+    } else {
+        Command::new("snapper").args(["--jsonout", "-c", "root", "list", "--columns", SNAP_COLUMNS]).output()
+    }
+    .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(if admin { "Couldn't read the restore points.".into() } else { "needs a password".into() });
+    }
+    Ok(parse_snapshots(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Makes snapshot `n` the system (takes effect after a restart).
+pub fn restore_snapshot(n: u32, tx: &Sender<String>) -> Result<(), String> {
+    let _ = tx.send(format!("Restoring the system to restore point {n}…"));
+    run_logged(pkexec(&["zohara-snapshots", "restore", &n.to_string()]), tx)
+}
+
+// ── Notifications for the background check ─────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct UpdateState {
+    /// What we last told the user about, so the same updates aren't announced twice.
+    #[serde(default)]
+    last_notified: String,
+}
+
+fn state_path() -> PathBuf {
+    let base = std::env::var("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".config"));
+    base.join("zohara").join("settings-update-state.json")
+}
+
+fn load_state() -> UpdateState {
+    std::fs::read_to_string(state_path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+fn save_state(s: &UpdateState) {
+    let p = state_path();
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    if let Ok(t) = serde_json::to_string_pretty(s) {
+        let _ = std::fs::write(p, t);
+    }
+}
+
+/// A fingerprint of what's available, so a notification is sent once per set of updates.
+pub fn signature(set: &UpdateSet) -> String {
+    let mut parts: Vec<String> = set.zohara.iter().chain(&set.system).map(|p| format!("{}={}", p.name, p.new)).collect();
+    parts.sort();
+    parts.join(",")
+}
+
+/// One notification for whatever is new since last time; clicking it opens the Updates page.
+/// Runs from `zohara-settings --check-updates` on a timer; touches no GTK state.
+pub fn notify_pending(set: &UpdateSet) {
+    if set.total() == 0 {
+        let mut st = load_state();
+        st.last_notified.clear();
+        save_state(&st);
+        return;
+    }
+    let sig = signature(set);
+    let mut st = load_state();
+    if st.last_notified == sig {
+        return;
+    }
+    st.last_notified = sig;
+    save_state(&st);
+
+    let n = set.total();
+    let body = if !set.zohara.is_empty() {
+        format!("{n} update{} ready, including Zohara itself.", if n == 1 { "" } else { "s" })
+    } else {
+        format!("{n} update{} ready to install.", if n == 1 { "" } else { "s" })
+    };
+    let out = Command::new("notify-send")
+        .args(["-a", "Zohara Update", "-i", "system-software-update", "--action=open=Open Zohara Update", "--wait", "-t", "30000", "Updates available", &body])
+        .output();
+    if let Ok(o) = out {
+        if String::from_utf8_lossy(&o.stdout).trim() == "open" {
+            if let Ok(exe) = std::env::current_exe() {
+                let _ = Command::new(exe).args(["--page", "Zohara Update"]).spawn();
+            }
+        }
+    }
+}
+
+// ── Did the update break anything? ─────────────────────────────────────────
+//
+// After a system update, once the computer has restarted (or straight away if
+// no restart was needed), Settings runs its own health check. If the
+// desktop is unhealthy it offers the restore points, one click away.
+
+fn marker_path() -> PathBuf {
+    state_path().with_file_name("post-update-check")
+}
+
+/// Remembers that a system update finished and should be health-checked.
+pub fn mark_post_update() {
+    let p = marker_path();
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(p, "");
+}
+
+/// A check is due once the computer has restarted since the update, or when
+/// no restart is pending (nothing to wait for).
+pub fn check_due(marker_secs: u64, boot_secs: u64, restart_pending: bool) -> bool {
+    marker_secs < boot_secs || !restart_pending
+}
+
+fn boot_time_secs() -> u64 {
+    std::fs::read_to_string("/proc/stat").ok().and_then(|s| s.lines().find_map(|l| l.strip_prefix("btime ")?.trim().parse().ok())).unwrap_or(0)
+}
+
+/// True (and clears the marker) when a post-update health check is due.
+pub fn take_post_update_check() -> bool {
+    let p = marker_path();
+    let Ok(meta) = std::fs::metadata(&p) else { return false };
+    let secs = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+    if check_due(secs, boot_time_secs(), restart_pending()) {
+        let _ = std::fs::remove_file(p);
+        true
+    } else {
+        false
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Health {
+    pub healthy: bool,
+    /// What failed, in words for the user.
+    pub problems: Vec<String>,
+}
+
+/// `zohara-settings --health-json` output.
+pub fn parse_health(text: &str) -> Option<Health> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let healthy = v["healthy"].as_bool()?;
+    let mut problems: Vec<String> = v["checks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["pass"].as_bool() == Some(false))
+        .map(|c| match c["name"].as_str().unwrap_or("") {
+            "system_state" => "The system didn't finish starting cleanly".to_string(),
+            "login_manager" => "The login screen isn't running".to_string(),
+            "desktop" => "The desktop isn't running".to_string(),
+            "audio" => "No sound device was found".to_string(),
+            "network" => "There's no network connection".to_string(),
+            other => format!("A check failed ({other})"),
+        })
+        .collect();
+    problems.extend(
+        v["issues"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|i| i["severity"].as_str() == Some("Critical"))
+            .filter_map(|i| i["title"].as_str().map(str::to_string)),
+    );
+    Some(Health { healthy, problems })
+}
+
+/// Runs the check (slow); call off the UI thread. `None` if it couldn't run.
+pub fn run_health() -> Option<Health> {
+    // Exit code 1 just means "not healthy"; the JSON still comes on stdout.
+    let o = Command::new("zohara-settings").arg("--health-json").output().ok()?;
+    parse_health(&String::from_utf8_lossy(&o.stdout))
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+
+    #[test]
+    fn healthy_report() {
+        let h = parse_health(r#"{"healthy":true,"checks":[{"name":"desktop","pass":true,"detail":""}],"issues":[]}"#).unwrap();
+        assert_eq!(h, Health { healthy: true, problems: vec![] });
+    }
+
+    #[test]
+    fn unhealthy_report_lists_problems() {
+        let h = parse_health(r#"{"healthy":false,"checks":[{"name":"desktop","pass":false,"detail":"x"},{"name":"audio","pass":true,"detail":""}],"issues":[{"severity":"Critical","title":"Disk full"},{"severity":"Info","title":"meh"}]}"#).unwrap();
+        assert!(!h.healthy);
+        assert_eq!(h.problems, vec!["The desktop isn't running".to_string(), "Disk full".to_string()]);
+    }
+
+    #[test]
+    fn garbage_is_not_a_report() {
+        assert!(parse_health("").is_none());
+        assert!(parse_health("{}").is_none());
+    }
+
+    #[test]
+    fn check_waits_for_the_restart() {
+        assert!(!check_due(200, 100, true)); // updated after boot, restart still pending
+        assert!(check_due(100, 200, true)); // restarted since
+        assert!(check_due(200, 100, false)); // no restart needed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checkupdates_lines() {
+        let u = parse_checkupdates("zohara-settings 0.1.0-1 -> 0.1.0.20260925-1\nlinux-zen 6.10.1-1 -> 6.10.2-1\ngarbage\n");
+        assert_eq!(u.len(), 2);
+        assert!(u[0].is_zohara() && !u[1].is_zohara());
+        assert!(needs_restart(&u[1..]) && !needs_restart(&u[..1]));
+        assert!(!needs_restart(&[PkgUpdate { name: "linux-zen-headers".into(), old: "1".into(), new: "2".into() }]));
+    }
+
+
+    #[test]
+    fn cache_names() {
+        assert_eq!(parse_cache_filename("zohara-settings-0.1.0.5-1-x86_64.pkg.tar.zst"), Some(("zohara-settings".into(), "0.1.0.5-1".into())));
+        assert_eq!(parse_cache_filename("lib32-mesa-1:25.1.4-2-x86_64.pkg.tar.zst"), Some(("lib32-mesa".into(), "1:25.1.4-2".into())));
+        assert_eq!(parse_cache_filename("foo-1-1-any.pkg.tar.xz"), Some(("foo".into(), "1-1".into())));
+        assert_eq!(parse_cache_filename("foo-1-1-any.pkg.tar.zst.sig"), None);
+        assert_eq!(parse_cache_filename("download-abc"), None);
+    }
+
+    #[test]
+    fn pacman_log_transactions() {
+        let log = "\
+[2026-09-25T10:00:00+0000] [PACMAN] Running 'pacman -Syu'
+[2026-09-25T10:00:05+0000] [ALPM] transaction started
+[2026-09-25T10:00:06+0000] [ALPM] upgraded foo (1.0-1 -> 1.1-1)
+[2026-09-25T10:00:07+0000] [ALPM] upgraded bar-baz (2:3-1 -> 2:4-1)
+[2026-09-25T10:00:08+0000] [ALPM] transaction completed
+[2026-09-25T11:00:00+0000] [ALPM] transaction started
+[2026-09-25T11:00:01+0000] [ALPM] installed qux (1-1)
+[2026-09-25T11:00:02+0000] [ALPM] transaction completed
+";
+        let t = parse_pacman_log(log);
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].upgraded.len(), 2);
+        assert_eq!(t[0].upgraded[1], Upgrade { name: "bar-baz".into(), old: "2:3-1".into(), new: "2:4-1".into() });
+        assert_eq!(t[0].when, "2026-09-25 10:00");
+        assert!(t[1].upgraded.is_empty());
+    }
+
+
+    #[test]
+    fn snapshot_json() {
+        let json = r#"{"root":[
+            {"number":0,"type":"single","date":"","description":"current","cleanup":""},
+            {"number":3,"type":"pre","pre-number":"","date":"Fri 25 Sep 2026","description":"pacman -Syu","cleanup":"number"},
+            {"number":"4","type":"post","pre-number":3,"date":"Fri 25 Sep 2026","description":"linux-zen","cleanup":"number"},
+            {"number":1,"type":"single","date":"Thu","description":"Fresh install","cleanup":"number"}]}"#;
+        let s = parse_snapshots(json);
+        assert_eq!(s.iter().map(|x| x.number).collect::<Vec<_>>(), [4, 3, 1]);
+        assert_eq!(s[0].title(), "After: linux-zen");
+        assert_eq!(s[1].title(), "Before: pacman -Syu");
+        assert_eq!(s[2].title(), "Fresh install");
+        assert!(parse_snapshots("not json").is_empty());
+        let st = parse_snap_status(r#"{"supported":true,"configured":false,"auto":false,"limit":12}"#);
+        assert!(st.supported && !st.configured && !st.auto && st.limit == 12);
+    }
+
+    #[test]
+    fn names_are_checked() {
+        assert!(safe_name("zohara-settings") && safe_name("org.mozilla.firefox") && safe_name("g++"));
+        assert!(!safe_name("") && !safe_name("a b") && !safe_name("a;b") && !safe_name("$(x)"));
+    }
+
+    #[test]
+    fn signature_is_stable() {
+        let mut s = UpdateSet::default();
+        s.system.push(PkgUpdate { name: "b".into(), old: "1".into(), new: "2".into() });
+        s.zohara.push(PkgUpdate { name: "zohara-a".into(), old: "1".into(), new: "2".into() });
+        assert_eq!(signature(&s), "b=2,zohara-a=2");
+    }
+}

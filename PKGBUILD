@@ -22,6 +22,9 @@ depends=(
   'glib2'
   'dbus'
   'zohara-keyring' # Zohara's package-signing key; a new package only reaches existing machines if an installed one needs it
+  'polkit'         # the administrator prompt for system updates
+  'curl'           # downloads the signed update approval list
+  'fakeroot'       # lets the update check use a private copy of the package lists
 )
 makedepends=(
   'rust'
@@ -37,6 +40,7 @@ optdepends=(
   'upower: Power settings page'
 )
 options=(!debug)
+install=zohara-settings.install
 provides=('zohara-settings')
 conflicts=('zohara-settings-git')
 
@@ -93,6 +97,10 @@ package() {
   # `systemctl --user enable --now zohara-settings-health.timer`).
   install -Dm644 "$startdir/data/zohara-settings-health.service"     "$pkgdir/usr/lib/systemd/user/zohara-settings-health.service"
   install -Dm644 "$startdir/data/zohara-settings-health.timer"     "$pkgdir/usr/lib/systemd/user/zohara-settings-health.timer"
+
+  # Background check for system updates (notification only; turned on for every user by zohara-settings.install).
+  install -Dm644 "$startdir/data/zohara-settings-update-check.service" "$pkgdir/usr/lib/systemd/user/zohara-settings-update-check.service"
+  install -Dm644 "$startdir/data/zohara-settings-update-check.timer" "$pkgdir/usr/lib/systemd/user/zohara-settings-update-check.timer"
 
   # Voice typing (Meta+H). kglobalaccel picks up the default shortcut from
   # desktop files linked into its own directory.

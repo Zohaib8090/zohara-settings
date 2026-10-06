@@ -1,0 +1,9 @@
+[Unit]
+Description=Zohara Update: check for system updates and notify
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/zohara-settings --check-updates
+# The notification stays up (with an Open button) for 30 seconds.
+TimeoutStartSec=3min
+Nice=10

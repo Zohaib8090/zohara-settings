@@ -6,24 +6,6 @@ use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Where the OTA manifest is published. The `create_update_bundle.sh` script
-/// writes a `latest.json` next to the self-extracting bundle and the ISO build
-/// uploads it to the GitHub Release, so this URL always points at the newest
-/// published bundle's metadata.
-const OTA_MANIFEST_URL: &str =
-    "https://github.com/Zohaib8090/zohara/releases/latest/download/latest.json";
-
-/// Local OS version, read from /etc/lsb-release (DISTRIB_RELEASE).
-fn local_os_version() -> String {
-    if let Ok(text) = std::fs::read_to_string("/etc/lsb-release") {
-        for line in text.lines() {
-            if let Some(rest) = line.strip_prefix("DISTRIB_RELEASE=") {
-                return rest.trim().to_string();
-            }
-        }
-    }
-    String::new()
-}
 
 /// "Pause updates" state. There's no background auto-update daemon on
 /// Zohara OS yet -- this page's "Check for updates" is manual-only -- so
@@ -72,7 +54,7 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
-fn active_pause_message() -> Option<String> {
+pub fn active_pause_message() -> Option<String> {
     let state = load_pause_state();
     let until = state.paused_until?;
     let remaining = until - unix_now();
@@ -106,88 +88,21 @@ pub fn build() -> gtk4::Widget {
         .build();
     root_box.append(&title_lbl);
 
-    // Every update goes through Zohara Store, where you pick what to update
-    // and can go back to an earlier version.
-    let store_group = adw::PreferencesGroup::new();
-    let store_row = adw::ActionRow::new();
-    store_row.set_title("Updates are in Zohara Store");
-    store_row.set_subtitle("See what's new, choose what to update, and go back if something goes wrong");
-    store_row.add_prefix(&gtk4::Image::from_icon_name("system-software-install-symbolic"));
-    let store_btn = gtk4::Button::with_label("Open Updates");
-    store_btn.add_css_class("suggested-action");
-    store_btn.set_valign(gtk4::Align::Center);
-    store_btn.connect_clicked(|_| {
-        let _ = std::process::Command::new("zohara-store").args(["--page", "updates"]).spawn();
-    });
-    store_row.add_suffix(&store_btn);
-    store_group.add(&store_row);
-    root_box.append(&store_group);
-
-    // ── Hero Update Status Banner ────────────────────────────────────────────
-    let hero_card = gtk4::Box::new(gtk4::Orientation::Horizontal, 20);
-    hero_card.set_css_classes(&["win11-hero-card"]);
-    hero_card.set_margin_bottom(4);
-
-    let sync_icon = gtk4::Image::from_icon_name("software-update-available-symbolic");
-    sync_icon.set_pixel_size(48);
-    sync_icon.set_css_classes(&["accent-cyan"]);
-    hero_card.append(&sync_icon);
-
-    let info_box = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-    info_box.set_valign(gtk4::Align::Center);
-
-    let status_title = gtk4::Label::builder()
-        .label(active_pause_message().unwrap_or_else(|| "Updates are checked in Zohara Store".to_string()))
-        .halign(gtk4::Align::Start)
-        .css_classes(vec!["win11-device-name".to_string()])
-        .build();
-
-    let last_check_lbl = gtk4::Label::builder()
-        .label("The Store checks against the version your computer is approved for, then installs what you choose")
-        .halign(gtk4::Align::Start)
-        .css_classes(vec!["win11-device-sub".to_string()])
-        .build();
-
-    info_box.append(&status_title);
-    info_box.append(&last_check_lbl);
-    hero_card.append(&info_box);
-
-    let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-    spacer.set_hexpand(true);
-    hero_card.append(&spacer);
-
-    // Right "Check for updates" Button
-    let check_btn = gtk4::Button::builder()
-        .label("Check in Zohara Store")
-        .css_classes(vec!["win11-update-btn".to_string()])
-        .valign(gtk4::Align::Center)
-        .build();
-
-    // Hidden "Download" button — revealed only when an OTA update is found.
-    let download_btn = gtk4::Button::builder()
-        .label("Download")
-        .css_classes(vec!["win11-primary-btn".to_string()])
-        .valign(gtk4::Align::Center)
-        .build();
-    download_btn.set_visible(false);
-
-    hero_card.append(&check_btn);
-    hero_card.append(&download_btn);
-    root_box.append(&hero_card);
-
-    // Shared store for the latest OTA download URL. The Download button's
-    // handler is wired exactly once (below); the check handler only updates
-    // this store and toggles visibility, so repeated checks never stack
-    // click handlers.
-    let ota_url_store: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-    {
-        let dl_store = ota_url_store.clone();
-        download_btn.connect_clicked(move |_| {
-            if let Some(url) = dl_store.borrow().clone() {
-                let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
-            }
-        });
+    // The operating system's updates, right here: check, update, undo, restore points and the update channel.
+    // (Apps from Flathub are updated in Zohara Store, a separate program.)
+    let to_end = {
+        let scroll = scroll.clone();
+        move || {
+            let adj = scroll.vadjustment();
+            adj.set_value(adj.upper());
+        }
+    };
+    if let Some(msg) = active_pause_message() {
+        let pause_banner = adw::Banner::new(&msg);
+        pause_banner.set_revealed(true);
+        root_box.append(&pause_banner);
     }
+    root_box.append(&crate::sysupdate::ui::build_content(to_end));
 
     // ── Section: More options ────────────────────────────────────────────────
     let more_lbl = gtk4::Label::builder()
@@ -199,61 +114,6 @@ pub fn build() -> gtk4::Widget {
 
     let more_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
     more_box.set_css_classes(&["win11-card-group"]);
-
-    // Latest updates toggle — real: switches the pacman channel between
-    // stable and beta via the actual zohara-channel tool (reads/writes
-    // /etc/zohara/channel and the matching [zohara-*] repo in pacman.conf;
-    // see zohara/zohara-profile/airootfs/usr/local/bin/zohara-channel).
-    let fast_sw = adw::SwitchRow::new();
-    fast_sw.set_title("Get the latest updates as soon as they're available");
-    fast_sw.set_subtitle("Switches to the beta channel — checking current channel…");
-    fast_sw.add_prefix(&gtk4::Image::from_icon_name("starred-symbolic"));
-    fast_sw.set_css_classes(&["win11-expander-row"]);
-    more_box.append(&fast_sw);
-    {
-        // The active-notify handler is only connected AFTER this initial
-        // read sets the switch's starting state (below) -- connecting it
-        // first would make that programmatic set_active() spuriously fire
-        // an actual `pkexec zohara-channel set ...` just from opening the
-        // page and reading what the channel already is.
-        let fast_sw_init = fast_sw.clone();
-        glib::spawn_future_local(async move {
-            let out = tokio::process::Command::new("zohara-channel")
-                .arg("current")
-                .output()
-                .await
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .unwrap_or_else(|| "stable".to_string());
-            let channel = out.trim().to_string();
-            fast_sw_init.set_active(channel != "stable");
-            fast_sw_init.set_subtitle(&format!("Current channel: {channel}"));
-
-            fast_sw_init.connect_active_notify(|row| {
-                let target = if row.is_active() { "beta" } else { "stable" };
-                row.set_subtitle(&format!("Switching to {target}…"));
-                row.set_sensitive(false);
-                let row_c = row.clone();
-                glib::spawn_future_local(async move {
-                    let ok = tokio::process::Command::new("pkexec")
-                        .args(["zohara-channel", "set", target])
-                        .status()
-                        .await
-                        .map(|s| s.success())
-                        .unwrap_or(false);
-                    row_c.set_sensitive(true);
-                    row_c.set_subtitle(&format!(
-                        "Current channel: {}",
-                        if ok { target } else { "unchanged — switch failed" }
-                    ));
-                    if !ok {
-                        // Revert the switch's visual state to match reality.
-                        row_c.set_active(!row_c.is_active());
-                    }
-                });
-            });
-        });
-    }
 
     // Pause updates row — persists a real "paused until" timestamp
     // (~/.config/zohara/update-pause.json). See PauseState's doc comment
@@ -357,57 +217,10 @@ pub fn build() -> gtk4::Widget {
     support_box.append(&help_exp);
     root_box.append(&support_box);
 
-    // ── Check-for-updates handler ──────────────────────────────────────────────
-
-    // Checking is the Store's job: it knows the approved date, verifies the signed list and installs what you pick. A
-    // plain `pacman -Sy` here could never work (it needs administrator rights) and would look at live Arch, not the
-    // approved date. So this button just opens the Store's Updates page, which checks as it opens.
-    check_btn.connect_clicked(move |_btn| {
-        let _ = std::process::Command::new("zohara-store").args(["--page", "updates"]).spawn();
-    });
-
     scroll.set_child(Some(&root_box));
     scroll.upcast()
 }
 
-/// Fetch and parse `latest.json`. Returns (update_available, download_url).
-/// `download_url` is only `Some` when an update is available AND a URL exists.
-async fn fetch_ota_manifest() -> (bool, Option<String>) {
-    let out = tokio::process::Command::new("curl")
-        .args(["-fsSL", "--max-time", "15", OTA_MANIFEST_URL])
-        .output()
-        .await;
-
-    let stdout = match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        _ => return (false, None),
-    };
-
-    let json: serde_json::Value = match serde_json::from_str(&stdout) {
-        Ok(v) => v,
-        Err(_) => return (false, None),
-    };
-
-    let remote_version = json
-        .get("version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let url = json
-        .get("download_url")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    // If we can't publish a version, we don't know there's an update.
-    if remote_version.is_empty() {
-        return (false, None);
-    }
-
-    let local = local_os_version();
-    // Available when local is unknown, or the remote version differs.
-    let available = local.is_empty() || local != remote_version;
-    (available, if available { url } else { None })
-}
 
 fn build_action_row(title: &str, subtitle: &str, icon_name: &str) -> adw::ActionRow {
     let row = adw::ActionRow::new();

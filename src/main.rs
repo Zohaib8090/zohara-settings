@@ -2,6 +2,7 @@ mod pages;
 mod backend;
 mod theme;
 mod search;
+mod sysupdate;
 
 use gtk4::prelude::*;
 use libadwaita as adw;
@@ -50,6 +51,32 @@ fn main() -> glib::ExitCode {
     // Voice typing (Meta+H): no window, just listen and type.
     if args.iter().any(|a| a == "--dictate") {
         std::process::exit(backend::dictation::run());
+    }
+    // Background check for system updates (a systemd user timer runs this): a desktop notification, no window.
+    if args.iter().any(|a| a == "--check-updates") {
+        if pages::updates::active_pause_message().is_none() {
+            let found = sysupdate::updates::check_all();
+            sysupdate::updates::notify_pending(&found);
+        }
+        std::process::exit(0);
+    }
+    // Root helper for the system update (run through pkexec by the Zohara Update page): checks the signed approval
+    // list itself, then moves the package mirror to the approved date.
+    if let Some(i) = args.iter().position(|a| a == "--pin-date") {
+        let (Some(m), Some(s)) = (args.get(i + 1), args.get(i + 2)) else {
+            eprintln!("usage: zohara-settings --pin-date MANIFEST SIGNATURE");
+            std::process::exit(2);
+        };
+        match sysupdate::manifest::root_pin(m, s, env!("CARGO_PKG_VERSION")) {
+            Ok(msg) => {
+                println!("{msg}");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
     }
     if let Some(page) = args.iter().position(|a| a == "--page").and_then(|i| args.get(i + 1)) {
         let _ = START_PAGE.set(page.clone());
@@ -513,7 +540,8 @@ mod tests {
         assert!(top("wallpaper").contains(&"Background"));
         assert!(top("dark mode").contains(&"Choose your mode"));
         assert!(top("microphone").contains(&"Input device"));
-        assert!(top("check for updates").contains(&"Check in Zohara Store"));
+        assert_eq!(top("check for updates")[0], "Zohara Update");
+        assert!(top("go back").contains(&"Undo the last update"));
     }
 
     #[test]
@@ -540,10 +568,11 @@ mod tests {
     fn every_entry_is_on_its_page() {
         // Drift guard: a row that was renamed in a page file but not in the index would open the page and highlight
         // nothing. The title must appear in the page sources.
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pages");
         let mut all = String::new();
-        for f in std::fs::read_dir(dir).unwrap() {
-            all.push_str(&std::fs::read_to_string(f.unwrap().path()).unwrap_or_default());
+        for sub in ["src/pages", "src/sysupdate"] {
+            for f in std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(sub)).unwrap() {
+                all.push_str(&std::fs::read_to_string(f.unwrap().path()).unwrap_or_default());
+            }
         }
         let missing: Vec<&str> = search::ENTRIES.iter().filter(|e| e.title != e.page && !all.contains(&format!("\"{}\"", e.title))).map(|e| e.title).collect();
         assert!(missing.is_empty(), "in the search index but not in any page file: {missing:?}");

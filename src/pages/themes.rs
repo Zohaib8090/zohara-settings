@@ -68,6 +68,22 @@ pub fn parse_star_list(out: &str) -> Vec<Choice> {
         .collect()
 }
 
+/// `plasma-apply-cursortheme --list-themes` prints "Breeze Dark [breeze_cursors]": the name to show, then the id the
+/// tool wants in brackets.
+pub fn parse_cursors(out: &str) -> Vec<Choice> {
+    parse_star_list(out)
+        .into_iter()
+        .map(|mut c| {
+            if let (Some(open), true) = (c.id.rfind(" ["), c.id.ends_with(']')) {
+                let id = c.id[open + 2..c.id.len() - 1].to_string();
+                c.label = c.id[..open].trim().to_string();
+                c.id = id;
+            }
+            c
+        })
+        .collect()
+}
+
 /// `plasma-apply-lookandfeel --list` prints one id per line (and a heading in some versions).
 pub fn parse_lookandfeel(out: &str, current: &str) -> Vec<Choice> {
     out.lines()
@@ -147,7 +163,7 @@ fn load() -> Themes {
         look: parse_lookandfeel(&run_stdout("plasma-apply-lookandfeel", &["--list"]), &cur_look),
         colors: parse_star_list(&run_stdout("plasma-apply-colorscheme", &["--list-schemes"])),
         icons: installed_icon_themes(&cur_icons),
-        cursors: parse_star_list(&run_stdout("plasma-apply-cursortheme", &["--list-themes"])),
+        cursors: parse_cursors(&run_stdout("plasma-apply-cursortheme", &["--list-themes"])),
     }
 }
 
@@ -387,6 +403,14 @@ mod tests {
         assert_eq!(v.len(), 3);
         assert_eq!(v[0], Choice { id: "BreezeDark".into(), label: "BreezeDark".into(), current: true });
         assert!(!v[1].current);
+    }
+
+    #[test]
+    fn cursor_names_and_ids_are_split() {
+        let v = parse_cursors("You have the following themes:\n * Breeze Dark [breeze_cursors] (current theme for cursors)\n * Fluent [Fluent-cursors]\n");
+        assert_eq!(v[0], Choice { id: "breeze_cursors".into(), label: "Breeze Dark".into(), current: true });
+        assert_eq!(v[1].id, "Fluent-cursors");
+        assert_eq!(v[1].label, "Fluent");
     }
 
     #[test]

@@ -215,7 +215,7 @@ fn fill(holder: &gtk4::Box) {
     }
     let g = adw::PreferencesGroup::new();
     g.set_title("My games");
-    g.set_description(Some("Games that didn't come from a store. Added games show up under Games in the Start menu."));
+    g.set_description(Some("Added by hand, for games that no launcher knows about. They show up under Games in the Start menu."));
 
     let from_apps = gtk4::Button::with_label("Add from my apps");
     from_apps.add_css_class("suggested-action");
@@ -405,6 +405,9 @@ fn pick_installed_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box, add_
 
     let mut apps: Vec<gio::DesktopAppInfo> = gio::AppInfo::all().into_iter().filter(|a| a.should_show()).filter_map(|a| a.downcast::<gio::DesktopAppInfo>().ok()).collect();
     apps.sort_by_key(|a| a.name().to_lowercase());
+    // Apps already added are not offered again.
+    let added: std::collections::HashSet<std::ffi::OsString> = my_games().into_iter().filter_map(|g| g.file.file_name().map(|n| n.to_os_string())).collect();
+    apps.retain(|a| a.filename().and_then(|f| f.file_name().map(|n| n.to_os_string())).map_or(true, |n| !added.contains(&n)));
     for info in apps {
         let r = adw::ActionRow::new();
         r.set_title(&glib::markup_escape_text(&info.name()));

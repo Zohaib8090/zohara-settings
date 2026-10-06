@@ -254,7 +254,8 @@ pub static ENTRIES: &[Entry] = &[
     e!("Voice typing", "Accessibility", "dictation speech to text"),
     e!("Test voice", "Accessibility", "speech sample"),
     // Gaming
-    e!("My games", "Gaming", "add game manually custom non-steam app program exe appimage"),
+    e!("Your games", "Gaming", "steam lutris heroic epic gog library installed games play"),
+    e!("My games", "Gaming", "add game manually custom non-steam program exe appimage"),
     e!("Add from my apps", "Gaming", "add installed app as game"),
     e!("Add a game file", "Gaming", "add game manually custom program exe appimage"),
     // Accounts

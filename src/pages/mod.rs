@@ -18,6 +18,7 @@ pub mod accounts;
 pub mod time_language;
 pub mod troubleshoot;
 pub mod gaming;
+pub mod game_libraries;
 pub mod my_games;
 pub mod accessibility;
 pub mod printers;

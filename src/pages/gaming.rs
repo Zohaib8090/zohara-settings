@@ -419,6 +419,7 @@ pub fn build() -> gtk4::Widget {
             .build(),
     );
 
+    root.append(&super::game_libraries::build());
     root.append(&super::my_games::build());
     root.append(&gamemode_group(&root));
     root.append(&mangohud_group(&root));

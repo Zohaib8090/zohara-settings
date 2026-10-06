@@ -24,3 +24,29 @@ Read with `docs/UPDATES.md` (OS updates) and the `zohara` repo's `docs/HANDOFF-2
 * **Updates** (`src/sysupdate/`, `pages/updates.rs`): see `docs/UPDATES.md`.
 * **Tests**: `cargo test` (in the `zs-img` container; the laptop lacks libadwaita headers) plus `sh tests/test-wifi-resume.sh`.
   UI changes are checked by running the app under Xvfb in the container or in the VM; see the handoff.
+
+## Personalization pop-up windows (2026-10-06)
+
+Themes, Dynamic Lighting, Lock screen, Text input and Start each live in their own module (`src/pages/themes.rs`,
+`lighting.rs`, `lockscreen.rs`, `text_input.rs`, `start_menu.rs`) and open as a modal window through
+`personalization::open_settings_window_sized`, which runs `adopt_orphan_rows` on the content first. **Why:** a row placed
+straight into a plain `gtk4::Box` (as these windows used to do) ignores clicks, so their dropdowns looked dead. Prefer
+`adw::PreferencesGroup` for rows; the call is the safety net.
+
+* Themes: lists come from `plasma-apply-lookandfeel --list`, `plasma-apply-colorscheme --list-schemes`,
+  `plasma-apply-cursortheme --list-themes` (prints `Name [id]`, the id is what gets applied) and the icon folders.
+  Install from a file sorts archives by content (`classify_archive`): `index.theme` icons/cursors, `.colors` schemes,
+  `metadata.json` global themes (`kpackagetool6`). The file install path has unit tests only, not a click test.
+* Lighting: OpenRGB is installed from the page (`pkexec pacman -S`), then `openrgb --list-devices` is parsed. A VM has no
+  lighting hardware, so colour and effect controls are untested on real devices.
+* Lock screen: `kscreenlockerrc` keys `Autolock`, `Timeout`, `LockOnResume`, `LockGrace` (seconds), `Greeter/WallpaperPlugin`
+  and the image/colour groups. Each change is read back before "Saved" shows.
+* Text input: Caps Lock is an xkb option in `kxkbrc` `[Layout] Options` (`with_caps_option` keeps the others); Num Lock is
+  `kcminputrc [Keyboard] NumLock`. The touch keyboard is `plasma-keyboard` (`maliit-keyboard` is not in the Arch repos).
+* Start: the launcher's own settings are written and read through Plasma scripting (`PlasmaShell.evaluateScript`); a read
+  returns the script's `print` output, which `reply_text` pulls out of dbus-send's reply.
+* Taskbar: position is `p.location` and alignment is flexible spacers (0 left, 1 right, 2 centre); only the panel that
+  holds the task manager is touched. `parse_taskbar_state` reads the saved layout back (`location=` 3 top, 4 bottom, 5 left,
+  6 right).
+* Fonts: now an inline expander on the Personalization page (also opened from Accessibility). All `fc-list` families,
+  searchable (the `ComboRow` needs an expression to search), sizes 8-24, plus a fixed-width font.

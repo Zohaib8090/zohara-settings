@@ -12,6 +12,7 @@ use adw::prelude::*;
 use gtk4::prelude::*;
 use libadwaita as adw;
 use std::process::Command;
+use std::rc::Rc;
 
 const RC: &str = "powerdevilrc";
 
@@ -162,7 +163,7 @@ fn idle_row(
     group: &'static str,
     enable_key: &'static str,
     timeout_key: &'static str,
-    on_value: &'static str,
+    on_value: impl Fn() -> String + 'static,
     off_value: &'static str,
 ) -> adw::ComboRow {
     let row = adw::ComboRow::new();
@@ -190,7 +191,7 @@ fn idle_row(
             1 => vec![(group, enable_key, Some(off_value.into()))],
             n => {
                 let m = MINUTES[(n as usize - 2).min(MINUTES.len() - 1)];
-                vec![(group, enable_key, Some(on_value.into())), (group, timeout_key, Some((m * 60).to_string()))]
+                vec![(group, enable_key, Some(on_value())), (group, timeout_key, Some((m * 60).to_string()))]
             }
         };
         apply(profile, writes);
@@ -199,13 +200,15 @@ fn idle_row(
 }
 
 /// PowerDevil action codes (PowerButtonAction enum).
-const ACTIONS: [(&str, &str); 6] = [
+const ACTIONS: [(&str, &str); 8] = [
     ("Do nothing", "0"),
     ("Sleep", "1"),
     ("Hibernate", "2"),
     ("Shut down", "8"),
     ("Lock screen", "32"),
     ("Turn off screen", "64"),
+    ("Hybrid sleep", "4"),
+    ("Ask me what to do", "16"),
 ];
 
 fn action_row(title: &str, profile: &'static str, key: &'static str, choices: &[usize]) -> adw::ComboRow {
@@ -232,33 +235,182 @@ fn action_row(title: &str, profile: &'static str, key: &'static str, choices: &[
     row
 }
 
+/// "Sleep after" plus "When idle for that long": one timeout row and one row for what to do, sharing the chosen action
+/// (PowerDevil keeps both in `AutoSuspendAction`: 0 = never, 1 = sleep, 2 = hibernate, 8 = shut down).
+const IDLE_ACTIONS: [(&str, &str); 3] = [("Sleep", "1"), ("Hibernate", "2"), ("Shut down", "8")];
+
+fn sleep_rows(profile: &'static str) -> (adw::ComboRow, adw::ComboRow) {
+    const GROUP: &str = "SuspendAndShutdown";
+    let current = read(profile, GROUP, "AutoSuspendAction").unwrap_or_default();
+    let chosen = Rc::new(std::cell::Cell::new(IDLE_ACTIONS.iter().position(|(_, v)| *v == current).unwrap_or(0)));
+
+    let pick = chosen.clone();
+    let timeout = idle_row("Sleep after", profile, GROUP, "AutoSuspendAction", "AutoSuspendIdleTimeoutSec", move || IDLE_ACTIONS[pick.get()].1.to_string(), "0");
+    let what = adw::ComboRow::new();
+    what.set_title("When idle for that long");
+    what.set_subtitle("Used when \"Sleep after\" has a time");
+    what.set_model(Some(&gtk4::StringList::new(&IDLE_ACTIONS.map(|a| a.0))));
+    what.set_selected(chosen.get() as u32);
+    {
+        let chosen = chosen.clone();
+        what.connect_selected_notify(move |r| {
+            let i = (r.selected() as usize).min(IDLE_ACTIONS.len() - 1);
+            chosen.set(i);
+            // Only change what is stored when a sleep time is set (otherwise it would switch idle sleep on).
+            let on = matches!(read(profile, GROUP, "AutoSuspendAction").as_deref(), Some(v) if v != "0");
+            if on {
+                apply(profile, vec![(GROUP, "AutoSuspendAction", Some(IDLE_ACTIONS[i].1.to_string()))]);
+            }
+        });
+    }
+    (timeout, what)
+}
+
+fn switch_row(title: &str, subtitle: &str, profile: &'static str, group: &'static str, key: &'static str, default: bool) -> adw::SwitchRow {
+    let row = adw::SwitchRow::new();
+    row.set_title(title);
+    row.set_subtitle(subtitle);
+    row.set_active(read(profile, group, key).map(|v| v != "false").unwrap_or(default));
+    row.connect_active_notify(move |r| {
+        let v = if r.is_active() { "true" } else { "false" };
+        apply(profile, vec![(group, key, Some(v.to_string()))]);
+    });
+    row
+}
+
 fn profile_group(title: &str, profile: &'static str, laptop: bool) -> adw::PreferencesGroup {
     let g = adw::PreferencesGroup::new();
     g.set_title(title);
-    g.add(&idle_row("Dim screen after", profile, "Display", "DimDisplayWhenIdle", "DimDisplayIdleTimeoutSec", "true", "false"));
-    g.add(&idle_row(
-        "Turn off screen after",
-        profile,
-        "Display",
-        "TurnOffDisplayWhenIdle",
-        "TurnOffDisplayIdleTimeoutSec",
-        "true",
-        "false",
-    ));
-    // AutoSuspendAction: 1 = sleep, 0 = do nothing.
-    g.add(&idle_row(
-        "Sleep after",
-        profile,
-        "SuspendAndShutdown",
-        "AutoSuspendAction",
-        "AutoSuspendIdleTimeoutSec",
-        "1",
-        "0",
-    ));
+    g.add(&idle_row("Dim screen after", profile, "Display", "DimDisplayWhenIdle", "DimDisplayIdleTimeoutSec", || "true".to_string(), "false"));
+    g.add(&idle_row("Turn off screen after", profile, "Display", "TurnOffDisplayWhenIdle", "TurnOffDisplayIdleTimeoutSec", || "true".to_string(), "false"));
+    let (timeout, what) = sleep_rows(profile);
+    g.add(&timeout);
+    g.add(&what);
     if laptop {
-        g.add(&action_row("When the lid is closed", profile, "LidAction", &[0, 1, 2, 3, 4, 5]));
+        g.add(&action_row("When the lid is closed", profile, "LidAction", &[0, 1, 2, 3, 4, 5, 6]));
+        g.add(&switch_row(
+            "Keep running when the lid is closed and a screen is plugged in",
+            "Do nothing on lid close while an external monitor is connected",
+            profile,
+            "SuspendAndShutdown",
+            "InhibitLidActionWhenExternalMonitorPresent",
+            true,
+        ));
     }
-    g.add(&action_row("When the power button is pressed", profile, "PowerButtonAction", &[0, 1, 2, 3, 4, 5]));
+    g.add(&action_row("When the power button is pressed", profile, "PowerButtonAction", &[0, 1, 2, 3, 4, 5, 6, 7]));
+    g.add(&action_row("When the power button is held", profile, "PowerDownAction", &[0, 1, 2, 3, 4, 5, 6, 7]));
+    g
+}
+
+// ── Locking (the lock screen's own settings, same file Personalization > Lock screen writes) ──────────────────────
+
+const LOCK_RC: &str = "kscreenlockerrc";
+
+fn lock_group() -> adw::PreferencesGroup {
+    use super::lockscreen::{grace_choice_for, lock_choice_for, GRACE_CHOICES, LOCK_CHOICES};
+    let g = adw::PreferencesGroup::new();
+    g.set_title("Locking");
+    g.set_description(Some("Applies to every power state"));
+    let bool_of = |key: &str, default: bool| kconfig::read(LOCK_RC, &["Daemon"], key).map(|v| v != "false").unwrap_or(default);
+
+    let auto = bool_of("Autolock", true);
+    let minutes: u32 = kconfig::read(LOCK_RC, &["Daemon"], "Timeout").and_then(|v| v.parse().ok()).unwrap_or(5);
+    let timeout = adw::ComboRow::new();
+    timeout.set_title("Lock the screen after");
+    timeout.set_subtitle("Lock when the computer has been left alone");
+    timeout.set_model(Some(&gtk4::StringList::new(&LOCK_CHOICES.map(|c| c.0))));
+    timeout.set_selected(lock_choice_for(auto, minutes));
+    timeout.connect_selected_notify(|r| {
+        let (_, m) = LOCK_CHOICES[(r.selected() as usize).min(LOCK_CHOICES.len() - 1)];
+        kconfig::spawn(move || match m {
+            Some(m) => {
+                kconfig::write_typed(LOCK_RC, &["Daemon"], "Autolock", "bool", "true");
+                kconfig::write(LOCK_RC, &["Daemon"], "Timeout", &m.to_string());
+            }
+            None => kconfig::write_typed(LOCK_RC, &["Daemon"], "Autolock", "bool", "false"),
+        });
+    });
+    g.add(&timeout);
+
+    let resume = adw::SwitchRow::new();
+    resume.set_title("Lock after waking from sleep");
+    resume.set_subtitle("Ask for the password when the computer wakes up");
+    resume.set_active(bool_of("LockOnResume", true));
+    resume.connect_active_notify(|s| {
+        let v = if s.is_active() { "true" } else { "false" };
+        kconfig::spawn(move || kconfig::write_typed(LOCK_RC, &["Daemon"], "LockOnResume", "bool", v));
+    });
+    g.add(&resume);
+
+    let grace = adw::ComboRow::new();
+    grace.set_title("Ask for the password");
+    grace.set_subtitle("How long after locking before the password is needed");
+    grace.set_model(Some(&gtk4::StringList::new(&GRACE_CHOICES.map(|c| c.0))));
+    let now: u32 = kconfig::read(LOCK_RC, &["Daemon"], "LockGrace").and_then(|v| v.parse().ok()).unwrap_or(5);
+    grace.set_selected(grace_choice_for(now));
+    grace.connect_selected_notify(|r| {
+        let (_, secs) = GRACE_CHOICES[(r.selected() as usize).min(GRACE_CHOICES.len() - 1)];
+        kconfig::spawn(move || kconfig::write(LOCK_RC, &["Daemon"], "LockGrace", &secs.to_string()));
+    });
+    g.add(&grace);
+
+    let now_row = adw::ActionRow::new();
+    now_row.set_title("Lock the screen now");
+    let b = gtk4::Button::with_label("Lock now");
+    b.set_valign(gtk4::Align::Center);
+    b.connect_clicked(|_| {
+        let _ = Command::new("loginctl").arg("lock-session").status();
+    });
+    now_row.add_suffix(&b);
+    g.add(&now_row);
+    g
+}
+
+// ── Low battery (shared by both power states) ──────────────────────────────────────────────────────────────────
+
+const LOW_LEVELS: [u32; 5] = [10, 15, 20, 25, 30];
+const CRITICAL_LEVELS: [u32; 5] = [3, 5, 7, 10, 15];
+const CRITICAL_ACTIONS: [(&str, &str); 4] = [("Sleep", "1"), ("Hibernate", "2"), ("Shut down", "8"), ("Do nothing", "0")];
+
+fn battery_levels_group() -> adw::PreferencesGroup {
+    const GROUP: &str = "BatteryManagement";
+    let g = adw::PreferencesGroup::new();
+    g.set_title("Low battery");
+
+    let level_row = |title: &str, subtitle: &str, key: &'static str, levels: &'static [u32], default: u32| {
+        let row = adw::ComboRow::new();
+        row.set_title(title);
+        row.set_subtitle(subtitle);
+        let labels: Vec<String> = levels.iter().map(|l| format!("{l}%")).collect();
+        let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        row.set_model(Some(&gtk4::StringList::new(&refs)));
+        let cur: u32 = kconfig::read(RC, &[GROUP], key).and_then(|v| v.parse().ok()).unwrap_or(default);
+        row.set_selected(levels.iter().position(|l| *l >= cur).unwrap_or(levels.len() - 1) as u32);
+        row.connect_selected_notify(move |r| {
+            let v = levels[(r.selected() as usize).min(levels.len() - 1)];
+            kconfig::spawn(move || {
+                kconfig::write(RC, &[GROUP], key, &v.to_string());
+                reload_powerdevil();
+            });
+        });
+        row
+    };
+    g.add(&level_row("Low battery warning at", "Show a warning at this charge", "BatteryLowLevel", &LOW_LEVELS, 10));
+    g.add(&level_row("Critical level at", "Act at this charge", "BatteryCriticalLevel", &CRITICAL_LEVELS, 5));
+
+    let act = adw::ComboRow::new();
+    act.set_title("At the critical level");
+    act.set_model(Some(&gtk4::StringList::new(&CRITICAL_ACTIONS.map(|a| a.0))));
+    let cur = kconfig::read(RC, &[GROUP], "BatteryCriticalAction").unwrap_or_default();
+    act.set_selected(CRITICAL_ACTIONS.iter().position(|(_, v)| *v == cur).unwrap_or(0) as u32);
+    act.connect_selected_notify(|r| {
+        let v = CRITICAL_ACTIONS[(r.selected() as usize).min(CRITICAL_ACTIONS.len() - 1)].1;
+        kconfig::spawn(move || {
+            kconfig::write(RC, &[GROUP], "BatteryCriticalAction", v);
+            reload_powerdevil();
+        });
+    });
+    g.add(&act);
     g
 }
 
@@ -311,9 +463,11 @@ pub fn build() -> gtk4::Widget {
             if laptop {
                 content.append(&profile_group("When plugged in", "AC", true));
                 content.append(&profile_group("On battery", "Battery", true));
+                content.append(&battery_levels_group());
             } else {
                 content.append(&profile_group("Screen and sleep", "AC", false));
             }
+            content.append(&lock_group());
         },
     );
 

@@ -179,6 +179,11 @@ pub static ENTRIES: &[Entry] = &[
     e!("Sleep after", "Power & battery", "suspend idle"),
     e!("When the lid is closed", "Power & battery", "laptop lid close suspend"),
     e!("When the power button is pressed", "Power & battery", "shutdown button"),
+    e!("When the power button is held", "Power & battery", "long press shutdown hold"),
+    e!("When idle for that long", "Power & battery", "hibernate shut down idle action"),
+    e!("Lock the screen after", "Power & battery", "lock automatically idle password"),
+    e!("Lock after waking from sleep", "Power & battery", "resume password lock"),
+    e!("Low battery warning at", "Power & battery", "battery level critical percent hibernate"),
     // Storage
     e!("Storage Sense", "Storage", "free up space cleanup automatic"),
     e!("Clean up automatically", "Storage", "storage sense old files"),

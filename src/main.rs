@@ -143,7 +143,7 @@ static PAGES: &[PageDef] = &[
     PageDef { label: "Display",              icon: "video-display-symbolic",                       hidden: true },
     PageDef { label: "Sound",                icon: "audio-speakers-symbolic",                      hidden: true },
     PageDef { label: "Notifications",        icon: "preferences-system-notifications-symbolic",    hidden: true },
-    PageDef { label: "Power & battery",      icon: "battery-level-80-symbolic",                    hidden: true },
+    PageDef { label: "Power & battery",      icon: "battery-level-80-symbolic",                    hidden: false },
     PageDef { label: "Storage",              icon: "drive-harddisk-symbolic",                      hidden: true },
     // Reached from Bluetooth & devices' "Other devices" group (already existed).
     PageDef { label: "Mouse",                icon: "input-mouse-symbolic",                         hidden: true },

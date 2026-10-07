@@ -243,7 +243,20 @@ fn reset_to_default(plan: look_reset::PanelPlan, restore_button: bool) -> Vec<St
     if restore_button {
         crate::backend::touch_keyboard::set_button(true);
     }
+    // The taskbar keeps the icons it had loaded (the start button stays on the old set) until it restarts. Give Plasma a
+    // few seconds to write the panel changes to disk first, or the restart would throw them away.
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    restart_taskbar();
     problems
+}
+
+/// Restarts Plasma's shell (the taskbar and desktop) so every icon is read again. Only the panel flickers; apps stay open.
+pub fn restart_taskbar() {
+    let ok = Command::new("systemctl").args(["--user", "restart", "plasma-plasmashell.service"]).status().map(|s| s.success()).unwrap_or(false);
+    if !ok {
+        let _ = Command::new("kquitapp6").arg("plasmashell").status();
+        let _ = Command::new("kstart").arg("plasmashell").spawn();
+    }
 }
 
 /// Installs a theme file. Returns what was installed, in words.

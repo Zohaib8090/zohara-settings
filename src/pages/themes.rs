@@ -2,6 +2,7 @@
 //! Everything shown here is read from the system (Plasma's own `plasma-apply-*` tools and the icon folders), and
 //! every change is applied with those same tools, so it matches what Plasma's own settings would do.
 
+use super::look_reset;
 use crate::backend::{kconfig, worker::in_background};
 use gtk4::prelude::*;
 use libadwaita as adw;
@@ -202,7 +203,7 @@ pub const DEFAULT_WIDGET_STYLE: &str = "kvantum-dark";
 pub const DEFAULT_KVANTUM: &str = "MateriaDark";
 
 /// Puts back everything a theme can change, and says what it could not do. Returns the list of problems.
-fn reset_to_default() -> Vec<String> {
+fn reset_to_default(plan: look_reset::PanelPlan, restore_button: bool) -> Vec<String> {
     let mut problems = Vec::new();
     let mut note = |what: &str, r: Result<(), String>| {
         if let Err(e) = r {
@@ -229,9 +230,14 @@ fn reset_to_default() -> Vec<String> {
     kconfig::delete("kwinrc", &["org.kde.kdecoration2"], "theme");
     kconfig::delete("kwinrc", &["org.kde.kdecoration2"], "library");
     kconfig::kwin_reconfigure();
-    // The taskbar: a theme can move it or leave spacers behind. Back to the bottom, icons at the left.
+    // The taskbar: extra panels a theme added are removed (the one with the start menu stays), then the bar goes back to
+    // the bottom with the icons at the left, and the keyboard button comes back if it was there.
+    problems.extend(look_reset::apply_panel_plan(&plan));
     if !super::personalization::run_taskbar_script(0, Some("bottom")) {
         problems.push("Taskbar: Plasma did not answer".to_string());
+    }
+    if restore_button {
+        crate::backend::touch_keyboard::set_button(true);
     }
     problems
 }
@@ -385,30 +391,25 @@ fn fill(content: gtk4::Box) {
         rbtn.add_css_class("destructive-action");
         let (content_x, status_x) = (content.clone(), status.clone());
         rbtn.connect_clicked(move |b| {
-            let d = adw::AlertDialog::new(
-                Some("Reset the look to the default?"),
-                Some("The theme, colours, icons, mouse pointer, window style and taskbar go back to what Zohara OS shipped with. Themes you installed stay on disk but are no longer used."),
-            );
-            d.add_responses(&[("cancel", "Cancel"), ("reset", "Reset")]);
-            d.set_response_appearance("reset", adw::ResponseAppearance::Destructive);
-            d.set_close_response("cancel");
             let (content_y, status_y) = (content_x.clone(), status_x.clone());
-            d.connect_response(None, move |_, r| {
-                if r != "reset" {
-                    return;
-                }
+            look_reset::open_review(b, move |choice| {
                 status_y.set_text("Resetting…");
                 let (content_z, status_z) = (content_y.clone(), status_y.clone());
-                in_background(reset_to_default, move |problems| {
-                    if problems.is_empty() {
-                        status_z.set_text("Done: the default look is back. Some open apps change when they are reopened.");
-                    } else {
-                        status_z.set_text(&format!("Mostly done. Couldn't do: {}", problems.join("; ")));
-                    }
-                    fill(content_z);
-                });
+                in_background(
+                    move || {
+                        let had_button = crate::backend::touch_keyboard::button_present();
+                        reset_to_default(choice.plan, had_button)
+                    },
+                    move |problems| {
+                        if problems.is_empty() {
+                            status_z.set_text("Done: the default look is back. Some open apps change when they are reopened.");
+                        } else {
+                            status_z.set_text(&format!("Mostly done. Couldn't do: {}", problems.join("; ")));
+                        }
+                        fill(content_z);
+                    },
+                );
             });
-            d.present(Some(b));
         });
         rrow.add_suffix(&rbtn);
         reset.add(&rrow);

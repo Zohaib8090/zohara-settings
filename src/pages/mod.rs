@@ -7,6 +7,7 @@ pub mod wifi_check;
 pub mod speedtest;
 pub mod personalization;
 pub mod themes;
+pub mod look_reset;
 pub mod lighting;
 pub mod lockscreen;
 pub mod text_input;

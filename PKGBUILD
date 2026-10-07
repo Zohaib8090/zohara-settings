@@ -84,6 +84,12 @@ package() {
   install -Dm644 "$startdir/data/icons/scalable/apps/zohara-settings.svg" \
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/zohara-settings.svg"
 
+  # The Zohara logo for the start button (the hicolor theme is the fallback every icon set can see), and the
+  # autostart that points the start menu at it once.
+  install -Dm644 "$startdir/data/icons/scalable/apps/zohara-start.svg" \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/zohara-start.svg"
+  install -Dm644 "$startdir/data/zohara-branding.desktop" "$pkgdir/etc/xdg/autostart/zohara-branding.desktop"
+
   # Desktop entry
   install -Dm644 "$startdir/data/zohara-settings.desktop" \
     "$pkgdir/usr/share/applications/zohara-settings.desktop"

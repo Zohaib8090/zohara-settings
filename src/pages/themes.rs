@@ -240,6 +240,7 @@ fn reset_to_default(plan: look_reset::PanelPlan, restore_button: bool) -> Vec<St
     if !super::personalization::run_taskbar_script(0, Some("bottom")) {
         problems.push("Taskbar: Plasma did not answer".to_string());
     }
+    crate::backend::branding::apply();
     if restore_button {
         crate::backend::touch_keyboard::set_button(true);
     }

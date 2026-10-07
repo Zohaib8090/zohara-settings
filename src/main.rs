@@ -60,6 +60,10 @@ fn main() -> glib::ExitCode {
     if args.iter().any(|a| a == "--touch-setup") {
         std::process::exit(backend::touch_keyboard::touch_setup());
     }
+    // The Zohara logo on the start button (autostart, once).
+    if args.iter().any(|a| a == "--branding") {
+        std::process::exit(backend::branding::run_once());
+    }
     // Automatic time zone (a systemd user timer runs this): find the zone from the internet connection and set it.
     if args.iter().any(|a| a == "--auto-timezone") {
         std::process::exit(backend::autotz::run_once());

@@ -1,0 +1,7 @@
+// Changing the time zone is not a security matter on a personal computer (Windows and macOS let anyone do it): let the
+// person sitting at the desktop do it without a password. This is what lets automatic time zone work in the background.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.timedate1.set-timezone" && subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+});

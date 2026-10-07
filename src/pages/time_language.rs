@@ -101,6 +101,44 @@ fn time_group() -> adw::PreferencesGroup {
     });
     g.add(&ntp);
 
+    // Automatic time zone: the zone follows the internet connection. Choosing a zone by hand turns it off.
+    let auto = adw::SwitchRow::new();
+    auto.set_title("Set time zone automatically");
+    auto.set_subtitle(if crate::backend::autotz::location_off() {
+        "Location is turned off in Privacy, so this waits until it is on"
+    } else {
+        "Finds where you are from your internet connection (an approximate place, no GPS) and keeps the time zone right when you travel"
+    });
+    auto.set_active(crate::backend::autotz::is_enabled());
+    let programmatic = std::rc::Rc::new(std::cell::Cell::new(false));
+    let dd_slot: std::rc::Rc<std::cell::RefCell<Option<(gtk4::DropDown, Vec<String>)>>> = Default::default();
+    {
+        let (programmatic, dd_slot) = (programmatic.clone(), dd_slot.clone());
+        auto.connect_active_notify(move |r| {
+            let on = r.is_active();
+            crate::backend::autotz::set_enabled(on);
+            if !on {
+                return;
+            }
+            r.set_subtitle("Looking up where you are…");
+            let (r, programmatic, dd_slot) = (r.clone(), programmatic.clone(), dd_slot.clone());
+            in_background(crate::backend::autotz::detect, move |res| match res {
+                Ok(tz) => {
+                    r.set_subtitle(&format!("Found {tz} from your internet connection"));
+                    // Picking it in the list uses the same path as picking by hand, so the approval and error handling are shared.
+                    if let Some((dd, zones)) = dd_slot.borrow().as_ref() {
+                        if let Some(i) = zones.iter().position(|z| *z == tz) {
+                            programmatic.set(true);
+                            dd.set_selected(i as u32);
+                            programmatic.set(false);
+                        }
+                    }
+                }
+                Err(e) => r.set_subtitle(&e),
+            });
+        });
+    }
+
     let zones: Vec<String> = output("timedatectl", &["list-timezones"])
         .map(|s| s.lines().map(str::to_string).collect())
         .unwrap_or_default();
@@ -116,11 +154,15 @@ fn time_group() -> adw::PreferencesGroup {
             dd.set_selected(i as u32);
         }
         let zones2 = zones.clone();
+        let (programmatic2, auto2) = (programmatic.clone(), auto.clone());
         let current = std::rc::Rc::new(std::cell::RefCell::new(current));
         dd.connect_selected_notify(move |d| {
             let Some(tz) = zones2.get(d.selected() as usize).cloned() else { return };
             if *current.borrow() == tz {
                 return;
+            }
+            if !programmatic2.get() {
+                auto2.set_active(false); // a zone chosen by hand wins
             }
             let (d, zones3, current) = (d.clone(), zones2.clone(), current.clone());
             in_background(
@@ -137,8 +179,10 @@ fn time_group() -> adw::PreferencesGroup {
                 },
             );
         });
+        *dd_slot.borrow_mut() = Some((dd.clone(), zones.clone()));
         tz_row.add_suffix(&dd);
     }
+    g.add(&auto);
     g.add(&tz_row);
     g
 }

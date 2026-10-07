@@ -1,0 +1,9 @@
+[Unit]
+Description=Zohara Settings: set the time zone from the internet connection
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/zohara-settings --auto-timezone
+# Right after login the network may still be coming up; the program retries for a minute.
+TimeoutStartSec=3min
+Nice=10

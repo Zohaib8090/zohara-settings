@@ -1,9 +1,26 @@
-# Turns on the background update check for every user. The ISO does the same for a fresh install; this hook is what
-# gives machines that were installed earlier the new timer when they update Settings.
+# Turns on the background update check and the automatic time zone for every user. The ISO does the same for a fresh
+# install; this hook is what gives machines that were installed earlier the new timers when they update Settings.
 post_install() {
     systemctl --global enable zohara-settings-update-check.timer >/dev/null 2>&1 || true
+    systemctl --global enable zohara-settings-timezone.timer >/dev/null 2>&1 || true
+    fix_localtime
 }
 
 post_upgrade() {
     post_install
+}
+
+# Older installs carry /etc/tmpfiles.d/zohara-localtime.conf with a force rule ("L+ /etc/localtime ... UTC"). systemd
+# applies it at every boot and after package updates, so the time zone fell back to UTC each time. The ISO now ships a
+# real /etc/localtime link instead, so on an installed system the rule is switched off. (Not on the live ISO.)
+fix_localtime() {
+    rule=/etc/tmpfiles.d/zohara-localtime.conf
+    if [ -f "$rule" ] && grep -q '^L+' "$rule" && [ ! -e /run/archiso ]; then
+        printf '%s\n' '# Switched off by zohara-settings: this rule reset the time zone to UTC at every boot and update.' \
+            '# The time zone now follows Settings > Time & language (and automatic time zone).' > "$rule"
+    fi
+    # A plain-text /etc/localtime (an old overlay quirk) is not a time zone at all: make it a real link.
+    if [ -e /etc/localtime ] && [ ! -L /etc/localtime ]; then
+        ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+    fi
 }

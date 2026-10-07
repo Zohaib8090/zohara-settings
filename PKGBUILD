@@ -103,6 +103,11 @@ package() {
   install -Dm644 "$startdir/data/zohara-settings-update-check.service" "$pkgdir/usr/lib/systemd/user/zohara-settings-update-check.service"
   install -Dm644 "$startdir/data/zohara-settings-update-check.timer" "$pkgdir/usr/lib/systemd/user/zohara-settings-update-check.timer"
 
+  # Automatic time zone (turned on for every user by zohara-settings.install) and the polkit rule that lets it run without a password.
+  install -Dm644 "$startdir/data/zohara-settings-timezone.service" "$pkgdir/usr/lib/systemd/user/zohara-settings-timezone.service"
+  install -Dm644 "$startdir/data/zohara-settings-timezone.timer" "$pkgdir/usr/lib/systemd/user/zohara-settings-timezone.timer"
+  install -Dm644 "$startdir/data/50-zohara-timezone.rules" "$pkgdir/usr/share/polkit-1/rules.d/50-zohara-timezone.rules"
+
   # After sleep, if the Wi-Fi chip did not wake up, reload its driver (does nothing when Wi-Fi is fine).
   install -Dm755 "$startdir/data/zohara-wifi-resume" "$pkgdir/usr/lib/systemd/system-sleep/zohara-wifi-resume"
 

@@ -52,6 +52,10 @@ fn main() -> glib::ExitCode {
     if args.iter().any(|a| a == "--dictate") {
         std::process::exit(backend::dictation::run());
     }
+    // Automatic time zone (a systemd user timer runs this): find the zone from the internet connection and set it.
+    if args.iter().any(|a| a == "--auto-timezone") {
+        std::process::exit(backend::autotz::run_once());
+    }
     // Background check for system updates (a systemd user timer runs this): a desktop notification, no window.
     if args.iter().any(|a| a == "--check-updates") {
         if pages::updates::active_pause_message().is_none() {

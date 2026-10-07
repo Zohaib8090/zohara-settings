@@ -1,3 +1,4 @@
+pub mod autotz;
 pub mod dbus;
 pub mod diag;
 pub mod dictation;

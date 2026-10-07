@@ -242,6 +242,7 @@ pub static ENTRIES: &[Entry] = &[
     e!("System language", "Time & language", "display language locale"),
     e!("Date & time", "Time & language", "clock"),
     e!("Time zone", "Time & language", "timezone clock location"),
+    e!("Set time zone automatically", "Time & language", "timezone automatic location internet utc travel"),
     e!("Set time automatically", "Time & language", "clock ntp network time"),
     // Accessibility
     e!("High contrast", "Accessibility", "vision colours"),

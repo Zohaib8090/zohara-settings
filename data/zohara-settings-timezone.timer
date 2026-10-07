@@ -1,0 +1,12 @@
+[Unit]
+Description=Keep the time zone right (automatic time zone)
+
+[Timer]
+# Half a minute after login, then every hour, so a laptop that travels changes zone by itself. The program does nothing
+# when the person turned automatic time zone off or switched Location off in Privacy.
+OnStartupSec=30s
+OnUnitActiveSec=1h
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target

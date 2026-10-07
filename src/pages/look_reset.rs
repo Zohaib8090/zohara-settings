@@ -175,7 +175,16 @@ pub fn installed_by_user(home: &Path) -> Vec<UserTheme> {
         for d in dirs_in(&base) {
             let text = std::fs::read_to_string(d.join("index.theme")).unwrap_or_default();
             let (name, dirs, _) = super::themes::parse_index_theme(&text);
-            out.push(UserTheme { kind: if dirs { "Icons" } else { "Mouse pointer" }, name: name.unwrap_or_else(|| file_name(&d)), path: d });
+            // An icon theme lists directories; a pointer theme has a `cursors` folder. Anything else (an app's own icon
+            // folder, like distrobox's) is not a theme and is left alone.
+            let kind = if dirs {
+                "Icons"
+            } else if d.join("cursors").is_dir() {
+                "Mouse pointer"
+            } else {
+                continue;
+            };
+            out.push(UserTheme { kind, name: name.unwrap_or_else(|| file_name(&d)), path: d });
         }
     }
     out.sort_by(|a, b| (a.kind, a.name.to_lowercase()).cmp(&(b.kind, b.name.to_lowercase())));
@@ -304,16 +313,18 @@ pub fn open_review(from: &impl IsA<gtk4::Widget>, on_reset: impl Fn(Choice) + 's
     content.append(&themes_group);
     content.append(&status);
 
-    // Buttons.
+    // Buttons: in a footer that stays visible while the lists scroll.
     let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
     buttons.set_halign(gtk4::Align::End);
+    buttons.set_margin_top(10);
+    buttons.set_margin_bottom(14);
+    buttons.set_margin_end(16);
     let cancel = gtk4::Button::with_label("Cancel");
     let reset = gtk4::Button::with_label("Reset to default");
     reset.add_css_class("destructive-action");
     reset.set_sensitive(false);
     buttons.append(&cancel);
     buttons.append(&reset);
-    content.append(&buttons);
     {
         let w = win.clone();
         cancel.connect_clicked(move |_| w.close());
@@ -363,9 +374,13 @@ pub fn open_review(from: &impl IsA<gtk4::Widget>, on_reset: impl Fn(Choice) + 's
     }
 
     super::adopt_orphan_rows(content.upcast_ref());
-    let scroll = gtk4::ScrolledWindow::builder().hscrollbar_policy(gtk4::PolicyType::Never).build();
+    let scroll = gtk4::ScrolledWindow::builder().hscrollbar_policy(gtk4::PolicyType::Never).vexpand(true).build();
     scroll.set_child(Some(&content));
-    win.set_child(Some(&scroll));
+    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    root.append(&scroll);
+    root.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
+    root.append(&buttons);
+    win.set_child(Some(&root));
     win.present();
 }
 
@@ -433,6 +448,8 @@ mod tests {
         w(".local/share/plasma/look-and-feel/com.x.fancy/metadata.json", "{\"KPlugin\":{\"Name\":\"Fancy Glass\"}}");
         w(".local/share/icons/Tela/index.theme", "[Icon Theme]\nName=Tela\nDirectories=16\n");
         w(".local/share/icons/Bibata/index.theme", "[Icon Theme]\nName=Bibata\n");
+        w(".local/share/icons/Bibata/cursors/left_ptr", "x");
+        w(".local/share/icons/distrobox/index.theme", "[Icon Theme]\nName=distrobox\n"); // an app's folder: not a theme
         w(".local/share/color-schemes/Nice.colors", "[General]\nName=Nice Night\n");
         w(".config/Kvantum/Glass/Glass.kvconfig", "x");
         w(".config/Kvantum/kvantum.kvconfig", "[General]\ntheme=Glass\n");

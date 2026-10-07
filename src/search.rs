@@ -204,6 +204,7 @@ pub static ENTRIES: &[Entry] = &[
     e!("Start", "Personalization", "menu launcher"),
     e!("Text input", "Personalization", "typing suggestions emoji"),
     e!("Keyboard button in the taskbar", "Personalization", "on-screen keyboard touch screen tablet pop-up virtual keyboard button"),
+    e!("Keyboard on the sign-in screen", "Personalization", "login screen virtual keyboard sddm touch password"),
     e!("Dynamic Lighting", "Personalization", "rgb leds keyboard lighting"),
     e!("Transparency effects", "Personalization", "translucent blur glass"),
     // Privacy & security

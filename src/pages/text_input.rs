@@ -55,6 +55,27 @@ fn install_touch_keyboard() -> Result<(), String> {
     }
 }
 
+const SDDM_KEYBOARD_CONF: &str = "/etc/sddm.conf.d/20-zohara-keyboard.conf";
+
+/// The sign-in screen's keyboard button needs Qt's virtual keyboard installed and switched on in SDDM's config.
+fn login_keyboard_ready() -> bool {
+    Command::new("pacman").args(["-Q", "qt6-virtualkeyboard"]).output().map(|o| o.status.success()).unwrap_or(false)
+        && std::fs::read_to_string(SDDM_KEYBOARD_CONF).map(|t| t.contains("InputMethod=qtvirtualkeyboard")).unwrap_or(false)
+}
+
+fn install_login_keyboard() -> Result<(), String> {
+    let script = "pacman -S --needed --noconfirm qt6-virtualkeyboard && mkdir -p /etc/sddm.conf.d && printf '[General]\nInputMethod=qtvirtualkeyboard\n' > /etc/sddm.conf.d/20-zohara-keyboard.conf";
+    let o = Command::new("pkexec").args(["sh", "-c", script]).output().map_err(|e| e.to_string())?;
+    match o.status.code() {
+        Some(0) => Ok(()),
+        Some(126) | Some(127) => Err("The password prompt was cancelled".into()),
+        _ => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            Err(err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("The install did not finish").trim().to_string())
+        }
+    }
+}
+
 /// First installed on-screen keyboard, if any.
 fn find_keyboard() -> Option<&'static str> {
     ["wvkbd-mobintl", "onboard", "florence"].into_iter().find(|c| which(c))
@@ -173,6 +194,37 @@ pub fn open(parent_row: &adw::ActionRow) {
     }
     *taskbar_switch.borrow_mut() = Some(tb.clone());
     tools.add(&tb);
+
+    let login = adw::ActionRow::new();
+    login.set_title("Keyboard on the sign-in screen");
+    if login_keyboard_ready() {
+        login.set_subtitle("On. Use the Virtual Keyboard button at the bottom left of the sign-in screen (after the next restart)");
+    } else {
+        login.set_subtitle("Makes the Virtual Keyboard button on the sign-in screen work, so you can type your password by touch");
+        let b = gtk4::Button::with_label("Turn on");
+        b.set_valign(gtk4::Align::Center);
+        b.add_css_class("suggested-action");
+        let login2 = login.clone();
+        b.connect_clicked(move |b| {
+            b.set_sensitive(false);
+            b.set_label("Installing…");
+            login2.set_subtitle("Waiting for the password prompt, then downloading…");
+            let (b, login3) = (b.clone(), login2.clone());
+            in_background(install_login_keyboard, move |res| match res {
+                Ok(()) => {
+                    b.set_visible(false);
+                    login3.set_subtitle("On. It works on the sign-in screen after the next restart");
+                }
+                Err(e) => {
+                    b.set_sensitive(true);
+                    b.set_label("Try again");
+                    login3.set_subtitle(&format!("Couldn't turn it on: {e}"));
+                }
+            });
+        });
+        login.add_suffix(&b);
+    }
+    tools.add(&login);
 
     let emoji = adw::ActionRow::new();
     emoji.set_title("Emoji picker");

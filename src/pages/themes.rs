@@ -185,9 +185,13 @@ fn apply(kind: &str, id: &str) -> Result<(), String> {
         "icons" => {
             // The same two steps Plasma's own icon page does: store the name, tell running apps.
             kconfig::write("kdeglobals", &["Icons"], "Theme", id);
-            let _ = Command::new("dbus-send")
-                .args(["--session", "--type=signal", "/KIconLoader", "org.kde.KIconLoader.iconChanged", "int32:0"])
-                .status();
+            // KIconLoader groups: Desktop, Toolbar, MainToolbar, Small, Panel, Dialog. The panel (taskbar) listens to
+            // its own group, so tell all of them or the taskbar keeps the old icons until the next login.
+            for group in 0..=5 {
+                let _ = Command::new("dbus-send")
+                    .args(["--session", "--type=signal", "/KIconLoader", "org.kde.KIconLoader.iconChanged", &format!("int32:{group}")])
+                    .status();
+            }
             Ok(())
         }
         _ => Err("unknown kind".into()),

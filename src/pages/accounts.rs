@@ -25,6 +25,8 @@ struct User {
     real_name: String,
     icon: String,
     admin: bool,
+    /// AccountsService: 0 normal password, 1 set at first sign-in, 2 no password.
+    password_mode: i32,
     uid: u64,
 }
 
@@ -35,6 +37,7 @@ async fn read_user(conn: &zbus::Connection, path: String) -> zbus::Result<User> 
         real_name: p.get_property("RealName").await.unwrap_or_default(),
         icon: p.get_property("IconFile").await.unwrap_or_default(),
         admin: p.get_property::<i32>("AccountType").await.unwrap_or(0) == 1,
+        password_mode: p.get_property::<i32>("PasswordMode").await.unwrap_or(0),
         uid: p.get_property("Uid").await.unwrap_or(0),
         path,
     })
@@ -136,6 +139,17 @@ fn validate_password(p1: &str, p2: &str) -> Result<(), &'static str> {
         Ok(())
     }
 }
+
+/// Only a standard account may have no password: anyone at the computer could sign in as an administrator and take over.
+pub fn may_be_passwordless(is_admin: bool) -> bool {
+    !is_admin
+}
+
+/// Root script that removes a password. It checks again, on its own, that the account is not an administrator.
+const NO_PASSWORD_SCRIPT: &str = "if id -nG -- \"$1\" | tr ' ' '\\n' | grep -qx wheel; then echo 'Administrators need a password.' >&2; exit 1; fi; passwd -d -- \"$1\"";
+
+/// Root script for a new standard user without a password.
+const NEW_PASSWORDLESS_SCRIPT: &str = "useradd -m -c \"$1\" -- \"$2\" && passwd -d -- \"$2\"";
 
 fn change_password_dialog(w: &gtk4::Widget, user: &str) {
     let d = adw::AlertDialog::new(Some("Change password"), Some(&format!("Set a new password for {user}.")));
@@ -347,10 +361,31 @@ fn add_user_dialog(page: &gtk4::Box, reload: std::rc::Rc<dyn Fn()>) {
     let user = gtk4::Entry::builder().placeholder_text("Username").build();
     let (pw_box, p1, p2) = password_entries();
     let admin = gtk4::CheckButton::with_label("Administrator (can install apps and change system settings)");
+    let nopass = gtk4::CheckButton::with_label("No password (anyone at this computer can sign in as this user)");
+    let nopass_note = gtk4::Label::new(Some("A user without a password is always a standard user."));
+    nopass_note.set_halign(gtk4::Align::Start);
+    nopass_note.set_wrap(true);
+    nopass_note.add_css_class("dim-label");
+    nopass_note.set_visible(false);
     form.append(&full);
     form.append(&user);
     form.append(&pw_box);
+    form.append(&nopass);
+    form.append(&nopass_note);
     form.append(&admin);
+    {
+        // The two choices exclude each other, so an administrator can never end up without a password.
+        let (pw_box, admin, nopass_note) = (pw_box.clone(), admin.clone(), nopass_note.clone());
+        nopass.connect_toggled(move |n| {
+            let on = n.is_active();
+            pw_box.set_visible(!on);
+            nopass_note.set_visible(on);
+            if on {
+                admin.set_active(false);
+            }
+            admin.set_sensitive(!on);
+        });
+    }
     {
         let user = user.clone();
         let edited = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -381,19 +416,26 @@ fn add_user_dialog(page: &gtk4::Box, reload: std::rc::Rc<dyn Fn()>) {
             message(&page2, "User not added", "Usernames use lowercase letters, numbers, - and _, and start with a letter.");
             return;
         }
-        if let Err(e) = validate_password(&a, &b) {
-            message(&page2, "User not added", e);
-            return;
+        let passwordless = nopass.is_active() && may_be_passwordless(admin.is_active());
+        if !passwordless {
+            if let Err(e) = validate_password(&a, &b) {
+                message(&page2, "User not added", e);
+                return;
+            }
         }
         let groups = if admin.is_active() { "wheel" } else { "" };
         let (page3, reload) = (page2.clone(), reload.clone());
         in_background(
             move || {
-                pkexec_sh(
-                    "useradd -m -c \"$1\" ${3:+-G \"$3\"} -- \"$2\" && chpasswd",
-                    &[&fname, &uname, groups],
-                    Some(format!("{uname}:{a}\n")),
-                )
+                if passwordless {
+                    pkexec_sh(NEW_PASSWORDLESS_SCRIPT, &[&fname, &uname], None)
+                } else {
+                    pkexec_sh(
+                        "useradd -m -c \"$1\" ${3:+-G \"$3\"} -- \"$2\" && chpasswd",
+                        &[&fname, &uname, groups],
+                        Some(format!("{uname}:{a}\n")),
+                    )
+                }
             },
             move |res| match res {
                 Ok(()) => reload(),
@@ -407,15 +449,22 @@ fn add_user_dialog(page: &gtk4::Box, reload: std::rc::Rc<dyn Fn()>) {
 fn user_row(u: &User, page: &gtk4::Box, reload: std::rc::Rc<dyn Fn()>) -> adw::ActionRow {
     let row = adw::ActionRow::new();
     row.set_title(&glib::markup_escape_text(if u.real_name.is_empty() { &u.name } else { &u.real_name }));
-    row.set_subtitle(&u.name);
+    row.set_subtitle(&if u.password_mode == 2 { format!("{} · No password", u.name) } else { u.name.clone() });
     row.add_prefix(&avatar(u, 36));
 
     let kind = gtk4::DropDown::from_strings(&["Standard", "Administrator"]);
     kind.set_selected(u.admin as u32);
     kind.set_valign(gtk4::Align::Center);
     let (name, page2, reload2) = (u.name.clone(), page.clone(), reload.clone());
+    let passwordless_now = u.password_mode == 2;
     kind.connect_selected_notify(move |k| {
         let admin = k.selected() == 1;
+        if admin && passwordless_now {
+            // An administrator must have a password: ask for one first.
+            k.set_selected(0);
+            message(&page2, "Set a password first", &format!("{name} has no password. Give them a password before making them an administrator."));
+            return;
+        }
         let (name, page3, reload3) = (name.clone(), page2.clone(), reload2.clone());
         in_background(
             move || pkexec_sh(if admin { "gpasswd -a \"$1\" wheel" } else { "gpasswd -d \"$1\" wheel" }, &[&name], None),
@@ -436,6 +485,48 @@ fn user_row(u: &User, page: &gtk4::Box, reload: std::rc::Rc<dyn Fn()>) -> adw::A
     let name = u.name.clone();
     pw.connect_clicked(move |b| change_password_dialog(b.upcast_ref(), &name));
     row.add_suffix(&pw);
+
+    // Remove the password (standard users only).
+    let nopw = gtk4::Button::from_icon_name("changes-allow-symbolic");
+    nopw.add_css_class("flat");
+    nopw.set_valign(gtk4::Align::Center);
+    if !may_be_passwordless(u.admin) {
+        nopw.set_sensitive(false);
+        nopw.set_tooltip_text(Some("Administrators need a password"));
+    } else if u.password_mode == 2 {
+        nopw.set_sensitive(false);
+        nopw.set_tooltip_text(Some("This user already has no password"));
+    } else {
+        nopw.set_tooltip_text(Some("Let this user sign in without a password"));
+    }
+    let (name, page2, reload2) = (u.name.clone(), page.clone(), reload.clone());
+    nopw.connect_clicked(move |_| {
+        let d = adw::AlertDialog::new(
+            Some(&format!("Let {name} sign in without a password?")),
+            Some("Anyone at this computer will be able to sign in as this user and open their files. This is only offered for standard users."),
+        );
+        d.add_responses(&[("cancel", "Cancel"), ("remove", "Remove password")]);
+        d.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+        d.set_close_response("cancel");
+        let (name, page3, reload3) = (name.clone(), page2.clone(), reload2.clone());
+        d.connect_response(None, move |_, r| {
+            if r != "remove" {
+                return;
+            }
+            let (name, page4, reload4) = (name.clone(), page3.clone(), reload3.clone());
+            in_background(
+                move || pkexec_sh(NO_PASSWORD_SCRIPT, &[&name], None),
+                move |res| {
+                    if let Err(e) = res {
+                        message(&page4, "Password not removed", &e);
+                    }
+                    reload4();
+                },
+            );
+        });
+        d.present(Some(&page2));
+    });
+    row.add_suffix(&nopw);
 
     let del = gtk4::Button::from_icon_name("user-trash-symbolic");
     del.add_css_class("flat");
@@ -558,4 +649,22 @@ pub fn build() -> gtk4::Widget {
 
     scroll.set_child(Some(&root));
     scroll.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_standard_users_may_be_passwordless() {
+        assert!(may_be_passwordless(false));
+        assert!(!may_be_passwordless(true));
+    }
+
+    #[test]
+    fn the_root_scripts_guard_administrators() {
+        assert!(NO_PASSWORD_SCRIPT.contains("grep -qx wheel"));
+        assert!(NO_PASSWORD_SCRIPT.contains("passwd -d"));
+        assert!(NEW_PASSWORDLESS_SCRIPT.contains("useradd") && !NEW_PASSWORDLESS_SCRIPT.contains("wheel"));
+    }
 }

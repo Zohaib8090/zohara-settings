@@ -268,6 +268,7 @@ pub static ENTRIES: &[Entry] = &[
     e!("Sign in automatically", "Accounts", "autologin login"),
     e!("Add a user", "Accounts", "new account"),
     e!("Remove user", "Accounts", "delete account"),
+    e!("Remove password", "Accounts", "no password passwordless account standard user sign in without password blank"),
     e!("Other users", "Accounts", "accounts list"),
     // Keyboard, mouse, default apps
     e!("Keyboard layouts", "Keyboard", "language layout input switch"),

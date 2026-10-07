@@ -52,6 +52,14 @@ fn main() -> glib::ExitCode {
     if args.iter().any(|a| a == "--dictate") {
         std::process::exit(backend::dictation::run());
     }
+    // Taskbar keyboard button: show or hide the on-screen keyboard, no window.
+    if args.iter().any(|a| a == "--toggle-keyboard") {
+        std::process::exit(backend::touch_keyboard::toggle());
+    }
+    // First-login setup on a touch screen (autostart): turn on the keyboard and add its taskbar button.
+    if args.iter().any(|a| a == "--touch-setup") {
+        std::process::exit(backend::touch_keyboard::touch_setup());
+    }
     // Automatic time zone (a systemd user timer runs this): find the zone from the internet connection and set it.
     if args.iter().any(|a| a == "--auto-timezone") {
         std::process::exit(backend::autotz::run_once());

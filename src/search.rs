@@ -202,6 +202,7 @@ pub static ENTRIES: &[Entry] = &[
     e!("Font size", "Personalization", "text size bigger smaller"),
     e!("Start", "Personalization", "menu launcher"),
     e!("Text input", "Personalization", "typing suggestions emoji"),
+    e!("Keyboard button in the taskbar", "Personalization", "on-screen keyboard touch screen tablet pop-up virtual keyboard button"),
     e!("Dynamic Lighting", "Personalization", "rgb leds keyboard lighting"),
     e!("Transparency effects", "Personalization", "translucent blur glass"),
     // Privacy & security

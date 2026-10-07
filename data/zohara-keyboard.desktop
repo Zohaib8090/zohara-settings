@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=On-screen keyboard
+GenericName=Touch keyboard
+Comment=Show or hide the on-screen keyboard
+Exec=/usr/bin/zohara-settings --toggle-keyboard
+Icon=input-keyboard-virtual
+Terminal=false
+Categories=Utility;Accessibility;
+Keywords=keyboard;touch;onscreen;virtual;tablet;
+X-KDE-StartupNotify=false

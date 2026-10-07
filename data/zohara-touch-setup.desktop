@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Zohara touch screen setup
+Comment=On a touch screen computer, set up the on-screen keyboard and its taskbar button
+Exec=/usr/bin/zohara-settings --touch-setup
+Icon=input-keyboard-virtual
+Terminal=false
+NoDisplay=true
+OnlyShowIn=KDE;
+X-KDE-autostart-after=panel

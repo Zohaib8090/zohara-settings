@@ -8,5 +8,6 @@ pub mod network;
 pub mod privacy_indicator;
 pub mod process;
 pub mod system;
+pub mod touch_keyboard;
 pub mod wifi_diag;
 pub mod worker;

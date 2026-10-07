@@ -108,6 +108,10 @@ package() {
   install -Dm644 "$startdir/data/zohara-settings-timezone.timer" "$pkgdir/usr/lib/systemd/user/zohara-settings-timezone.timer"
   install -Dm644 "$startdir/data/50-zohara-timezone.rules" "$pkgdir/usr/share/polkit-1/rules.d/50-zohara-timezone.rules"
 
+  # On-screen keyboard button for the taskbar, and the first-login setup that adds it on a touch screen computer.
+  install -Dm644 "$startdir/data/zohara-keyboard.desktop" "$pkgdir/usr/share/applications/zohara-keyboard.desktop"
+  install -Dm644 "$startdir/data/zohara-touch-setup.desktop" "$pkgdir/etc/xdg/autostart/zohara-touch-setup.desktop"
+
   # After sleep, if the Wi-Fi chip did not wake up, reload its driver (does nothing when Wi-Fi is fine).
   install -Dm755 "$startdir/data/zohara-wifi-resume" "$pkgdir/usr/lib/systemd/system-sleep/zohara-wifi-resume"
 

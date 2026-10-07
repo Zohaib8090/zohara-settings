@@ -44,8 +44,7 @@ fn install_touch_keyboard() -> Result<(), String> {
     let o = Command::new("pkexec").args(["sh", "-c", "pacman -S --needed --noconfirm plasma-keyboard"]).output().map_err(|e| e.to_string())?;
     match o.status.code() {
         Some(0) => {
-            kconfig::write("kwinrc", &["Wayland"], "InputMethod", "/usr/share/applications/org.kde.plasma.keyboard.desktop");
-            kconfig::kwin_reconfigure();
+            crate::backend::touch_keyboard::enable_input_method();
             Ok(())
         }
         Some(126) | Some(127) => Err("The password prompt was cancelled".into()),
@@ -80,6 +79,8 @@ pub fn open(parent_row: &adw::ActionRow) {
     let tools = adw::PreferencesGroup::new();
     tools.set_title("Typing tools");
 
+    // The switch for the taskbar button lives below; the install button needs to reach it.
+    let taskbar_switch: std::rc::Rc<std::cell::RefCell<Option<adw::SwitchRow>>> = Default::default();
     let osk = adw::ActionRow::new();
     osk.set_title("On-screen keyboard");
     match find_keyboard() {
@@ -92,22 +93,37 @@ pub fn open(parent_row: &adw::ActionRow) {
             });
             osk.add_suffix(&b);
         }
-        None if touch_keyboard_installed() => osk.set_subtitle("Installed. It appears by itself when you tap a text box on a touch screen"),
+        None if touch_keyboard_installed() => {
+            osk.set_subtitle("Installed. Tap the keyboard button in the taskbar, or tap a text box on a touch screen");
+            let b = gtk4::Button::with_label("Show / hide");
+            b.set_valign(gtk4::Align::Center);
+            b.connect_clicked(|_| {
+                std::thread::spawn(|| {
+                    crate::backend::touch_keyboard::toggle();
+                });
+            });
+            osk.add_suffix(&b);
+        }
         None => {
             osk.set_subtitle("Not installed yet. It lets you type by tapping keys on a touch screen");
             let b = gtk4::Button::with_label("Install");
             b.set_valign(gtk4::Align::Center);
             b.add_css_class("suggested-action");
             let osk2 = osk.clone();
+            let taskbar_switch2 = taskbar_switch.clone();
             b.connect_clicked(move |b| {
                 b.set_sensitive(false);
                 b.set_label("Installing…");
                 osk2.set_subtitle("Waiting for the password prompt, then downloading…");
-                let (b, osk3) = (b.clone(), osk2.clone());
+                let (b, osk3, taskbar_switch3) = (b.clone(), osk2.clone(), taskbar_switch2.clone());
                 in_background(install_touch_keyboard, move |res| match res {
                     Ok(()) => {
                         b.set_visible(false);
-                        osk3.set_subtitle("Installed. It appears by itself when you tap a text box on a touch screen");
+                        osk3.set_subtitle("Installed. Tap the keyboard button in the taskbar, or tap a text box on a touch screen");
+                        if let Some(sw) = taskbar_switch3.borrow().as_ref() {
+                            sw.set_sensitive(true);
+                            sw.set_active(true); // adds the taskbar button
+                        }
                     }
                     Err(e) => {
                         b.set_sensitive(true);
@@ -120,6 +136,43 @@ pub fn open(parent_row: &adw::ActionRow) {
         }
     }
     tools.add(&osk);
+
+    let tb = adw::SwitchRow::new();
+    tb.set_title("Keyboard button in the taskbar");
+    tb.set_subtitle("Tap it any time to show or hide the on-screen keyboard (made for touch screens)");
+    let tb_ready = Rc::new(std::cell::Cell::new(true));
+    if crate::backend::touch_keyboard::installed() {
+        tb_ready.set(false);
+        let (tb2, ready) = (tb.clone(), tb_ready.clone());
+        in_background(crate::backend::touch_keyboard::button_present, move |on| {
+            tb2.set_active(on);
+            ready.set(true);
+        });
+    } else {
+        tb.set_sensitive(false);
+    }
+    {
+        let (status, ready) = (status.clone(), tb_ready.clone());
+        tb.connect_active_notify(move |r| {
+            if !ready.get() {
+                return;
+            }
+            let on = r.is_active();
+            let status = status.clone();
+            in_background(
+                move || crate::backend::touch_keyboard::set_button(on),
+                move |ok| {
+                    status.set_text(&if ok {
+                        format!("Saved: keyboard button in the taskbar {}", if on { "on" } else { "off" })
+                    } else {
+                        "Plasma didn't accept the change. The taskbar can only be changed from inside the desktop session.".to_string()
+                    })
+                },
+            );
+        });
+    }
+    *taskbar_switch.borrow_mut() = Some(tb.clone());
+    tools.add(&tb);
 
     let emoji = adw::ActionRow::new();
     emoji.set_title("Emoji picker");

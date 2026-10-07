@@ -193,6 +193,49 @@ fn apply(kind: &str, id: &str) -> Result<(), String> {
     }
 }
 
+/// The look Zohara OS ships with (from the ISO's `/etc/skel`: kdeglobals and Kvantum config).
+pub const DEFAULT_LOOK: &str = "org.kde.breezedark.desktop";
+pub const DEFAULT_COLORS: &str = "BreezeDark";
+pub const DEFAULT_ICONS: &str = "Fluent-dark";
+pub const DEFAULT_CURSOR: &str = "breeze_cursors";
+pub const DEFAULT_WIDGET_STYLE: &str = "kvantum-dark";
+pub const DEFAULT_KVANTUM: &str = "MateriaDark";
+
+/// Puts back everything a theme can change, and says what it could not do. Returns the list of problems.
+fn reset_to_default() -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut note = |what: &str, r: Result<(), String>| {
+        if let Err(e) = r {
+            problems.push(format!("{what}: {e}"));
+        }
+    };
+    // The global theme first: it sets many things at once, and the steps below then put the exact defaults back.
+    note("Global theme", apply("look", DEFAULT_LOOK));
+    note("Colours", apply("colors", DEFAULT_COLORS));
+    if installed_icon_themes("").iter().any(|c| c.id == DEFAULT_ICONS) {
+        note("Icons", apply("icons", DEFAULT_ICONS));
+    } else {
+        // The icon set shipped with the OS was removed: fall back to Breeze rather than leave a broken one.
+        note("Icons", apply("icons", "breeze-dark"));
+    }
+    note("Pointer", apply("cursors", DEFAULT_CURSOR));
+    // Widget style (Kvantum) and the window decoration and Plasma style a theme may have replaced.
+    kconfig::write("kdeglobals", &["KDE"], "widgetStyle", DEFAULT_WIDGET_STYLE);
+    let home = std::env::var("HOME").unwrap_or_default();
+    let kv = format!("{home}/.config/Kvantum");
+    let _ = std::fs::create_dir_all(&kv);
+    let _ = std::fs::write(format!("{kv}/kvantum.kvconfig"), format!("[General]\ntheme={DEFAULT_KVANTUM}\n"));
+    kconfig::delete("plasmarc", &["Theme"], "name");
+    kconfig::delete("kwinrc", &["org.kde.kdecoration2"], "theme");
+    kconfig::delete("kwinrc", &["org.kde.kdecoration2"], "library");
+    kconfig::kwin_reconfigure();
+    // The taskbar: a theme can move it or leave spacers behind. Back to the bottom, icons at the left.
+    if !super::personalization::run_taskbar_script(0, Some("bottom")) {
+        problems.push("Taskbar: Plasma did not answer".to_string());
+    }
+    problems
+}
+
 /// Installs a theme file. Returns what was installed, in words.
 fn install_file(path: &Path) -> Result<String, String> {
     let home = std::env::var("HOME").map_err(|_| "no home folder".to_string())?;
@@ -332,6 +375,45 @@ fn fill(content: gtk4::Box) {
         }
         content.append(&status);
 
+        let reset = adw::PreferencesGroup::new();
+        reset.set_title("Something looks wrong?");
+        let rrow = adw::ActionRow::new();
+        rrow.set_title("Reset to the Zohara default look");
+        rrow.set_subtitle("Puts back the theme, colours, icons, pointer, window style and taskbar that Zohara OS comes with. Your files and apps are not touched.");
+        let rbtn = gtk4::Button::with_label("Reset…");
+        rbtn.set_valign(gtk4::Align::Center);
+        rbtn.add_css_class("destructive-action");
+        let (content_x, status_x) = (content.clone(), status.clone());
+        rbtn.connect_clicked(move |b| {
+            let d = adw::AlertDialog::new(
+                Some("Reset the look to the default?"),
+                Some("The theme, colours, icons, mouse pointer, window style and taskbar go back to what Zohara OS shipped with. Themes you installed stay on disk but are no longer used."),
+            );
+            d.add_responses(&[("cancel", "Cancel"), ("reset", "Reset")]);
+            d.set_response_appearance("reset", adw::ResponseAppearance::Destructive);
+            d.set_close_response("cancel");
+            let (content_y, status_y) = (content_x.clone(), status_x.clone());
+            d.connect_response(None, move |_, r| {
+                if r != "reset" {
+                    return;
+                }
+                status_y.set_text("Resetting…");
+                let (content_z, status_z) = (content_y.clone(), status_y.clone());
+                in_background(reset_to_default, move |problems| {
+                    if problems.is_empty() {
+                        status_z.set_text("Done: the default look is back. Some open apps change when they are reopened.");
+                    } else {
+                        status_z.set_text(&format!("Mostly done. Couldn't do: {}", problems.join("; ")));
+                    }
+                    fill(content_z);
+                });
+            });
+            d.present(Some(b));
+        });
+        rrow.add_suffix(&rbtn);
+        reset.add(&rrow);
+        content.append(&reset);
+
         let inst = adw::PreferencesGroup::new();
         inst.set_title("Add more themes");
         inst.set_description(Some("Icon, cursor, colour and global themes are supported."));
@@ -411,6 +493,15 @@ mod tests {
         assert_eq!(v[0], Choice { id: "breeze_cursors".into(), label: "Breeze Dark".into(), current: true });
         assert_eq!(v[1].id, "Fluent-cursors");
         assert_eq!(v[1].label, "Fluent");
+    }
+
+    #[test]
+    fn the_default_look_matches_what_the_iso_ships() {
+        // Keep in step with zohara-profile/airootfs/etc/skel/.config/kdeglobals and Kvantum/kvantum.kvconfig.
+        assert_eq!(DEFAULT_LOOK, "org.kde.breezedark.desktop");
+        assert_eq!(DEFAULT_ICONS, "Fluent-dark");
+        assert_eq!(DEFAULT_WIDGET_STYLE, "kvantum-dark");
+        assert_eq!(DEFAULT_KVANTUM, "MateriaDark");
     }
 
     #[test]

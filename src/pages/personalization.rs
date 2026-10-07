@@ -335,7 +335,7 @@ panels().forEach(function (p) {{
     )
 }
 
-fn run_taskbar_script(align: u32, location: Option<&str>) -> bool {
+pub(super) fn run_taskbar_script(align: u32, location: Option<&str>) -> bool {
     Command::new("dbus-send")
         .args(["--session", "--type=method_call", "--dest=org.kde.plasmashell", "/PlasmaShell", "org.kde.PlasmaShell.evaluateScript"])
         .arg(format!("string:{}", taskbar_script(align, location)))

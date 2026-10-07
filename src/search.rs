@@ -190,6 +190,7 @@ pub static ENTRIES: &[Entry] = &[
     e!("What's using space", "Storage", "disk usage large files"),
     // Personalization
     e!("Themes", "Personalization", "theme desktop style"),
+    e!("Reset to the Zohara default look", "Personalization", "theme reset default restore broken look layout"),
     e!("Colors", "Personalization", "accent colour color dark mode light mode"),
     e!("Choose your mode", "Personalization", "dark light theme mode"),
     e!("Background", "Personalization", "wallpaper picture desktop image photo"),

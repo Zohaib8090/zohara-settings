@@ -18,7 +18,7 @@ fn busctl(args: &[&str]) -> Option<String> {
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
-const KWIN: [&str; 3] = ["org.kde.KWin", "/VirtualKeyboard", "org.kde.KWin.VirtualKeyboard"];
+const KWIN: [&str; 3] = ["org.kde.KWin", "/VirtualKeyboard", "org.kde.kwin.VirtualKeyboard"];
 
 /// `b true` / `b false` from busctl -> the bool.
 pub fn parse_bool(out: &str) -> Option<bool> {

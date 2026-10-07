@@ -60,3 +60,13 @@ restores the original) and **Add a game file** (a program, AppImage or `.exe` vi
 `gamemoderun`). Tested in the VM by clicking: add by file, add from apps, Play (launched Dolphin), Remove with confirm,
 list survives a restart. Not tested: a real Windows `.exe` through Wine, a flatpak app marked as a game. Known nit: the
 app picker still lists entries already added.
+
+## Later on 2026-10-07
+
+* **Theme reset** (`src/pages/look_reset.rs`, `themes.rs`): `plan_panels` keeps the panel that has the start menu and removes the rest; if the kept one has no
+  task manager `add_tasks_script` adds `org.kde.plasma.icontasks` after the start menu; `installed_by_user` lists themes in the user's folders and
+  `is_safe_theme_path` limits what Uninstall may delete. Plasma is driven with `evaluateScript` (`start_menu::plasma_script`); multi-panel output is one line
+  joined with `;` because `reply_text` reads a single `string "..."` line. The reset ends with `restart_taskbar()`.
+* **Touch keyboard** (`src/backend/touch_keyboard.rs`): see the handoff. Pure parts (`parse_bool`, `plan`, panel scripts) have unit tests; the D-Bus calls do not.
+* **Accounts**: `may_be_passwordless` (standard users only) and the root scripts `NO_PASSWORD_SCRIPT`/`NEW_PASSWORDLESS_SCRIPT` re-check `wheel` themselves.
+* **Automatic time zone**: `docs/TIMEZONE.md`.

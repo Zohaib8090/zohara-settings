@@ -44,10 +44,23 @@ pub fn toggle() -> i32 {
     if is_showing() {
         return if busctl(&["set-property", KWIN[0], KWIN[1], KWIN[2], "active", "b", "false"]).is_some() { 0 } else { 1 };
     }
+    if !is_available() && installed() {
+        // Installed but KWin has not picked it up (the setting was never written, or KWin has not reloaded): do both now.
+        enable_input_method();
+        for _ in 0..10 {
+            if is_available() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
     if !is_available() {
-        let _ = Command::new("notify-send")
-            .args(["-a", "Zohara Settings", "-i", "input-keyboard-virtual", "On-screen keyboard", "It is not set up yet. Open Settings > Personalization > Text input and press Install."])
-            .status();
+        let msg = if installed() {
+            "The keyboard is installed but this session has not loaded it yet. Sign out and back in once, then tap the button again."
+        } else {
+            "It is not installed yet. Open Settings > Personalization > Text input and press Install."
+        };
+        let _ = Command::new("notify-send").args(["-a", "Zohara Settings", "-i", "input-keyboard-virtual", "On-screen keyboard", msg]).status();
         return 1;
     }
     if busctl(&["call", KWIN[0], KWIN[1], KWIN[2], "forceActivate"]).is_some() { 0 } else { 1 }

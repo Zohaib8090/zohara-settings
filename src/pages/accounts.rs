@@ -457,11 +457,17 @@ fn user_row(u: &User, page: &gtk4::Box, reload: std::rc::Rc<dyn Fn()>) -> adw::A
     kind.set_valign(gtk4::Align::Center);
     let (name, page2, reload2) = (u.name.clone(), page.clone(), reload.clone());
     let passwordless_now = u.password_mode == 2;
+    let putting_back = std::rc::Rc::new(std::cell::Cell::new(false));
     kind.connect_selected_notify(move |k| {
+        if putting_back.get() {
+            return; // we moved the dropdown ourselves; nothing to do
+        }
         let admin = k.selected() == 1;
         if admin && passwordless_now {
             // An administrator must have a password: ask for one first.
+            putting_back.set(true);
             k.set_selected(0);
+            putting_back.set(false);
             message(&page2, "Set a password first", &format!("{name} has no password. Give them a password before making them an administrator."));
             return;
         }

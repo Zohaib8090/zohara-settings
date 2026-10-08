@@ -60,6 +60,10 @@ fn main() -> glib::ExitCode {
     if args.iter().any(|a| a == "--touch-setup") {
         std::process::exit(backend::touch_keyboard::touch_setup());
     }
+    // KDE Wallet starts off (autostart, once).
+    if args.iter().any(|a| a == "--wallet-default") {
+        std::process::exit(backend::wallet::apply_default());
+    }
     // The Zohara logo on the start button (autostart, once).
     if args.iter().any(|a| a == "--branding") {
         std::process::exit(backend::branding::run_once());

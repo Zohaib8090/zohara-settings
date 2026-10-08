@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Zohara wallet default
+Exec=zohara-settings --wallet-default
+NoDisplay=true
+X-KDE-autostart-phase=1

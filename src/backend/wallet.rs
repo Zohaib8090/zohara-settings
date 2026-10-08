@@ -35,6 +35,33 @@ pub fn flags_with(text: &str, wallet_on: bool) -> String {
     out
 }
 
+fn done_flag() -> PathBuf {
+    config_dir().join("zohara/wallet-default")
+}
+
+/// A wallet file exists: the person already uses KDE Wallet, so switching it off would hide what is saved in it.
+fn wallet_in_use() -> bool {
+    let home = std::env::var("HOME").unwrap_or_default();
+    std::fs::read_dir(PathBuf::from(home).join(".local/share/kwalletd"))
+        .map(|rd| rd.flatten().any(|e| e.path().extension().map(|x| x == "kwl").unwrap_or(false)))
+        .unwrap_or(false)
+}
+
+/// Autostart, once per person: KDE Wallet starts switched off (no wallet window the first time a browser runs). The
+/// person can switch it on in Settings > Privacy & security. Not done when a wallet already exists.
+pub fn apply_default() -> i32 {
+    if done_flag().exists() {
+        return 0;
+    }
+    if !wallet_in_use() {
+        set_enabled(false);
+    }
+    let p = done_flag();
+    let _ = std::fs::create_dir_all(p.parent().unwrap_or(&p));
+    let _ = std::fs::write(p, "done\n");
+    0
+}
+
 pub fn set_enabled(on: bool) -> bool {
     kconfig::write_typed(RC, &["Wallet"], "Enabled", "bool", if on { "true" } else { "false" });
     if !on {

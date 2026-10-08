@@ -5,6 +5,7 @@ post_install() {
     systemctl --global enable zohara-settings-timezone.timer >/dev/null 2>&1 || true
     fix_localtime
     update_logo
+    update_release
 }
 
 post_upgrade() {
@@ -42,4 +43,17 @@ update_logo() {
         cp "$src" "$dst"
     fi
     printf '%s\n' "$new" > "$note"
+}
+
+# Zohara OS 1.1: machines installed from an older image have the build date as their version in /etc/os-release. Show
+# the release number instead (About reads it). Only a date-style version is changed; the live ISO is left alone.
+update_release() {
+    f=/etc/os-release
+    [ -f "$f" ] && [ ! -e /run/archiso ] || return 0
+    if grep -Eq '^VERSION="?20[0-9]{2}\.[0-9]{2}\.[0-9]{2}"?$' "$f"; then
+        sed -i -E \
+            -e 's/^PRETTY_NAME=.*/PRETTY_NAME="Zohara OS 1.1"/' \
+            -e 's/^VERSION=.*/VERSION="1.1"/' \
+            -e 's/^VERSION_ID=.*/VERSION_ID="1.1"/' "$f"
+    fi
 }

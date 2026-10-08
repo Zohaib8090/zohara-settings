@@ -67,6 +67,17 @@ fn add_info_row(group: &adw::PreferencesGroup, title: &str, value: &str) {
     group.add(&row);
 }
 
+/// The installed Zohara Settings package version (what Zohara Update changes), or the program's own version.
+fn settings_version() -> String {
+    std::process::Command::new("pacman")
+        .args(["-Q", "zohara-settings"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().nth(1).map(|v| v.to_string()))
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
+
 pub fn build() -> gtk4::Widget {
     let scroll = gtk4::ScrolledWindow::builder()
         .hscrollbar_policy(gtk4::PolicyType::Never)
@@ -105,6 +116,9 @@ pub fn build() -> gtk4::Widget {
         .build();
     add_info_row(&dev_group, "Device name", &hostname);
     add_info_row(&dev_group, "Operating system", &pretty);
+    let version = rel.iter().find(|(k, _)| k == "VERSION").map(|(_, v)| v.clone()).unwrap_or_else(|| "unknown".to_string());
+    add_info_row(&dev_group, "Zohara OS version", &version);
+    add_info_row(&dev_group, "Zohara Settings version", &settings_version());
     add_info_row(&dev_group, "Kernel", &read_kernel());
     add_info_row(&dev_group, "Desktop environment", &read_de());
     add_info_row(&dev_group, "Session type", &read_wm());

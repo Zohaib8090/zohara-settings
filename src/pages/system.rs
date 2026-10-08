@@ -107,6 +107,11 @@ pub fn build() -> gtk4::Widget {
         .build();
     about_card.add(&make_row("Device name", &info.hostname));
     about_card.add(&make_row("OS", &info.os_pretty));
+    let os_version = std::fs::read_to_string("/etc/os-release")
+        .ok()
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("VERSION=").map(|v| v.trim_matches('"').to_string())))
+        .unwrap_or_else(|| "unknown".to_string());
+    about_card.add(&make_row("Zohara OS version", &os_version));
     about_card.add(&make_row(
         "Kernel",
         &format!("linux-zen {}", info.kernel),

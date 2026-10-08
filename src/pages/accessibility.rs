@@ -8,7 +8,12 @@ use gtk4::prelude::*;
 use libadwaita as adw;
 use std::process::Command;
 
-const HIGH_CONTRAST: &str = "BreezeHighContrast";
+/// Zohara's own scheme (data/color-schemes, installed to /usr/share/color-schemes): this Plasma has no BreezeHighContrast.
+const HIGH_CONTRAST: &str = "ZoharaHighContrast";
+
+fn high_contrast_installed() -> bool {
+    std::path::Path::new("/usr/share/color-schemes/ZoharaHighContrast.colors").exists()
+}
 
 fn state_file() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_default();
@@ -35,6 +40,10 @@ fn vision_group() -> adw::PreferencesGroup {
     hc.set_subtitle("Use Breeze High Contrast colours for the desktop and apps");
     hc.add_prefix(&gtk4::Image::from_icon_name("preferences-desktop-color-symbolic"));
     hc.set_active(current_scheme() == HIGH_CONTRAST);
+    if !high_contrast_installed() {
+        hc.set_sensitive(false);
+        hc.set_subtitle("The high contrast colours are not installed yet. Update Zohara and this will work");
+    }
     hc.connect_active_notify(|r| {
         if r.is_active() {
             let prev = current_scheme();
@@ -59,7 +68,7 @@ fn vision_group() -> adw::PreferencesGroup {
 
     let cursor = adw::ComboRow::new();
     cursor.set_title("Cursor size");
-    cursor.set_subtitle("Applies to newly opened apps; log out and in for everything");
+    cursor.set_subtitle("Changes the pointer on the desktop and in apps. A few apps need to be reopened");
     cursor.add_prefix(&gtk4::Image::from_icon_name("input-mouse-symbolic"));
     const SIZES: [u32; 6] = [24, 32, 48, 64, 96, 128];
     let labels: Vec<String> = SIZES.iter().map(|s| format!("{s} px")).collect();
@@ -69,9 +78,11 @@ fn vision_group() -> adw::PreferencesGroup {
     cursor.set_selected(SIZES.iter().position(|s| *s == cur).unwrap_or(0) as u32);
     cursor.connect_selected_notify(|c| {
         let Some(size) = SIZES.get(c.selected() as usize).copied() else { return };
+        // plasma-apply-cursortheme ignores --size when the theme is unchanged, so write the size ourselves and
+        // announce it the way Plasma's own cursor settings do.
         kconfig::spawn(move || {
-            let theme = kconfig::read("kcminputrc", &["Mouse"], "cursorTheme").unwrap_or_else(|| "breeze_cursors".into());
-            let _ = Command::new("plasma-apply-cursortheme").args(["--size", &size.to_string(), &theme]).status();
+            kconfig::write_notify("kcminputrc", &["Mouse"], "cursorSize", &size.to_string());
+            kconfig::notify_cursor_changed();
         });
     });
     g.add(&cursor);
@@ -98,12 +109,12 @@ fn vision_group() -> adw::PreferencesGroup {
     anim.connect_active_notify(|r| {
         let on = r.is_active();
         kconfig::spawn(move || {
+            // Announced, so KWin and the desktop apply it at once (a plain write plus a KWin reconfigure did nothing).
             if on {
-                kconfig::write("kdeglobals", &["KDE"], "AnimationDurationFactor", "0");
+                kconfig::write_notify("kdeglobals", &["KDE"], "AnimationDurationFactor", "0");
             } else {
-                kconfig::delete("kdeglobals", &["KDE"], "AnimationDurationFactor");
+                kconfig::delete_notify("kdeglobals", &["KDE"], "AnimationDurationFactor");
             }
-            kconfig::kwin_reconfigure();
         });
     });
     g.add(&anim);
@@ -361,4 +372,41 @@ pub fn build() -> gtk4::Widget {
 
     scroll.set_child(Some(&root));
     scroll.upcast()
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    fn kwin_info(prefix: &str) -> String {
+        let o = Command::new("qdbus6").args(["org.kde.KWin", "/KWin", "supportInformation"]).output().unwrap();
+        String::from_utf8_lossy(&o.stdout).lines().filter(|l| l.starts_with(prefix)).collect::<Vec<_>>().join(" ")
+    }
+
+    /// Needs a running Plasma session. `cargo test live_accessibility -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_accessibility_animations_and_cursor_size_reach_the_running_desktop() {
+        let wait = || std::thread::sleep(std::time::Duration::from_secs(3));
+        kconfig::write_notify("kdeglobals", &["KDE"], "AnimationDurationFactor", "0");
+        wait();
+        let off = kwin_info("animationDuration");
+        kconfig::delete_notify("kdeglobals", &["KDE"], "AnimationDurationFactor");
+        wait();
+        let back = kwin_info("animationDuration");
+
+        kconfig::write_notify("kcminputrc", &["Mouse"], "cursorSize", "48");
+        kconfig::notify_cursor_changed();
+        wait();
+        let big = kwin_info("themeSize");
+        kconfig::delete_notify("kcminputrc", &["Mouse"], "cursorSize");
+        kconfig::notify_cursor_changed();
+        wait();
+        let small = kwin_info("themeSize");
+
+        println!("animations off: {off} | back: {back} | cursor big: {big} | small: {small}");
+        assert!(off.contains("animationDuration: 1") && !off.contains("animationDuration: 300"), "{off}");
+        assert!(back.contains("animationDuration: 300"), "{back}");
+        assert!(big.contains("48") && small.contains("24"), "{big} / {small}");
+    }
 }

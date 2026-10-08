@@ -708,17 +708,17 @@ fn sources_group(page: &gtk4::Box) -> adw::PreferencesGroup {
 // ── Video playback ─────────────────────────────────────────────────────────
 
 fn gpu_vendors() -> Vec<&'static str> {
-    let out = Command::new("lspci").arg("-nn").output().map(|o| o.stdout).unwrap_or_default();
-    let text = String::from_utf8_lossy(&out).to_lowercase();
+    // From /sys: instant. `lspci` took over two seconds on a hybrid laptop (it wakes the NVIDIA chip) and froze the page.
+    let g = crate::backend::gpu::detect();
     let mut v = Vec::new();
-    for line in text.lines().filter(|l| l.contains("vga") || l.contains("3d controller") || l.contains("display controller")) {
-        if line.contains("intel") && !v.contains(&"intel") {
-            v.push("intel");
-        } else if (line.contains("amd") || line.contains("ati ")) && !v.contains(&"amd") {
-            v.push("amd");
-        } else if line.contains("nvidia") && !v.contains(&"nvidia") {
-            v.push("nvidia");
-        }
+    if g.intel {
+        v.push("intel");
+    }
+    if g.amd {
+        v.push("amd");
+    }
+    if g.nvidia {
+        v.push("nvidia");
     }
     v
 }

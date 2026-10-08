@@ -46,46 +46,7 @@ pub struct Offer {
 
 // ── Hardware ───────────────────────────────────────────────────────────────
 
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
-pub struct Gpus {
-    pub intel: bool,
-    pub amd: bool,
-    pub nvidia: bool,
-}
-
-impl Gpus {
-    fn count(&self) -> usize {
-        [self.intel, self.amd, self.nvidia].iter().filter(|b| **b).count()
-    }
-}
-
-/// Graphics chips from `lspci -nn` output.
-pub fn parse_gpus(lspci: &str) -> Gpus {
-    let mut g = Gpus::default();
-    for line in lspci.lines() {
-        let l = line.to_lowercase();
-        if !(l.contains("vga compatible controller") || l.contains("3d controller") || l.contains("display controller")) {
-            continue;
-        }
-        if l.contains("nvidia") {
-            g.nvidia = true;
-        } else if l.contains("intel") {
-            g.intel = true;
-        } else if l.contains("amd") || l.contains("advanced micro devices") || l.contains("ati ") {
-            g.amd = true;
-        }
-    }
-    g
-}
-
-pub fn detect_gpus() -> Gpus {
-    Command::new("lspci")
-        .arg("-nn")
-        .stderr(Stdio::null())
-        .output()
-        .map(|o| parse_gpus(&String::from_utf8_lossy(&o.stdout)))
-        .unwrap_or_default()
-}
+use crate::backend::gpu::{self, Gpus};
 
 /// Whether an item with this `when` applies. A condition this version doesn't know is not offered.
 pub fn applies(when: Option<&str>, gpus: &Gpus) -> bool {
@@ -187,7 +148,7 @@ pub fn decide(list: Vec<Item>, installed: &HashSet<String>, skipped: &[String], 
 
 /// What to offer on this computer. Reads the system; call off the UI thread.
 pub fn check() -> Offer {
-    decide(load_list(), &installed_packages(), &load_state_at(&state_path()).skipped, &detect_gpus())
+    decide(load_list(), &installed_packages(), &load_state_at(&state_path()).skipped, &gpu::detect())
 }
 
 // ── Installing ─────────────────────────────────────────────────────────────
@@ -253,19 +214,9 @@ mod tests {
         std::env::temp_dir().join(format!("zs-rec-{tag}-{}", std::process::id())).join("recommended.json")
     }
 
-    const DELL: &str = "00:02.0 VGA compatible controller [0300]: Intel Corporation Raptor Lake-P [UHD Graphics] [8086:a7a8] (rev 04)\n01:00.0 VGA compatible controller [0300]: NVIDIA Corporation GA107BM [GeForce RTX 3050 6GB Laptop GPU] [10de:25ac] (rev a1)\n00:1f.3 Audio device [0403]: Intel Corporation Raptor Lake-P/U/H cAVS\n";
-
-    #[test]
-    fn graphics_chips_are_read_from_lspci_and_audio_is_ignored() {
-        assert_eq!(parse_gpus(DELL), Gpus { intel: true, amd: false, nvidia: true });
-        assert_eq!(parse_gpus("03:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Navi 23\n"), Gpus { intel: false, amd: true, nvidia: false });
-        assert_eq!(parse_gpus("00:1f.3 Audio device: Intel Corporation cAVS\n"), Gpus::default());
-        assert_eq!(parse_gpus("00:02.0 Display controller [0380]: Intel Corporation Arc A370M\n").intel, true);
-    }
-
     #[test]
     fn hardware_conditions() {
-        let hybrid = parse_gpus(DELL);
+        let hybrid = Gpus { intel: true, amd: false, nvidia: true };
         let amd_only = Gpus { intel: false, amd: true, nvidia: false };
         assert!(applies(None, &amd_only));
         assert!(applies(Some(""), &amd_only));
@@ -283,7 +234,7 @@ mod tests {
         let o = decide(list.clone(), &set(&["have"]), &["waydroid".to_string()], &amd);
         assert_eq!(o.new.iter().map(|i| i.package.as_str()).collect::<Vec<_>>(), vec!["spectacle"]);
         assert_eq!(o.skipped.iter().map(|i| i.package.as_str()).collect::<Vec<_>>(), vec!["waydroid"]);
-        let o = decide(list, &set(&[]), &[], &parse_gpus(DELL));
+        let o = decide(list, &set(&[]), &[], &Gpus { intel: true, amd: false, nvidia: true });
         assert_eq!(o.new.len(), 5 - 0, "all five fit a hybrid Intel+NVIDIA laptop");
     }
 
@@ -357,7 +308,7 @@ mod tests {
     #[ignore]
     fn offer_here() {
         let list = parse_list(include_str!("../../data/recommended.json"));
-        let gpus = detect_gpus();
+        let gpus = gpu::detect();
         println!("gpus: {gpus:?}");
         let o = decide(list, &installed_packages(), &[], &gpus);
         for i in &o.new {

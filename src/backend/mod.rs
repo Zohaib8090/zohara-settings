@@ -2,6 +2,7 @@ pub mod autotz;
 pub mod dbus;
 pub mod diag;
 pub mod dictation;
+pub mod gpu;
 pub mod health;
 pub mod kconfig;
 pub mod network;

@@ -1,0 +1,22 @@
+{
+  "items": [
+    {
+      "package": "spectacle",
+      "title": "Screenshots",
+      "why": "The Print Screen key and the Screenshot app."
+    },
+    {
+      "package": "intel-media-driver",
+      "title": "Intel video acceleration",
+      "why": "Smoother video and less battery use on Intel graphics.",
+      "when": "intel-gpu"
+    },
+    {
+      "package": "switcheroo-control",
+      "title": "Choose the graphics chip",
+      "why": "Lets you run a program on the stronger graphics chip of a laptop that has two.",
+      "when": "hybrid-gpu",
+      "enable": "switcheroo-control.service"
+    }
+  ]
+}

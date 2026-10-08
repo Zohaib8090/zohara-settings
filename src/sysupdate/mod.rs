@@ -4,5 +4,6 @@
 //! Settings' own engine (check, update, undo, restore points, channel), with its own copy of the approval-list checker.
 pub mod channel;
 pub mod manifest;
+pub mod recommended;
 pub mod ui;
 pub mod updates;

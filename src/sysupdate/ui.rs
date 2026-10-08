@@ -29,6 +29,8 @@ struct Page {
     set: RefCell<UpdateSet>,
     sel_zohara: RefCell<HashSet<String>>,
     sel_system: Cell<bool>,
+    /// Recommended programs that are ticked (they start ticked).
+    sel_rec: RefCell<HashSet<String>>,
     busy: Cell<bool>,
 }
 
@@ -143,6 +145,7 @@ pub fn build_content(scroll_to_end: impl Fn() + 'static) -> gtk4::Widget {
         set: RefCell::new(UpdateSet::default()),
         sel_zohara: RefCell::new(HashSet::new()),
         sel_system: Cell::new(false),
+        sel_rec: RefCell::new(HashSet::new()),
         busy: Cell::new(false),
     });
 
@@ -272,6 +275,7 @@ fn check(page: &Rc<Page>) {
         // Everything starts ticked.
         *p.sel_zohara.borrow_mut() = set.zohara.iter().map(|u| u.name.clone()).collect();
         p.sel_system.set(!set.system.is_empty());
+        *p.sel_rec.borrow_mut() = set.recommended.new.iter().map(|i| i.package.clone()).collect();
         *p.set.borrow_mut() = set;
         render(&p);
     });
@@ -362,6 +366,93 @@ fn render(page: &Rc<Page>) {
             let r = adw::ActionRow::new();
             r.set_title(&glib::markup_escape_text(&u.name));
             r.set_subtitle(&glib::markup_escape_text(&format!("{} → {}", u.old, u.new)));
+            ex.add_row(&r);
+        }
+        g.add(&ex);
+        page.groups.append(&g);
+    }
+
+    render_recommended(page, &set, &check_row);
+}
+
+/// "New for your computer": programs Zohara recommends that this computer doesn't have. All ticked; whatever is left
+/// unticked when the button is pressed is remembered as skipped. Below it, the ones skipped earlier, to bring back.
+fn render_recommended(page: &Rc<Page>, set: &UpdateSet, check_row: &dyn Fn(&str, &str, bool, Box<dyn Fn(bool)>) -> adw::ActionRow) {
+    use super::recommended;
+    if !set.recommended.new.is_empty() {
+        let g = adw::PreferencesGroup::new();
+        g.set_title("New for your computer");
+        g.set_description(Some("Programs Zohara now recommends. Untick any you don't want and they won't be offered again."));
+        let button = gtk4::Button::new();
+        button.add_css_class("pill");
+        button.set_valign(gtk4::Align::Center);
+        let relabel = {
+            let (page, button) = (page.clone(), button.clone());
+            move || {
+                let n = page.sel_rec.borrow().len();
+                button.set_label(&if n == 0 { "Skip these".to_string() } else { format!("Install selected ({n})") });
+                button.set_css_classes(if n == 0 { &["pill"] } else { &["pill", "suggested-action"] });
+            }
+        };
+        relabel();
+        for item in &set.recommended.new {
+            let (p, pkg, relabel) = (page.clone(), item.package.clone(), relabel.clone());
+            g.add(&check_row(
+                &item.title,
+                &item.why,
+                true,
+                Box::new(move |on| {
+                    if on {
+                        p.sel_rec.borrow_mut().insert(pkg.clone());
+                    } else {
+                        p.sel_rec.borrow_mut().remove(&pkg);
+                    }
+                    relabel();
+                }),
+            ));
+        }
+        let action = adw::ActionRow::new();
+        action.add_suffix(&button);
+        g.add(&action);
+        {
+            let (page, new) = (page.clone(), set.recommended.new.clone());
+            button.connect_clicked(move |b| {
+                if page.busy.get() {
+                    return;
+                }
+                let ticked: Vec<String> = new.iter().filter(|i| page.sel_rec.borrow().contains(&i.package)).map(|i| i.package.clone()).collect();
+                let unticked: Vec<String> = new.iter().filter(|i| !page.sel_rec.borrow().contains(&i.package)).map(|i| i.package.clone()).collect();
+                // New programs are built for the newest approved system, so the system comes first.
+                if !ticked.is_empty() && !page.set.borrow().system.is_empty() {
+                    message(b.upcast_ref(), "Update the system first", "New programs are built for the newest system. Press Update all, then install these.");
+                    return;
+                }
+                run_job(&page, b.upcast_ref(), "Installing", move |tx| {
+                    let pinned = super::manifest::current_pinned_date().is_some();
+                    recommended::install(&ticked, &unticked, pinned, tx)
+                });
+            });
+        }
+        page.groups.append(&g);
+    }
+
+    if !set.recommended.skipped.is_empty() {
+        let g = adw::PreferencesGroup::new();
+        let ex = adw::ExpanderRow::new();
+        ex.set_title(&format!("Skipped ({})", set.recommended.skipped.len()));
+        ex.set_subtitle("Programs you chose not to install. You can bring any of them back.");
+        for item in &set.recommended.skipped {
+            let r = adw::ActionRow::new();
+            r.set_title(&glib::markup_escape_text(&item.title));
+            r.set_subtitle(&glib::markup_escape_text(&item.why));
+            let again = gtk4::Button::with_label("Offer again");
+            again.set_valign(gtk4::Align::Center);
+            let (page, pkg) = (page.clone(), item.package.clone());
+            again.connect_clicked(move |_| {
+                recommended::unskip(&pkg);
+                check(&page);
+            });
+            r.add_suffix(&again);
             ex.add_row(&r);
         }
         g.add(&ex);

@@ -52,6 +52,8 @@ pub struct UpdateSet {
     pub system: Vec<PkgUpdate>,
     /// Sources that couldn't be checked (offline, tool missing).
     pub errors: Vec<String>,
+    /// Programs Zohara recommends that this computer doesn't have yet (not counted as updates).
+    pub recommended: super::recommended::Offer,
 }
 
 impl UpdateSet {
@@ -172,6 +174,7 @@ pub fn check_all() -> UpdateSet {
         }
         Err(e) => set.errors.push(e),
     }
+    set.recommended = super::recommended::check();
     set
 }
 

@@ -95,6 +95,9 @@ package() {
   # The terminal banner logo (copied over the ISO's old one by the install hook on machines installed earlier).
   install -Dm644 "$startdir/data/zohara-logo.txt" "$pkgdir/usr/share/zohara/zohara-logo.txt"
 
+  # The programs Zohara recommends after a computer was set up (Zohara Update offers the missing ones).
+  install -Dm644 "$startdir/data/recommended.json" "$pkgdir/usr/share/zohara/recommended.json"
+
   # Desktop entry
   install -Dm644 "$startdir/data/zohara-settings.desktop" \
     "$pkgdir/usr/share/applications/zohara-settings.desktop"

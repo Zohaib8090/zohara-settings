@@ -4,6 +4,7 @@ post_install() {
     systemctl --global enable zohara-settings-update-check.timer >/dev/null 2>&1 || true
     systemctl --global enable zohara-settings-timezone.timer >/dev/null 2>&1 || true
     fix_localtime
+    update_logo
 }
 
 post_upgrade() {
@@ -22,5 +23,18 @@ fix_localtime() {
     # A plain-text /etc/localtime (an old overlay quirk) is not a time zone at all: make it a real link.
     if [ -e /etc/localtime ] && [ ! -L /etc/localtime ]; then
         ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+    fi
+}
+
+# The terminal's banner logo is a file of the ISO's overlay (no package owns it, so a package cannot simply replace
+# it). Machines installed earlier still had the old pyramid: copy the Zohara logo over it. Only when it is the old
+# one (a person's own edit is left alone). Not on the live ISO, which already ships the new one.
+update_logo() {
+    dst=/usr/share/zohara-logo.txt
+    src=/usr/share/zohara/zohara-logo.txt
+    if [ -f "$src" ] && [ ! -e /run/archiso ]; then
+        if [ ! -f "$dst" ] || grep -q 'ZOHARA OS' "$dst" && ! grep -q '█' "$dst"; then
+            cp "$src" "$dst"
+        fi
     fi
 }

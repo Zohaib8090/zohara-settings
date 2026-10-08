@@ -90,6 +90,9 @@ package() {
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/zohara-start.svg"
   install -Dm644 "$startdir/data/zohara-branding.desktop" "$pkgdir/etc/xdg/autostart/zohara-branding.desktop"
 
+  # The terminal banner logo (copied over the ISO's old one by the install hook on machines installed earlier).
+  install -Dm644 "$startdir/data/zohara-logo.txt" "$pkgdir/usr/share/zohara/zohara-logo.txt"
+
   # Desktop entry
   install -Dm644 "$startdir/data/zohara-settings.desktop" \
     "$pkgdir/usr/share/applications/zohara-settings.desktop"

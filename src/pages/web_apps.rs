@@ -15,7 +15,16 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
 
-const BROWSERS: &[&str] = &["brave-origin", "brave", "chromium", "google-chrome-stable", "microsoft-edge-stable", "vivaldi-stable"];
+/// Chromium-family browsers (they all have the `--app=` window mode): command and the name shown to people.
+/// Firefox has no app window mode, so it cannot be offered here.
+const BROWSERS: &[(&str, &str)] = &[
+    ("brave-origin", "Brave Origin"),
+    ("brave", "Brave"),
+    ("chromium", "Chromium"),
+    ("google-chrome-stable", "Google Chrome"),
+    ("microsoft-edge-stable", "Microsoft Edge"),
+    ("vivaldi-stable", "Vivaldi"),
+];
 const PERMS: [(&str, &str); 4] = [
     ("notifications", "Notifications"),
     ("media_stream_camera", "Camera"),
@@ -37,6 +46,9 @@ struct WebApp {
     start_minimized: bool,
     /// per PERMS entry, index into PERM_CHOICES
     perms: Vec<u32>,
+    /// command of the browser this app opens in ("" = automatic: the first installed one)
+    #[serde(default)]
+    browser: String,
 }
 
 fn data_home() -> PathBuf {
@@ -67,13 +79,31 @@ fn autostart_file(id: &str) -> PathBuf {
     config_home().join("autostart").join(format!("zohara-webapp-{id}.desktop"))
 }
 
+fn on_path(bin: &str) -> bool {
+    std::env::var("PATH").unwrap_or_default().split(':').any(|d| std::path::Path::new(d).join(bin).is_file())
+}
+
+/// The browsers that are installed, in the order of `BROWSERS`.
+fn installed_browsers() -> Vec<(&'static str, &'static str)> {
+    BROWSERS.iter().copied().filter(|(b, _)| on_path(b)).collect()
+}
+
+/// The first installed browser (what "Automatic" means).
 fn browser() -> Option<&'static str> {
-    BROWSERS.iter().copied().find(|b| {
-        std::env::var("PATH")
-            .unwrap_or_default()
-            .split(':')
-            .any(|d| std::path::Path::new(d).join(b).is_file())
-    })
+    installed_browsers().first().map(|(b, _)| *b)
+}
+
+/// The browser this app opens in: the one chosen if it is installed, else the automatic one.
+fn browser_for(chosen: &str) -> Result<&'static str, String> {
+    if chosen.is_empty() {
+        return browser().ok_or_else(|| "No supported browser is installed (Brave, Chromium, Chrome, Edge or Vivaldi).".to_string());
+    }
+    BROWSERS
+        .iter()
+        .find(|(b, _)| *b == chosen)
+        .filter(|(b, _)| on_path(b))
+        .map(|(b, _)| *b)
+        .ok_or_else(|| format!("{} is not installed. Pick another browser, or install it from Zohara Store.", BROWSERS.iter().find(|(b, _)| *b == chosen).map(|(_, n)| *n).unwrap_or(chosen)))
 }
 
 fn load_all() -> Vec<WebApp> {
@@ -210,9 +240,25 @@ fn set_background_rule(app: &WebApp, on: bool) {
 }
 
 fn save(app: &WebApp) -> Result<(), String> {
-    let bin = browser().ok_or("No supported browser is installed (Brave, Chromium, Chrome, Edge or Vivaldi).")?;
+    let bin = browser_for(&app.browser)?;
     let dir = app_dir(&app.id);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    // No icon yet (the site was not looked up, or it had none when the address was typed): try now.
+    let mut app = app.clone();
+    if app.icon.is_empty() {
+        if let (_, Some(i)) = fetch_details(app.url.clone(), app.id.clone()) {
+            app.icon = i;
+        }
+    }
+    // Keep a copy of the icon with the app, so it survives the download folder or a chosen file going away.
+    if !app.icon.is_empty() && !std::path::Path::new(&app.icon).starts_with(&dir) {
+        let ext = std::path::Path::new(&app.icon).extension().and_then(|e| e.to_str()).unwrap_or("png").to_string();
+        let dest = dir.join(format!("icon.{ext}"));
+        if std::fs::copy(&app.icon, &dest).is_ok() {
+            app.icon = dest.to_string_lossy().to_string();
+        }
+    }
+    let app = &app;
     std::fs::write(dir.join("app.json"), serde_json::to_string_pretty(app).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     write_permissions(app).map_err(|e| e.to_string())?;
     let df = desktop_file(&app.id);
@@ -302,8 +348,29 @@ fn resolve(base: &str, href: &str) -> String {
     }
 }
 
-/// Best icon candidates: apple-touch-icon (large PNG), declared icons, then /favicon.ico.
+/// The biggest icon a web app manifest declares (`"icons":[{"src":"..","sizes":"512x512"}]`).
+fn manifest_best_icon(manifest_url: &str, json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let best = v
+        .get("icons")?
+        .as_array()?
+        .iter()
+        .filter_map(|i| {
+            let src = i.get("src")?.as_str()?;
+            let size = i
+                .get("sizes")
+                .and_then(|s| s.as_str())
+                .and_then(|s| s.split_whitespace().filter_map(|p| p.split('x').next()?.parse::<u32>().ok()).max())
+                .unwrap_or(0);
+            Some((size, src.to_string()))
+        })
+        .max_by_key(|(size, _)| *size)?;
+    Some(resolve(manifest_url, &best.1))
+}
+
+/// Best icon candidates: the web app manifest's biggest icon, apple-touch-icon (large PNG), declared icons, /favicon.ico.
 fn icon_candidates(url: &str, html: &str) -> Vec<String> {
+    let mut manifest = None;
     let mut touch = Vec::new();
     let mut icons = Vec::new();
     let lower = html.to_lowercase();
@@ -318,16 +385,59 @@ fn icon_candidates(url: &str, html: &str) -> Vec<String> {
                 touch.push(resolve(url, &href));
             } else if rel.split_whitespace().any(|r| r == "icon") {
                 icons.push(resolve(url, &href));
+            } else if rel == "manifest" {
+                manifest = Some(resolve(url, &href));
             }
         }
         pos = end;
     }
-    let mut out = touch;
+    let mut out = Vec::new();
+    if let Some(m) = manifest {
+        if let Some(best) = fetch(&m).and_then(|j| manifest_best_icon(&m, &j)) {
+            out.push(best);
+        }
+    }
+    out.extend(touch);
     // Prefer PNG/SVG over ICO among declared icons.
     icons.sort_by_key(|u| if u.ends_with(".ico") { 1 } else { 0 });
     out.extend(icons);
     out.push(resolve(url, "/favicon.ico"));
     out
+}
+
+/// What kind of picture these bytes are, from their first bytes (a missing icon is often an HTML page with status 200).
+fn image_kind(b: &[u8]) -> Option<&'static str> {
+    if b.starts_with(b"\x89PNG") {
+        Some("png")
+    } else if b.starts_with(&[0xFF, 0xD8]) {
+        Some("jpg")
+    } else if b.starts_with(&[0, 0, 1, 0]) {
+        Some("ico")
+    } else if b.len() > 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WEBP" {
+        Some("webp")
+    } else if b.starts_with(b"GIF8") {
+        Some("gif")
+    } else if String::from_utf8_lossy(&b[..b.len().min(400)]).contains("<svg") {
+        Some("svg")
+    } else {
+        None
+    }
+}
+
+/// Saves the downloaded picture as a PNG or SVG that every part of the desktop can show (ICO, WebP, JPEG and GIF are converted).
+fn store_icon(bytes: &[u8], dir: &std::path::Path, id_hint: &str) -> Option<String> {
+    let kind = image_kind(bytes)?;
+    if kind == "png" || kind == "svg" {
+        let path = dir.join(format!("{id_hint}.{kind}"));
+        std::fs::write(&path, bytes).ok()?;
+        return Some(path.to_string_lossy().to_string());
+    }
+    let tmp = dir.join(format!("{id_hint}.download.{kind}"));
+    std::fs::write(&tmp, bytes).ok()?;
+    let out = dir.join(format!("{id_hint}.png"));
+    let ok = gtk4::gdk_pixbuf::Pixbuf::from_file(&tmp).ok().and_then(|p| p.savev(&out, "png", &[]).ok()).is_some();
+    let _ = std::fs::remove_file(&tmp);
+    ok.then(|| out.to_string_lossy().to_string())
 }
 
 /// Returns (title, path of a downloaded icon).
@@ -337,19 +447,14 @@ fn fetch_details(url: String, id_hint: String) -> (Option<String>, Option<String
     let dir = data_home().join("zohara-webapps").join(".icons");
     let _ = std::fs::create_dir_all(&dir);
     for cand in icon_candidates(&url, &html) {
-        let ext = cand.rsplit('.').next().filter(|e| ["png", "svg", "ico", "jpg", "jpeg", "webp"].contains(e)).unwrap_or("png");
-        let path = dir.join(format!("{id_hint}.{ext}"));
-        let ok = Command::new("curl")
-            .args(["-sfL", "--max-time", "10", "-o"])
-            .arg(&path)
-            .arg(&cand)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if ok && std::fs::metadata(&path).map(|m| m.len() > 100).unwrap_or(false) {
-            return (title, Some(path.to_string_lossy().to_string()));
+        let got = Command::new("curl").args(["-sfL", "--max-time", "10", "-A", "Mozilla/5.0 (X11; Linux x86_64) ZoharaSettings"]).arg(&cand).output();
+        if let Ok(o) = got {
+            if o.status.success() && o.stdout.len() > 100 {
+                if let Some(path) = store_icon(&o.stdout, &dir, &id_hint) {
+                    return (title, Some(path));
+                }
+            }
         }
-        let _ = std::fs::remove_file(&path);
     }
     (title, None)
 }
@@ -411,6 +516,10 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
     icon_row.add_prefix(&*icon_img.borrow());
     let status = adw::ActionRow::new();
     status.set_visible(false);
+    icon_row.set_subtitle("Found from the website automatically, or choose your own picture");
+    let from_site = gtk4::Button::with_label("From website");
+    from_site.set_valign(gtk4::Align::Center);
+    icon_row.add_suffix(&from_site);
     let choose = gtk4::Button::with_label("Choose…");
     choose.set_valign(gtk4::Align::Center);
     icon_row.add_suffix(&choose);
@@ -431,16 +540,15 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
         }
     };
 
-    // Fetch the site's title and icon when the address is confirmed.
-    {
-        let (name, status, set_icon) = (name.clone(), status.clone(), set_icon.clone());
-        url.connect_apply(move |e| {
-            let u = normalize_url(&e.text());
-            e.set_text(&u);
+    // Look the site up (name and icon). `force_icon` also replaces an icon the person picked.
+    let manual_icon = std::rc::Rc::new(std::cell::Cell::new(!is_new && !app.borrow().icon.is_empty()));
+    let lookup: std::rc::Rc<dyn Fn(String, bool)> = {
+        let (name, status, set_icon, manual_icon) = (name.clone(), status.clone(), set_icon.clone(), manual_icon.clone());
+        std::rc::Rc::new(move |u: String, force_icon: bool| {
             status.set_visible(true);
             status.set_title("Getting the site's name and icon…");
             let hint = slug(&u.split("://").nth(1).unwrap_or(&u).split('/').next().unwrap_or("site").to_string());
-            let (name, status, set_icon) = (name.clone(), status.clone(), set_icon.clone());
+            let (name, status, set_icon, manual_icon) = (name.clone(), status.clone(), set_icon.clone(), manual_icon.clone());
             in_background(
                 move || fetch_details(u, hint),
                 move |(title, icon)| {
@@ -449,16 +557,58 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
                             name.set_text(&t);
                         }
                     }
-                    if let Some(i) = icon {
-                        set_icon(i);
+                    match icon {
+                        Some(i) if force_icon || !manual_icon.get() => {
+                            manual_icon.set(false);
+                            set_icon(i);
+                            status.set_visible(false);
+                        }
+                        Some(_) => status.set_visible(false),
+                        None => {
+                            status.set_visible(true);
+                            status.set_title("No icon found on that site. Use Choose… to pick a picture.");
+                        }
                     }
-                    status.set_visible(false);
                 },
             );
+        })
+    };
+    // Automatically, a moment after the address stops changing (and when it is confirmed with Enter).
+    {
+        let lookup = lookup.clone();
+        url.connect_apply(move |e| {
+            let u = normalize_url(&e.text());
+            e.set_text(&u);
+            lookup(u, false);
         });
     }
     {
-        let (win, set_icon) = (win.clone(), set_icon.clone());
+        let lookup = lookup.clone();
+        let generation = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        url.connect_changed(move |e| {
+            let text = e.text().trim().to_string();
+            generation.set(generation.get() + 1);
+            if text.len() < 4 || !text.contains('.') || text.contains(' ') {
+                return;
+            }
+            let (g, generation, lookup) = (generation.get(), generation.clone(), lookup.clone());
+            glib::timeout_add_local_once(std::time::Duration::from_millis(900), move || {
+                if generation.get() == g {
+                    lookup(normalize_url(&text), false);
+                }
+            });
+        });
+    }
+    {
+        let (lookup, url) = (lookup.clone(), url.clone());
+        from_site.connect_clicked(move |_| {
+            if !url.text().trim().is_empty() {
+                lookup(normalize_url(&url.text()), true);
+            }
+        });
+    }
+    {
+        let (win, set_icon, manual_icon) = (win.clone(), set_icon.clone(), manual_icon.clone());
         choose.connect_clicked(move |_| {
             let dialog = gtk4::FileDialog::new();
             dialog.set_title("Choose an icon");
@@ -468,9 +618,10 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
             let filters = gtk4::gio::ListStore::new::<gtk4::FileFilter>();
             filters.append(&filter);
             dialog.set_filters(Some(&filters));
-            let set_icon = set_icon.clone();
+            let (set_icon, manual_icon) = (set_icon.clone(), manual_icon.clone());
             dialog.open(Some(&win), None::<&gtk4::gio::Cancellable>, move |res| {
                 if let Some(p) = res.ok().and_then(|f| f.path()) {
+                    manual_icon.set(true);
                     set_icon(p.to_string_lossy().to_string());
                 }
             });
@@ -479,6 +630,19 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
 
     let behaviour = adw::PreferencesGroup::new();
     behaviour.set_title("Behaviour");
+    let browsers = installed_browsers();
+    let browser_row = adw::ComboRow::new();
+    browser_row.set_title("Open in browser");
+    browser_row.set_subtitle("Which browser runs this app");
+    let mut labels = vec![format!("Automatic ({})", browsers.first().map(|b| b.1).unwrap_or("none installed"))];
+    labels.extend(browsers.iter().map(|b| b.1.to_string()));
+    let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    browser_row.set_model(Some(&gtk4::StringList::new(&label_refs)));
+    let chosen_now = app.borrow().browser.clone();
+    browser_row.set_selected(browsers.iter().position(|(b, _)| *b == chosen_now).map(|i| i as u32 + 1).unwrap_or(0));
+    if browsers.len() < 2 {
+        browser_row.set_subtitle("Install another Chromium-based browser from Zohara Store to choose between them");
+    }
     let mode = adw::ComboRow::new();
     mode.set_title("Open as");
     mode.set_model(Some(&gtk4::StringList::new(&MODES)));
@@ -495,6 +659,7 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
         let minimized = minimized.clone();
         startup.connect_active_notify(move |s| minimized.set_sensitive(s.is_active()));
     }
+    behaviour.add(&browser_row);
     behaviour.add(&mode);
     behaviour.add(&startup);
     behaviour.add(&minimized);
@@ -541,6 +706,10 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
             a.url = url_text.clone();
             a.name = if name_text.is_empty() { url_text } else { name_text };
             a.mode = mode.selected();
+            a.browser = match browser_row.selected() {
+                0 => String::new(),
+                n => installed_browsers().get(n as usize - 1).map(|b| b.0.to_string()).unwrap_or_default(),
+            };
             a.startup = startup.is_active();
             a.start_minimized = minimized.is_active();
             a.perms = perm_rows.iter().map(|r| r.selected()).collect();
@@ -602,7 +771,8 @@ pub fn open(parent: &gtk4::Widget) {
             for a in apps {
                 let r = adw::ActionRow::new();
                 r.set_title(&glib::markup_escape_text(&a.name));
-                r.set_subtitle(&glib::markup_escape_text(&a.url));
+                let via = BROWSERS.iter().find(|(b, _)| *b == a.browser).map(|(_, n)| format!(" · {n}")).unwrap_or_default();
+                r.set_subtitle(&glib::markup_escape_text(&format!("{}{via}", a.url)));
                 r.add_prefix(&icon_image(&a.icon, 32));
 
                 let open_btn = gtk4::Button::with_label("Open");
@@ -664,4 +834,40 @@ pub fn open(parent: &gtk4::Widget) {
     view.set_content(Some(&page));
     win.set_content(Some(&view));
     win.present();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pictures_are_told_apart_by_their_bytes() {
+        assert_eq!(image_kind(b"\x89PNG\r\n\x1a\n....."), Some("png"));
+        assert_eq!(image_kind(&[0, 0, 1, 0, 1, 0]), Some("ico"));
+        assert_eq!(image_kind(b"<?xml version=\"1.0\"?><svg xmlns=\"x\"></svg>"), Some("svg"));
+        assert_eq!(image_kind(b"RIFF\x00\x00\x00\x00WEBPVP8 "), Some("webp"));
+        // A missing favicon is often a normal web page.
+        assert_eq!(image_kind(b"<!doctype html><html><body>Not found</body></html>"), None);
+        assert_eq!(image_kind(b""), None);
+    }
+
+    #[test]
+    fn manifest_gives_the_biggest_icon() {
+        let json = r#"{"icons":[{"src":"/i/48.png","sizes":"48x48"},{"src":"i/512.png","sizes":"512x512"},{"src":"/i/192.png","sizes":"192x192"}]}"#;
+        assert_eq!(manifest_best_icon("https://x.com/app/manifest.json", json).as_deref(), Some("https://x.com/app/i/512.png"));
+        assert_eq!(manifest_best_icon("https://x.com/m.json", "{}"), None);
+        assert_eq!(manifest_best_icon("https://x.com/m.json", "not json"), None);
+    }
+
+    #[test]
+    fn chosen_browser_must_be_a_known_one() {
+        assert!(browser_for("firefox").is_err());
+        assert!(browser_for("rm -rf").is_err());
+    }
+
+    #[test]
+    fn old_apps_without_a_browser_still_load() {
+        let a: WebApp = serde_json::from_str(r#"{"id":"a","name":"A","url":"https://a.b","icon":"","mode":0,"startup":false,"start_minimized":false,"perms":[]}"#).unwrap();
+        assert_eq!(a.browser, "");
+    }
 }

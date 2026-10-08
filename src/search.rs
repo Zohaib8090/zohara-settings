@@ -272,6 +272,7 @@ pub static ENTRIES: &[Entry] = &[
     e!("Account picture", "Accounts", "avatar profile photo"),
     e!("Sign-in options", "Accounts", "login password lock"),
     e!("Zohara OS version", "About", "operating system release number build"),
+    e!("Add a startup app", "Apps", "autostart run at sign in login boot add remove delete start"),
     e!("Save passwords with KDE Wallet", "Privacy & security", "kwallet wallet popup brave passwords keyring"),
     e!("Require password after sleep", "Accounts", "lock wake"),
     e!("Sign in automatically", "Accounts", "autologin login"),

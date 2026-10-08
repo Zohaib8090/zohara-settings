@@ -318,6 +318,8 @@ struct Autostart {
     comment: String,
     icon: String,
     enabled: bool,
+    /// Added by the person or by an app in their own folder (no system entry of the same name): can be deleted.
+    own: bool,
 }
 
 fn parse_entry(text: &str) -> HashMap<String, String> {
@@ -347,7 +349,8 @@ fn load_autostart() -> Vec<Autostart> {
     }
     let mut out: Vec<Autostart> = by_file
         .into_iter()
-        .filter_map(|(file, (e, _))| {
+        .filter_map(|(file, (e, user))| {
+            let own = user && !Path::new("/etc/xdg/autostart").join(&file).exists();
             // Skip entries meant for other desktops and hidden plumbing.
             if let Some(only) = e.get("OnlyShowIn") {
                 if !only.split(';').any(|d| !d.is_empty() && desktop.contains(d)) {
@@ -368,6 +371,7 @@ fn load_autostart() -> Vec<Autostart> {
                 icon: e.get("Icon").cloned().unwrap_or_default(),
                 enabled: e.get("Hidden").map(String::as_str) != Some("true")
                     && e.get("X-KDE-autostart-enabled").map(String::as_str) != Some("false"),
+                own,
                 file,
             })
         })
@@ -407,39 +411,217 @@ fn set_autostart(file: &str, on: bool) -> std::io::Result<()> {
 ")
 }
 
+/// A desktop entry for a custom startup command.
+pub fn custom_entry(name: &str, command: &str) -> String {
+    let clean = |t: &str| t.replace(['\n', '\r'], " ").trim().to_string();
+    format!("[Desktop Entry]\nType=Application\nName={}\nExec={}\nTerminal=false\nX-KDE-autostart-enabled=true\n", clean(name), clean(command))
+}
+
+/// File name for a new startup entry: letters, digits and dashes, not clashing with an existing one.
+fn new_entry_file(name: &str) -> String {
+    let base: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect::<String>().split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");
+    let base = if base.is_empty() { "startup-app".to_string() } else { base };
+    let mut file = format!("{base}.desktop");
+    let mut n = 2;
+    while autostart_user_dir().join(&file).exists() || Path::new("/etc/xdg/autostart").join(&file).exists() {
+        file = format!("{base}-{n}.desktop");
+        n += 1;
+    }
+    file
+}
+
+fn add_autostart_file(file: &str, text: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(autostart_user_dir())?;
+    std::fs::write(autostart_user_dir().join(file), text)
+}
+
+/// Starts an entry now, the same way the session would.
+fn start_now(file: &str) {
+    let user = autostart_user_dir().join(file);
+    let path = if user.exists() { user } else { Path::new("/etc/xdg/autostart").join(file) };
+    let _ = Command::new("gio").arg("launch").arg(path).spawn();
+}
+
+/// "Add a startup app": pick an installed app, or type a command.
+fn add_dialog(page: &gtk4::Box, refresh: std::rc::Rc<dyn Fn()>) {
+    let win = adw::Window::builder().modal(true).default_width(520).default_height(620).title("Add a startup app").build();
+    if let Some(p) = page.root().and_downcast::<gtk4::Window>() {
+        win.set_transient_for(Some(&p));
+    }
+    let header = adw::HeaderBar::new();
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 14);
+    content.set_margin_top(12);
+    content.set_margin_bottom(16);
+    content.set_margin_start(16);
+    content.set_margin_end(16);
+
+    let custom = adw::PreferencesGroup::new();
+    custom.set_title("Run a command");
+    let name = adw::EntryRow::new();
+    name.set_title("Name");
+    let command = adw::EntryRow::new();
+    command.set_title("Command (for example: firefox)");
+    let add_cmd = gtk4::Button::with_label("Add");
+    add_cmd.add_css_class("suggested-action");
+    add_cmd.set_valign(gtk4::Align::Center);
+    command.add_suffix(&add_cmd);
+    custom.add(&name);
+    custom.add(&command);
+    content.append(&custom);
+    {
+        let (win, refresh, name, command, page) = (win.clone(), refresh.clone(), name.clone(), command.clone(), page.clone());
+        add_cmd.connect_clicked(move |_| {
+            let (n, c) = (name.text().trim().to_string(), command.text().trim().to_string());
+            if c.is_empty() {
+                message(&win, "Enter a command", "For example: firefox");
+                return;
+            }
+            let n = if n.is_empty() { c.split_whitespace().next().unwrap_or("App").to_string() } else { n };
+            match add_autostart_file(&new_entry_file(&n), &custom_entry(&n, &c)) {
+                Ok(()) => {
+                    refresh();
+                    win.close();
+                }
+                Err(e) => message(&page, "Not added", &e.to_string()),
+            }
+        });
+    }
+
+    let apps = adw::PreferencesGroup::new();
+    apps.set_title("Or choose an installed app");
+    let search = gtk4::SearchEntry::new();
+    search.set_placeholder_text(Some("Search apps"));
+    apps.add(&search);
+    let list = gtk4::ListBox::new();
+    list.add_css_class("boxed-list");
+    list.set_selection_mode(gtk4::SelectionMode::None);
+    for a in raw_apps() {
+        let row = adw::ActionRow::new();
+        row.set_title(&glib::markup_escape_text(&a.name));
+        let img = if a.icon.starts_with('/') { gtk4::Image::from_file(&a.icon) } else { gtk4::Image::from_icon_name(if a.icon.is_empty() { "application-x-executable" } else { &a.icon }) };
+        img.set_pixel_size(24);
+        row.add_prefix(&img);
+        row.set_activatable(true);
+        let (win, refresh, page, path, label) = (win.clone(), refresh.clone(), page.clone(), a.desktop_path.clone(), a.name.clone());
+        row.connect_activated(move |_| match std::fs::read_to_string(&path).and_then(|t| add_autostart_file(&new_entry_file(&label), &t)) {
+            Ok(()) => {
+                refresh();
+                win.close();
+            }
+            Err(e) => message(&page, "Not added", &e.to_string()),
+        });
+        list.append(&row);
+    }
+    {
+        let s = search.clone();
+        list.set_filter_func(move |row| {
+            let q = s.text().to_lowercase();
+            q.is_empty() || row.downcast_ref::<adw::ActionRow>().map(|r| r.title().to_lowercase().contains(&q)).unwrap_or(true)
+        });
+        let l = list.clone();
+        search.connect_search_changed(move |_| l.invalidate_filter());
+    }
+    let scroll = gtk4::ScrolledWindow::builder().vexpand(true).min_content_height(260).child(&list).build();
+    content.append(&apps);
+    content.append(&scroll);
+
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&header);
+    view.set_content(Some(&content));
+    win.set_content(Some(&view));
+    win.present();
+}
+
 fn startup_group(page: &gtk4::Box) -> adw::PreferencesGroup {
     let g = adw::PreferencesGroup::new();
     g.set_title("Startup");
-    g.set_description(Some("Apps that start automatically when you sign in"));
-    let entries = load_autostart();
-    if entries.is_empty() {
-        let r = adw::ActionRow::new();
-        r.set_title("No startup apps");
-        g.add(&r);
-    }
-    for a in entries {
-        let row = adw::SwitchRow::new();
-        row.set_title(&glib::markup_escape_text(&a.name));
-        if !a.comment.is_empty() {
-            row.set_subtitle(&glib::markup_escape_text(&a.comment));
-        }
-        let img = if a.icon.is_empty() {
-            gtk4::Image::from_icon_name("system-run-symbolic")
-        } else if a.icon.starts_with('/') {
-            gtk4::Image::from_file(&a.icon)
-        } else {
-            gtk4::Image::from_icon_name(&a.icon)
-        };
-        img.set_pixel_size(24);
-        row.add_prefix(&img);
-        row.set_active(a.enabled);
-        let (file, page2) = (a.file.clone(), page.clone());
-        row.connect_active_notify(move |r| {
-            if let Err(e) = set_autostart(&file, r.is_active()) {
-                message(&page2, "Startup setting not changed", &e.to_string());
+    g.set_description(Some("Apps that start automatically when you sign in. Turn one off to stop it, press play to start it now, or add your own."));
+    let add = gtk4::Button::with_label("Add");
+    add.add_css_class("suggested-action");
+    add.set_valign(gtk4::Align::Center);
+    g.set_header_suffix(Some(&add));
+
+    let rows: std::rc::Rc<std::cell::RefCell<Vec<gtk4::Widget>>> = Default::default();
+    let refill: std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<dyn Fn()>>>> = Default::default();
+    let fill: std::rc::Rc<dyn Fn()> = {
+        let (g, rows, page, refill) = (g.clone(), rows.clone(), page.clone(), refill.clone());
+        std::rc::Rc::new(move || {
+            for r in rows.borrow_mut().drain(..) {
+                g.remove(&r);
             }
-        });
-        g.add(&row);
+            let again = refill.borrow().clone().expect("set");
+            let entries = load_autostart();
+            if entries.is_empty() {
+                let r = adw::ActionRow::new();
+                r.set_title("No startup apps");
+                g.add(&r);
+                rows.borrow_mut().push(r.upcast());
+            }
+            for a in entries {
+                let row = adw::SwitchRow::new();
+                row.set_title(&glib::markup_escape_text(&a.name));
+                if !a.comment.is_empty() {
+                    row.set_subtitle(&glib::markup_escape_text(&a.comment));
+                }
+                let img = if a.icon.is_empty() {
+                    gtk4::Image::from_icon_name("system-run-symbolic")
+                } else if a.icon.starts_with('/') {
+                    gtk4::Image::from_file(&a.icon)
+                } else {
+                    gtk4::Image::from_icon_name(&a.icon)
+                };
+                img.set_pixel_size(24);
+                row.add_prefix(&img);
+                row.set_active(a.enabled);
+
+                let play = gtk4::Button::from_icon_name("media-playback-start-symbolic");
+                play.add_css_class("flat");
+                play.set_valign(gtk4::Align::Center);
+                play.set_tooltip_text(Some("Start it now"));
+                let f = a.file.clone();
+                play.connect_clicked(move |_| start_now(&f));
+                row.add_suffix(&play);
+
+                if a.own {
+                    let del = gtk4::Button::from_icon_name("user-trash-symbolic");
+                    del.add_css_class("flat");
+                    del.set_valign(gtk4::Align::Center);
+                    del.set_tooltip_text(Some("Remove from startup"));
+                    let (f, page2, again2, name) = (a.file.clone(), page.clone(), again.clone(), a.name.clone());
+                    del.connect_clicked(move |b| {
+                        let d = adw::AlertDialog::new(Some(&format!("Remove {name} from startup?")), Some("It stops starting when you sign in. The app itself stays installed."));
+                        d.add_responses(&[("cancel", "Cancel"), ("remove", "Remove")]);
+                        d.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+                        let (f, page3, again3) = (f.clone(), page2.clone(), again2.clone());
+                        d.connect_response(None, move |_, r| {
+                            if r == "remove" {
+                                match std::fs::remove_file(autostart_user_dir().join(&f)) {
+                                    Ok(()) => again3(),
+                                    Err(e) => message(&page3, "Not removed", &e.to_string()),
+                                }
+                            }
+                        });
+                        d.present(Some(b));
+                    });
+                    row.add_suffix(&del);
+                }
+
+                let (file, page2) = (a.file.clone(), page.clone());
+                row.connect_active_notify(move |r| {
+                    if let Err(e) = set_autostart(&file, r.is_active()) {
+                        message(&page2, "Startup setting not changed", &e.to_string());
+                    }
+                });
+                g.add(&row);
+                rows.borrow_mut().push(row.upcast());
+            }
+        })
+    };
+    *refill.borrow_mut() = Some(fill.clone());
+    fill();
+    {
+        let (page, fill) = (page.clone(), fill.clone());
+        add.connect_clicked(move |_| add_dialog(&page, fill.clone()));
     }
     g
 }
@@ -622,4 +804,16 @@ pub fn build() -> gtk4::Widget {
 
     scroll.set_child(Some(&root));
     scroll.upcast()
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[test]
+    fn custom_entry_is_a_valid_one_line_entry() {
+        let t = custom_entry("My app", "firefox --private\nrm -rf /");
+        assert!(t.starts_with("[Desktop Entry]\nType=Application\nName=My app\nExec=firefox --private rm -rf /\n"));
+        assert_eq!(t.matches("Exec=").count(), 1);
+    }
 }

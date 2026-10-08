@@ -347,13 +347,18 @@ fn refresh_apps(list: &gtk4::Box, last_sig: &Rc<RefCell<String>>, force: bool) {
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
+    // Rows have to sit in a list to react to clicks (a drop-down in a bare box looks right and does nothing).
+    let rows = gtk4::ListBox::new();
+    rows.set_selection_mode(gtk4::SelectionMode::None);
+    rows.set_css_classes(&["win11-action-list"]);
+    list.append(&rows);
 
     if inputs.is_empty() {
         let row = adw::ActionRow::new();
         row.set_title("No applications are playing audio");
         row.set_subtitle("Apps appear here while they are producing sound");
         row.set_activatable(false);
-        list.append(&row);
+        rows.append(&row);
         return;
     }
 
@@ -394,12 +399,12 @@ fn refresh_apps(list: &gtk4::Box, last_sig: &Rc<RefCell<String>>, force: bool) {
 
         row.add_suffix(&scale);
         row.add_suffix(&mute);
-        list.append(&row);
+        rows.append(&row);
 
         // Which speakers or headphones this app plays on.
         if sinks.len() > 1 {
             let app_r = app_name(input);
-            list.append(&route_row("Play on", &sinks, input["sink"].as_u64(), move |sink| {
+            rows.append(&route_row("Play on", &sinks, input["sink"].as_u64(), move |sink| {
                 move_app("sink-inputs", app_r.clone(), sink);
             }));
         }
@@ -439,12 +444,17 @@ fn refresh_mic_apps(list: &gtk4::Box, last_sig: &Rc<RefCell<String>>, force: boo
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
+    // Rows have to sit in a list to react to clicks (a drop-down in a bare box looks right and does nothing).
+    let rows = gtk4::ListBox::new();
+    rows.set_selection_mode(gtk4::SelectionMode::None);
+    rows.set_css_classes(&["win11-action-list"]);
+    list.append(&rows);
     if outputs.is_empty() {
         let row = adw::ActionRow::new();
         row.set_title("No applications are using a microphone");
         row.set_subtitle("Apps appear here while they are recording or in a call");
         row.set_activatable(false);
-        list.append(&row);
+        rows.append(&row);
         return;
     }
     for output in outputs {
@@ -454,10 +464,10 @@ fn refresh_mic_apps(list: &gtk4::Box, last_sig: &Rc<RefCell<String>>, force: boo
         row.set_title(app);
         row.set_activatable(false);
         row.add_prefix(&gtk4::Image::from_icon_name(props["application.icon_name"].as_str().unwrap_or("audio-input-microphone-symbolic")));
-        list.append(&row);
+        rows.append(&row);
         if sources.len() > 1 {
             let app_r = app_name(output);
-            list.append(&route_row("Listen with", &sources, output["source"].as_u64(), move |source| {
+            rows.append(&route_row("Listen with", &sources, output["source"].as_u64(), move |source| {
                 move_app("source-outputs", app_r.clone(), source);
             }));
         }

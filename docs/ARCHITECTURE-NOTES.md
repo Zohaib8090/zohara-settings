@@ -70,3 +70,18 @@ app picker still lists entries already added.
 * **Touch keyboard** (`src/backend/touch_keyboard.rs`): see the handoff. Pure parts (`parse_bool`, `plan`, panel scripts) have unit tests; the D-Bus calls do not.
 * **Accounts**: `may_be_passwordless` (standard users only) and the root scripts `NO_PASSWORD_SCRIPT`/`NEW_PASSWORDLESS_SCRIPT` re-check `wheel` themselves.
 * **Automatic time zone**: `docs/TIMEZONE.md`.
+
+## Power & battery page (2026-10-08)
+
+* The page is in the sidebar now (it used to be reachable only from System and the Home card, so it was easy to miss).
+* Per power state (`[AC]`, `[Battery]` in `powerdevilrc`): `Display` (dim, turn off screen) and `SuspendAndShutdown`
+  (`AutoSuspendAction` 1 sleep / 2 hibernate / 8 shut down, `AutoSuspendIdleTimeoutSec`, `PowerButtonAction`,
+  `PowerDownAction` (held), `LidAction`, `InhibitLidActionWhenExternalMonitorPresent`). The "Sleep after" and
+  "When idle for that long" rows share the chosen action: changing the action only writes it when a sleep time is set,
+  otherwise it would switch idle sleep on.
+* Locking is `kscreenlockerrc` `[Daemon]` (same file as Personalization > Lock screen). Low battery levels are
+  `[BatteryManagement]` in `powerdevilrc` (`BatteryLowLevel`, `BatteryCriticalLevel`, `BatteryCriticalAction`).
+* Tested in the VM by clicking, and cross-checked by opening Plasma's own `kcmshell6 kcm_powerdevilprofilesconfig`: it
+  showed the same screen-off time, hibernate-after time and power button action. NOT tested (the VM has no battery or
+  lid): lid options, the external-monitor switch, "power button held", the low-battery group, and the real behaviour
+  (actually sleeping/hibernating).

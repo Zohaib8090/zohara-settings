@@ -135,6 +135,7 @@ fn main() -> glib::ExitCode {
     });
     // Our own flags are handled above (or by the handler); GTK ignores what it doesn't know.
     let code = app.run_with_args(&args);
+    pages::shortcuts::release_global_shortcuts();
     log::info!("Zohara Settings exiting");
     code
 }

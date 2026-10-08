@@ -215,13 +215,30 @@ fn store_keys(id: Vec<String>, keys: Vec<i32>) -> Result<Vec<i32>, String> {
     })
 }
 
-fn block_global_shortcuts(block: bool) {
-    std::thread::spawn(move || {
-        let _ = block_on(async {
-            let conn = zbus::Connection::session().await?;
-            conn.call_method(Some(SERVICE), PATH, Some(IFACE), "blockGlobalShortcuts", &block).await
-        });
+/// What the last request for blocking asked for; the calls below always send this, so a slow
+/// "block" can never land after a later "unblock".
+static WANT_BLOCK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static BLOCK_CALLS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn send_block_state() {
+    let _one_at_a_time = BLOCK_CALLS.lock().unwrap_or_else(|e| e.into_inner());
+    let block = WANT_BLOCK.load(std::sync::atomic::Ordering::SeqCst);
+    let _ = block_on(async {
+        let conn = zbus::Connection::session().await?;
+        conn.call_method(Some(SERVICE), PATH, Some(IFACE), "blockGlobalShortcuts", &block).await
     });
+}
+
+fn block_global_shortcuts(block: bool) {
+    WANT_BLOCK.store(block, std::sync::atomic::Ordering::SeqCst);
+    std::thread::spawn(send_block_state);
+}
+
+/// Called when Settings quits: never leave the desktop's shortcuts switched off behind us.
+pub fn release_global_shortcuts() {
+    if WANT_BLOCK.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        send_block_state();
+    }
 }
 
 // ── Custom shortcuts (files + kglobalaccel) ─────────────────────────────────

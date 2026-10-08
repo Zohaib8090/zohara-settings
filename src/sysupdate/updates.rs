@@ -555,6 +555,15 @@ pub fn restore_snapshot(n: u32, tx: &Sender<String>) -> Result<(), String> {
     run_logged(pkexec(&["zohara-snapshots", "restore", &n.to_string()]), tx)
 }
 
+/// Deletes one restore point (snapper, as administrator). Snapshot 0 is the running system and is never accepted.
+pub fn delete_snapshot(n: u32, tx: &Sender<String>) -> Result<(), String> {
+    if n == 0 {
+        return Err("That is the running system, not a restore point.".into());
+    }
+    let _ = tx.send(format!("Deleting restore point {n}…"));
+    run_logged(pkexec(&["snapper", "--no-dbus", "-c", "root", "delete", &n.to_string()]), tx)
+}
+
 // ── Notifications for the background check ─────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

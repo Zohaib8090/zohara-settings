@@ -666,6 +666,28 @@ fn fill_restore_points(page: &Rc<Page>, ex: &adw::ExpanderRow, list: &[Snapshot]
             d.present(Some(b));
         });
         row.add_suffix(&b);
+
+        let del = gtk4::Button::from_icon_name("user-trash-symbolic");
+        del.add_css_class("flat");
+        del.set_valign(gtk4::Align::Center);
+        del.set_tooltip_text(Some("Delete this restore point"));
+        let (p, n, title) = (page.clone(), s.number, s.title());
+        del.connect_clicked(move |b| {
+            let d = adw::AlertDialog::new(
+                Some("Delete this restore point?"),
+                Some(&format!("“{title}” is removed and its disk space is freed. You can no longer go back to that point. Other restore points and your files aren't touched.")),
+            );
+            d.add_responses(&[("cancel", "Cancel"), ("delete", "Delete")]);
+            d.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+            let (p2, parent) = (p.clone(), b.clone().upcast::<gtk4::Widget>());
+            d.connect_response(None, move |_, r| {
+                if r == "delete" {
+                    run_job(&p2, &parent, "Deleting", move |tx| updates::delete_snapshot(n, tx));
+                }
+            });
+            d.present(Some(b));
+        });
+        row.add_suffix(&del);
         ex.add_row(&row);
     }
 }

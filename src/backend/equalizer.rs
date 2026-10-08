@@ -247,7 +247,13 @@ fn magnitude_db(c: &[f64; 5], freq: f64) -> f64 {
 
 /// The whole chain's level at `freq` in dB, preamp included.
 pub fn response_db(s: &Settings, freq: f64) -> f64 {
-    let mut total = s.effective_preamp();
+    shape_db(s, freq) + s.effective_preamp()
+}
+
+/// What the bands and shelves do at `freq` in dB, without the preamp: the shape the graph draws (with automatic
+/// headroom every boost would otherwise look like a cut).
+pub fn shape_db(s: &Settings, freq: f64) -> f64 {
+    let mut total = 0.0;
     for (f0, g) in BANDS.iter().zip(s.gains.iter()) {
         if *g != 0.0 {
             total += magnitude_db(&biquad(Kind::Peaking, *f0, s.q, *g), freq);

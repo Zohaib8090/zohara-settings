@@ -207,7 +207,7 @@ fn draw_graph(ctx: &Ctx, cr: &gtk4::cairo::Context, w: i32, h: i32, fg: gtk4::gd
     let points: Vec<(f64, f64)> = (0..=240)
         .map(|i| {
             let f = 20.0 * (1000.0_f64).powf(i as f64 / 240.0);
-            (x_of(f), y_of(eq::response_db(&s, f)))
+            (x_of(f), y_of(eq::shape_db(&s, f)))
         })
         .collect();
     let zero = y_of(0.0);
@@ -228,7 +228,7 @@ fn draw_graph(ctx: &Ctx, cr: &gtk4::cairo::Context, w: i32, h: i32, fg: gtk4::gd
     let _ = cr.stroke();
     // a dot on each band's own frequency
     for f in BANDS {
-        let (x, y) = (x_of(f), y_of(eq::response_db(&s, f)));
+        let (x, y) = (x_of(f), y_of(eq::shape_db(&s, f)));
         cr.arc(x, y, 3.0, 0.0, std::f64::consts::TAU);
         rgba(&accent, 1.0);
         let _ = cr.fill();
@@ -261,7 +261,7 @@ pub fn section() -> gtk4::Widget {
     let enable = adw::SwitchRow::new();
     enable.set_title("Equalizer");
     enable.set_subtitle("Shape the sound of everything you play");
-    enable.add_prefix(&gtk4::Image::from_icon_name("multimedia-equalizer-symbolic"));
+    enable.add_prefix(&gtk4::Image::from_icon_name("audio-x-generic-symbolic"));
     enable.set_active(running);
     top.add(&enable);
     let preset = adw::ComboRow::new();

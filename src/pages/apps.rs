@@ -532,6 +532,28 @@ fn add_dialog(page: &gtk4::Box, refresh: std::rc::Rc<dyn Fn()>) {
     win.present();
 }
 
+/// The Startup apps window (opened from the Apps page).
+fn open_startup(parent: &gtk4::Widget) {
+    let win = adw::Window::builder().default_width(640).default_height(620).title("Startup apps").build();
+    if let Some(p) = parent.root().and_downcast::<gtk4::Window>() {
+        win.set_transient_for(Some(&p));
+        win.set_modal(true);
+    }
+    let header = adw::HeaderBar::new();
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 14);
+    content.set_margin_top(12);
+    content.set_margin_bottom(16);
+    content.set_margin_start(16);
+    content.set_margin_end(16);
+    content.append(&startup_group(&content));
+    let scroll = gtk4::ScrolledWindow::builder().hscrollbar_policy(gtk4::PolicyType::Never).vexpand(true).child(&content).build();
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&header);
+    view.set_content(Some(&scroll));
+    win.set_content(Some(&view));
+    win.present();
+}
+
 fn startup_group(page: &gtk4::Box) -> adw::PreferencesGroup {
     let g = adw::PreferencesGroup::new();
     g.set_title("Startup");
@@ -795,10 +817,16 @@ pub fn build() -> gtk4::Widget {
         maps.connect_activated(move |_| super::offline_maps::open(root.upcast_ref()));
     }
     more.add(&maps);
+    let startup = nav_row("Startup apps", "Apps that start when you sign in: turn off, start, remove or add", "system-run-symbolic");
+    {
+        let root = root.clone();
+        startup.connect_activated(move |_| open_startup(root.upcast_ref()));
+    }
+    more.add(&startup);
     root.append(&more);
 
     root.append(&installed_group(&root));
-    root.append(&startup_group(&root));
+
     root.append(&sources_group(&root));
     root.append(&video_group(&root));
 

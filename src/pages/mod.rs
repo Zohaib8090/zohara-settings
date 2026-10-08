@@ -27,6 +27,7 @@ pub mod privacy;
 pub mod updates;
 pub mod display;
 pub mod display_layout;
+pub mod equalizer;
 pub mod sound;
 pub mod notifications;
 pub mod power;

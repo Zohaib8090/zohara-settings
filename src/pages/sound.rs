@@ -5,6 +5,7 @@
 //! enabled on Zohara OS) using `pactl -f json`. State is always read back from
 //! the server rather than assumed, so the sliders and switches reflect reality.
 
+use crate::backend::equalizer as eq;
 use crate::backend::kconfig;
 use adw::prelude::*;
 use gtk4::prelude::*;
@@ -243,10 +244,14 @@ fn append_device_section(rows: &gtk4::Box, output: bool, boost: bool) -> Option<
         ("sources", "get-default-source", "set-default-source", "set-source-volume", "set-source-mute", "@DEFAULT_SOURCE@")
     };
 
-    let devices: Vec<Value> = pactl_json(kind)
-        .into_iter()
+    let all: Vec<Value> = pactl_json(kind);
+    let devices: Vec<Value> = all
+        .iter()
         // Every sink has a "monitor" source; hide those from the input list.
         .filter(|d| output || d["monitor_of_sink"].is_null())
+        // The equalizer's own output is not a device to choose: it sits in front of the chosen one.
+        .filter(|d| !eq::is_equalizer_device(d["name"].as_str().unwrap_or_default()))
+        .cloned()
         .collect();
 
     let picker = adw::ComboRow::new();
@@ -275,9 +280,11 @@ fn append_device_section(rows: &gtk4::Box, output: bool, boost: bool) -> Option<
     picker.set_model(Some(&gtk4::StringList::new(&label_refs)));
 
     let default_name = pactl_text(&[default_getter]);
+    // With the equalizer on it is the default output; the device shown is the one it hands the sound to.
+    let shown_name = if output && default_name == eq::SINK_NAME { eq::load_state().target } else { default_name.clone() };
     let default_idx = devices
         .iter()
-        .position(|d| d["name"].as_str() == Some(default_name.as_str()))
+        .position(|d| d["name"].as_str() == Some(shown_name.as_str()))
         .unwrap_or(0);
     picker.set_selected(default_idx as u32);
 
@@ -288,12 +295,22 @@ fn append_device_section(rows: &gtk4::Box, output: bool, boost: bool) -> Option<
     // Connected after set_selected so initialising the row doesn't re-apply the default.
     picker.connect_selected_notify(move |row| {
         if let Some(name) = names.get(row.selected() as usize) {
-            pactl_run(vec![set_default.into(), name.clone()]);
+            if output && eq::is_running() {
+                // Keep the equalizer in front: send its sound to the newly chosen device instead.
+                let name = name.clone();
+                std::thread::spawn(move || {
+                    let mut st = eq::load_state();
+                    let _ = eq::retarget(&mut st, &name);
+                });
+            } else {
+                pactl_run(vec![set_default.into(), name.clone()]);
+            }
         }
     });
     rows.append(&picker);
 
-    let current = &devices[default_idx];
+    // Volume and mute are those of the default output (the equalizer's, while it is on: that is what the tray changes too).
+    let current = all.iter().find(|d| d["name"].as_str() == Some(default_name.as_str())).unwrap_or(&devices[default_idx]);
 
     // The microphone stays at 100%: boosting the input only adds noise.
     let scale = volume_scale(volume_percent(current), output && boost);
@@ -334,7 +351,8 @@ fn refresh_apps(list: &gtk4::Box, last_sig: &Rc<RefCell<String>>, force: bool) {
     if !force && popover_open(list.upcast_ref()) {
         return;
     }
-    let inputs = pactl_json("sink-inputs");
+    // The equalizer's own stream (it carries the result to the real device) is not an app.
+    let inputs: Vec<Value> = pactl_json("sink-inputs").into_iter().filter(|i| i["properties"]["node.name"].as_str() != Some(eq::OUT_NAME)).collect();
     let sig = stream_signature(&inputs);
     // Rebuilding while the set of streams is unchanged would destroy a slider mid-drag.
     if !force && *last_sig.borrow() == sig {
@@ -342,7 +360,14 @@ fn refresh_apps(list: &gtk4::Box, last_sig: &Rc<RefCell<String>>, force: bool) {
     }
     *last_sig.borrow_mut() = sig;
     let boost = boost_enabled();
-    let sinks = pactl_json("sinks");
+    let all_sinks = pactl_json("sinks");
+    // Apps play into the equalizer while it is on; show them on the device it hands the sound to.
+    let eq_index = all_sinks.iter().find(|d| d["name"].as_str() == Some(eq::SINK_NAME)).and_then(|d| d["index"].as_u64());
+    let target_index = eq_index.and_then(|_| {
+        let target = eq::load_state().target;
+        all_sinks.iter().find(|d| d["name"].as_str() == Some(target.as_str())).and_then(|d| d["index"].as_u64())
+    });
+    let sinks: Vec<Value> = all_sinks.into_iter().filter(|d| !eq::is_equalizer_device(d["name"].as_str().unwrap_or_default())).collect();
 
     while let Some(child) = list.first_child() {
         list.remove(&child);
@@ -404,7 +429,9 @@ fn refresh_apps(list: &gtk4::Box, last_sig: &Rc<RefCell<String>>, force: bool) {
         // Which speakers or headphones this app plays on.
         if sinks.len() > 1 {
             let app_r = app_name(input);
-            rows.append(&route_row("Play on", &sinks, input["sink"].as_u64(), move |sink| {
+            let on_sink = input["sink"].as_u64();
+            let current = if eq_index.is_some() && on_sink == eq_index { target_index } else { on_sink };
+            rows.append(&route_row("Play on", &sinks, current, move |sink| {
                 move_app("sink-inputs", app_r.clone(), sink);
             }));
         }
@@ -599,6 +626,7 @@ pub fn build() -> gtk4::Widget {
     output.append(&boost_row);
     root.append(&output);
     root.append(&speaker_test_group());
+    root.append(&super::equalizer::section());
 
     let input = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
     input.set_css_classes(&["win11-card-group"]);

@@ -48,6 +48,15 @@ fn main() -> glib::ExitCode {
     if args.iter().any(|a| a == "--privacy-indicator") {
         std::process::exit(backend::privacy_indicator::run());
     }
+    // Equalizer service hooks (zohara-equalizer.service): no window.
+    if args.iter().any(|a| a == "--eq-activate") {
+        backend::equalizer::activate();
+        std::process::exit(0);
+    }
+    if args.iter().any(|a| a == "--eq-deactivate") {
+        backend::equalizer::deactivate();
+        std::process::exit(0);
+    }
     // Voice typing (Meta+H): no window, just listen and type.
     if args.iter().any(|a| a == "--dictate") {
         std::process::exit(backend::dictation::run());

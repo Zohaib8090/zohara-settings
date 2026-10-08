@@ -532,6 +532,41 @@ pub fn retarget(state: &mut State, sink: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Sends settings to the running equalizer from a background thread, newest only: while a slider is dragged the
+/// changes pile up and only the latest one is applied (a little pause between, so the sound system isn't flooded).
+pub struct LiveApplier {
+    tx: std::sync::mpsc::Sender<Settings>,
+}
+
+impl LiveApplier {
+    pub fn new() -> LiveApplier {
+        let (tx, rx) = std::sync::mpsc::channel::<Settings>();
+        std::thread::spawn(move || {
+            let mut node: Option<u32> = None;
+            while let Ok(mut s) = rx.recv() {
+                while let Ok(newer) = rx.try_recv() {
+                    s = newer;
+                }
+                for _ in 0..2 {
+                    if node.is_none() {
+                        node = find_node_id();
+                    }
+                    match node {
+                        Some(id) if apply_live(id, &s) => break,
+                        _ => node = None, // not there, or it was restarted under a new id: look again
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+        });
+        LiveApplier { tx }
+    }
+
+    pub fn send(&self, s: Settings) {
+        let _ = self.tx.send(s);
+    }
+}
+
 /// For the output lists on the Sound page: the equalizer's own output is not a device to choose.
 pub fn is_equalizer_device(name: &str) -> bool {
     name == SINK_NAME || name == format!("{SINK_NAME}.monitor")

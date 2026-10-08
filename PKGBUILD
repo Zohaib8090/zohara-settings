@@ -95,6 +95,9 @@ package() {
   # The terminal banner logo (copied over the ISO's old one by the install hook on machines installed earlier).
   install -Dm644 "$startdir/data/zohara-logo.txt" "$pkgdir/usr/share/zohara/zohara-logo.txt"
 
+  # The equalizer's service (started and enabled per user by Settings > Sound > Equalizer, not by default).
+  install -Dm644 "$startdir/data/zohara-equalizer.service" "$pkgdir/usr/lib/systemd/user/zohara-equalizer.service"
+
   # High contrast colour scheme for Accessibility > High contrast (this Plasma ships none).
   install -Dm644 "$startdir/data/color-schemes/ZoharaHighContrast.colors" "$pkgdir/usr/share/color-schemes/ZoharaHighContrast.colors"
 

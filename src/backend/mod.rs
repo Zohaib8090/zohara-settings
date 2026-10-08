@@ -14,3 +14,4 @@ pub mod touch_keyboard;
 pub mod wallet;
 pub mod wifi_diag;
 pub mod worker;
+pub mod zohara_link;

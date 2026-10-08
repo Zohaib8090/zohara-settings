@@ -253,6 +253,31 @@ fn build_page_inner(index: usize) -> gtk4::Widget {
 
 // ΓöÇΓöÇ UI ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
+/// What the account card in the sidebar says: the root account, an administrator (a member of `wheel`, the group that
+/// may use sudo and approve system changes, the same test the Accounts page uses), or an ordinary local account.
+fn account_label(uid: u32, groups: &[String]) -> &'static str {
+    if uid == 0 {
+        "Root account"
+    } else if groups.iter().any(|g| g == "wheel") {
+        "Administrator account"
+    } else {
+        "Local account"
+    }
+}
+
+fn current_uid() -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(u32::MAX)
+}
+
+fn current_groups() -> Vec<String> {
+    std::process::Command::new("id")
+        .arg("-nG")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().map(String::from).collect())
+        .unwrap_or_default()
+}
+
 fn build_ui(app: &adw::Application) {
     if let Some(settings) = gtk4::Settings::default() {
         settings.set_gtk_decoration_layout(Some("icon:minimize,maximize,close"));
@@ -313,7 +338,7 @@ fn build_ui(app: &adw::Application) {
         .css_classes(vec!["win11-user-name".to_string()])
         .build();
     let u_email = gtk4::Label::builder()
-        .label("Local account")
+        .label(account_label(current_uid(), &current_groups()))
         .halign(gtk4::Align::Start)
         .css_classes(vec!["win11-user-email".to_string()])
         .build();
@@ -570,6 +595,16 @@ fn build_ui(app: &adw::Application) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_account_card_says_root_administrator_or_local() {
+        let g = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(account_label(0, &g(&["root"])), "Root account");
+        assert_eq!(account_label(0, &g(&["root", "wheel"])), "Root account", "root wins");
+        assert_eq!(account_label(1000, &g(&["me", "wheel", "audio"])), "Administrator account");
+        assert_eq!(account_label(1000, &g(&["me", "users"])), "Local account");
+        assert_eq!(account_label(1000, &[]), "Local account");
+    }
 
     fn top(q: &str) -> Vec<&'static str> {
         search::find(search::ENTRIES, q, 8).into_iter().map(|e| e.title).collect()

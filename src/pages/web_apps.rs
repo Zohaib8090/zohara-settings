@@ -24,7 +24,45 @@ const BROWSERS: &[(&str, &str)] = &[
     ("google-chrome-stable", "Google Chrome"),
     ("microsoft-edge-stable", "Microsoft Edge"),
     ("vivaldi-stable", "Vivaldi"),
+    // Installed from Zohara Store (Flathub): the id has dots, the launcher is Flatpak's own wrapper.
+    ("com.google.Chrome", "Google Chrome"),
+    ("com.brave.Browser", "Brave"),
+    ("org.chromium.Chromium", "Chromium"),
+    ("com.microsoft.Edge", "Microsoft Edge"),
+    ("com.vivaldi.Vivaldi", "Vivaldi"),
+    ("io.github.ungoogled_software.ungoogled_chromium", "Ungoogled Chromium"),
 ];
+
+fn is_flatpak(id: &str) -> bool {
+    id.contains('.')
+}
+
+/// Where Flatpak puts the launcher of an installed app (system or per-user).
+fn flatpak_launcher(id: &str) -> Option<PathBuf> {
+    let user = data_home().join("flatpak/exports/bin").join(id);
+    let system = PathBuf::from("/var/lib/flatpak/exports/bin").join(id);
+    [user, system].into_iter().find(|p| p.is_file())
+}
+
+/// What to put in the launcher's Exec line for this browser.
+fn command_for(id: &str) -> String {
+    if is_flatpak(id) {
+        flatpak_launcher(id).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| id.to_string())
+    } else {
+        id.to_string()
+    }
+}
+
+/// The browser's own profile folder for this app. A Flatpak browser can only write inside its own folder under
+/// `~/.var/app`, so its profile lives there; the others keep it with the app.
+fn profile_dir(app: &WebApp) -> PathBuf {
+    match browser_for(&app.browser) {
+        Ok(id) if is_flatpak(id) => {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".var/app").join(id).join("data/zohara-webapps").join(&app.id).join("profile")
+        }
+        _ => app_dir(&app.id).join("profile"),
+    }
+}
 const PERMS: [(&str, &str); 4] = [
     ("notifications", "Notifications"),
     ("media_stream_camera", "Camera"),
@@ -80,6 +118,9 @@ fn autostart_file(id: &str) -> PathBuf {
 }
 
 fn on_path(bin: &str) -> bool {
+    if is_flatpak(bin) {
+        return flatpak_launcher(bin).is_some();
+    }
     std::env::var("PATH").unwrap_or_default().split(':').any(|d| std::path::Path::new(d).join(bin).is_file())
 }
 
@@ -166,7 +207,7 @@ fn exec_quote(s: &str) -> String {
 }
 
 fn exec_line(app: &WebApp, bin: &str, background: bool) -> String {
-    let profile = app_dir(&app.id).join("profile");
+    let profile = profile_dir(app);
     let class = if background { format!("zohara-webapp-{}-bg", app.id) } else { format!("zohara-webapp-{}", app.id) };
     let mut parts = vec![
         bin.to_string(),
@@ -200,7 +241,7 @@ fn desktop_entry(app: &WebApp, bin: &str, background: bool) -> String {
 
 /// Chromium content-setting values: 1 allow, 2 block, 3 ask.
 fn write_permissions(app: &WebApp) -> std::io::Result<()> {
-    let dir = app_dir(&app.id).join("profile").join("Default");
+    let dir = profile_dir(app).join("Default");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("Preferences");
     let mut prefs: serde_json::Value = std::fs::read_to_string(&path)
@@ -263,11 +304,11 @@ fn save(app: &WebApp) -> Result<(), String> {
     write_permissions(app).map_err(|e| e.to_string())?;
     let df = desktop_file(&app.id);
     std::fs::create_dir_all(df.parent().unwrap()).map_err(|e| e.to_string())?;
-    std::fs::write(&df, desktop_entry(app, bin, false)).map_err(|e| e.to_string())?;
+    std::fs::write(&df, desktop_entry(app, &command_for(bin), false)).map_err(|e| e.to_string())?;
     let af = autostart_file(&app.id);
     if app.startup {
         std::fs::create_dir_all(af.parent().unwrap()).map_err(|e| e.to_string())?;
-        std::fs::write(&af, desktop_entry(app, bin, app.start_minimized)).map_err(|e| e.to_string())?;
+        std::fs::write(&af, desktop_entry(app, &command_for(bin), app.start_minimized)).map_err(|e| e.to_string())?;
     } else {
         let _ = std::fs::remove_file(&af);
     }
@@ -280,6 +321,7 @@ fn remove(app: &WebApp) {
     set_background_rule(app, false);
     let _ = std::fs::remove_file(desktop_file(&app.id));
     let _ = std::fs::remove_file(autostart_file(&app.id));
+    let _ = std::fs::remove_dir_all(profile_dir(app));
     let _ = std::fs::remove_dir_all(app_dir(&app.id));
 }
 
@@ -288,7 +330,7 @@ fn launch(app: &WebApp) {
 }
 
 fn is_running(app: &WebApp) -> bool {
-    let profile = app_dir(&app.id).join("profile");
+    let profile = profile_dir(app);
     Command::new("pgrep")
         .args(["-f", &format!("user-data-dir={}", profile.to_string_lossy())])
         .status()
@@ -863,6 +905,13 @@ mod tests {
     fn chosen_browser_must_be_a_known_one() {
         assert!(browser_for("firefox").is_err());
         assert!(browser_for("rm -rf").is_err());
+    }
+
+    #[test]
+    fn flatpak_browsers_are_told_by_their_dotted_ids() {
+        assert!(is_flatpak("com.google.Chrome"));
+        assert!(!is_flatpak("google-chrome-stable"));
+        assert!(BROWSERS.iter().any(|(b, _)| *b == "com.google.Chrome"));
     }
 
     #[test]

@@ -98,20 +98,43 @@ fn main() -> glib::ExitCode {
             }
         }
     }
-    if let Some(page) = args.iter().position(|a| a == "--page").and_then(|i| args.get(i + 1)) {
-        let _ = START_PAGE.set(page.clone());
-    }
-
     let rt = tokio_runtime();
     let _rt_guard = rt.enter();
 
     let app = adw::Application::builder()
         .application_id("os.zohara.Settings")
+        .flags(gtk4::gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
 
     app.connect_activate(build_ui);
-    // Our own flags are handled above; don't let GTK reject them.
-    let code = app.run_with_args(&args[..1]);
+    // `--page <label>` can come from a second launch that hands off to the window
+    // already running (the health notification, Welcome). This runs in the running
+    // instance, so reuse its window instead of opening another one.
+    app.connect_command_line(|app, cmd| {
+        let args = cmd.arguments();
+        let page = args
+            .iter()
+            .position(|a| a == "--page")
+            .and_then(|i| args.get(i + 1))
+            .map(|p| p.to_string_lossy().into_owned());
+        match app.active_window() {
+            Some(window) => {
+                window.present();
+                if let Some(page) = page {
+                    let _ = gtk4::prelude::WidgetExt::activate_action(&window, "win.goto", Some(&page.to_variant()));
+                }
+            }
+            None => {
+                if let Some(page) = page {
+                    let _ = START_PAGE.set(page);
+                }
+                app.activate();
+            }
+        }
+        0
+    });
+    // Our own flags are handled above (or by the handler); GTK ignores what it doesn't know.
+    let code = app.run_with_args(&args);
     log::info!("Zohara Settings exiting");
     code
 }

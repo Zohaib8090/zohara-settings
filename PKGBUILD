@@ -40,7 +40,8 @@ optdepends=(
   'bluez: Bluetooth settings page'
   'upower: Power settings page'
 )
-options=(!debug)
+# !strip: keep function names so a coredump (coredumpctl) has a readable backtrace.
+options=(!debug !strip)
 install=zohara-settings.install
 provides=('zohara-settings')
 conflicts=('zohara-settings-git')

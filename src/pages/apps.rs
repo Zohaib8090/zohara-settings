@@ -810,6 +810,41 @@ pub fn build() -> gtk4::Widget {
 mod startup_tests {
     use super::*;
 
+    /// The whole add / list / switch off / switch on / remove cycle against a throwaway folder.
+    #[test]
+    fn startup_entries_can_be_added_switched_and_removed() {
+        let dir = std::env::temp_dir().join(format!("zs-startup-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+
+        // Add a custom command, and a second one with the same name (must not overwrite the first).
+        let f1 = new_entry_file("My Tool");
+        add_autostart_file(&f1, &custom_entry("My Tool", "mytool --quiet")).unwrap();
+        let f2 = new_entry_file("My Tool");
+        add_autostart_file(&f2, &custom_entry("My Tool", "other")).unwrap();
+        assert_eq!(f1, "my-tool.desktop");
+        assert_eq!(f2, "my-tool-2.desktop");
+
+        let find = |file: &str| load_autostart().into_iter().find(|a| a.file == file);
+        let a = find(&f1).expect("listed");
+        assert!(a.enabled && a.own);
+        assert_eq!(a.name, "My Tool");
+
+        // Switch off, then on again.
+        set_autostart(&f1, false).unwrap();
+        assert!(!find(&f1).unwrap().enabled);
+        set_autostart(&f1, true).unwrap();
+        assert!(find(&f1).unwrap().enabled);
+
+        // Remove one: the other stays.
+        std::fs::remove_file(autostart_user_dir().join(&f1)).unwrap();
+        assert!(find(&f1).is_none());
+        assert!(find(&f2).is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn custom_entry_is_a_valid_one_line_entry() {
         let t = custom_entry("My app", "firefox --private\nrm -rf /");

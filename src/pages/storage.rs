@@ -369,7 +369,7 @@ fn cleanup_row(
         move || {
             let (row, btn) = (row.clone(), btn.clone());
             in_background(measure, move |size| {
-                row.set_subtitle(&human(size));
+                row.set_subtitle(&if size == 0 { "Nothing to clean up".to_string() } else { format!("{} can be freed", human(size)) });
                 btn.set_sensitive(size > 0);
             });
         }
@@ -395,14 +395,36 @@ fn cleanup_row(
     row
 }
 
+/// "disk space saved: 1.09 GiB" from a `paccache` dry run -> bytes (0 when there is nothing to remove).
+pub fn parse_paccache_saved(out: &str) -> u64 {
+    let Some(i) = out.rfind("disk space saved:") else { return 0 };
+    let rest = out[i + "disk space saved:".len()..].trim_start();
+    let mut it = rest.split_whitespace();
+    let num: f64 = it.next().and_then(|n| n.parse().ok()).unwrap_or(0.0);
+    let unit = it.next().unwrap_or("B").trim_end_matches(')');
+    let mult = match unit {
+        "KiB" => 1024.0,
+        "MiB" => 1_048_576.0,
+        "GiB" => 1_073_741_824.0,
+        "TiB" => 1_099_511_627_776.0,
+        _ => 1.0,
+    };
+    (num * mult) as u64
+}
+
+/// What "Remove old package versions" would free: older versions of installed packages (keeping one previous
+/// version) plus cached files of packages that are no longer installed. Read-only dry runs.
 fn pkg_cache_size() -> u64 {
-    du(Path::new("/var/cache/pacman/pkg"))
+    let run = |args: &[&str]| {
+        Command::new("paccache").args(args).output().map(|o| parse_paccache_saved(&String::from_utf8_lossy(&o.stdout))).unwrap_or(0)
+    };
+    run(&["-dk1"]) + run(&["-duk0"])
 }
 
 fn clean_pkg_cache() -> bool {
-    // Keep one previous version of each package so restore/rollback still works.
-    // One prompt: trim installed packages to one old version, drop cached uninstalled ones.
-    run_ok("pkexec", &["sh", "-c", "paccache -rk1 && paccache -ruk0"])
+    // Keep one previous version of each package so restore/rollback still works. Both steps run even when the first
+    // finds nothing (paccache exits non-zero then), in one administrator prompt.
+    run_ok("pkexec", &["sh", "-c", "paccache -rk1; paccache -ruk0; rm -rf /var/cache/pacman/pkg/download-*; exit 0"])
 }
 
 fn trash_size() -> u64 {
@@ -421,13 +443,20 @@ fn empty_trash() -> bool {
     true
 }
 
+/// Cache files not changed for a day. Newer ones may belong to running apps, so they stay.
 fn cache_size() -> u64 {
-    du(&cache_dir())
+    let out = Command::new("find")
+        .args([&cache_dir().to_string_lossy().to_string(), "-mindepth", "1", "-type", "f", "-mtime", "+0", "-printf", "%s\\n"])
+        .output();
+    out.map(|o| String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.trim().parse::<u64>().ok()).sum()).unwrap_or(0)
 }
 
 fn clear_cache() -> bool {
-    // Only entries untouched for a day, so running apps don't lose files they're using.
-    run_ok("find", &[&cache_dir().to_string_lossy(), "-mindepth", "1", "-type", "f", "-atime", "+1", "-delete"])
+    let dir = cache_dir().to_string_lossy().to_string();
+    let files = run_ok("find", &[&dir, "-mindepth", "1", "-type", "f", "-mtime", "+0", "-delete"]);
+    // Folders left empty by that.
+    let _ = run_ok("find", &[&dir, "-mindepth", "1", "-type", "d", "-empty", "-delete"]);
+    files
 }
 
 fn cleanup_group() -> adw::PreferencesGroup {
@@ -446,7 +475,7 @@ fn cleanup_group() -> adw::PreferencesGroup {
         "application-x-executable-symbolic",
         cache_size,
         "Clear app caches?",
-        "Cached files that haven't been used in the last day will be removed. Apps rebuild them as needed.",
+        "Cached files that haven't changed in the last day will be removed. Apps rebuild them as needed.",
         clear_cache,
     ));
     g.add(&cleanup_row(
@@ -454,7 +483,7 @@ fn cleanup_group() -> adw::PreferencesGroup {
         "system-software-install-symbolic",
         pkg_cache_size,
         "Remove old package versions?",
-        "Keeps the most recent previous version of each package, so you can still roll back an update.",
+        "Keeps the most recent previous version of each package, so you can still roll back an update. Packages that are no longer installed are removed from the cache.",
         clean_pkg_cache,
     ));
     g
@@ -719,4 +748,17 @@ pub fn build() -> gtk4::Widget {
 
     scroll.set_child(Some(&root));
     scroll.upcast()
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn paccache_dry_run_sizes_are_read() {
+        assert_eq!(parse_paccache_saved("==> finished dry run: 15 candidates (disk space saved: 1.09 GiB)"), (1.09f64 * 1_073_741_824.0) as u64);
+        assert_eq!(parse_paccache_saved("==> finished dry run: 2 candidates (disk space saved: 523.40 MiB)"), (523.40f64 * 1_048_576.0) as u64);
+        assert_eq!(parse_paccache_saved("==> no candidate packages found for pruning"), 0);
+        assert_eq!(parse_paccache_saved(""), 0);
+    }
 }

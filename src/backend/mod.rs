@@ -4,6 +4,7 @@ pub mod diag;
 pub mod dictation;
 pub mod equalizer;
 pub mod gpu;
+pub mod gpu_pref;
 pub mod health;
 pub mod kconfig;
 pub mod network;

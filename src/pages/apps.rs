@@ -53,11 +53,15 @@ struct App {
     icon: Option<gtk4::gio::Icon>,
     source: Source,
     version: String,
+    /// The launcher's file name (`firefox.desktop`) and where it is.
+    desktop_id: String,
+    desktop_path: String,
 }
 
 // gio::Icon isn't Send, so gather plain data on the worker and build icons on the GTK thread.
 #[derive(Clone)]
 struct RawApp {
+    id: String,
     name: String,
     icon: String,
     desktop_path: String,
@@ -102,6 +106,7 @@ fn raw_apps() -> Vec<RawApp> {
             let Some(name) = get("Name=") else { continue };
             let flatpak = get("X-Flatpak=");
             out.push(RawApp {
+                id: id.clone(),
                 name,
                 icon: get("Icon=").unwrap_or_default(),
                 desktop_path: std::fs::canonicalize(&path).unwrap_or(path).to_string_lossy().to_string(),
@@ -179,7 +184,62 @@ fn to_app((raw, owner, fver): (RawApp, Option<(String, String)>, Option<String>)
         (None, Some((pkg, ver))) => (Source::Pacman(pkg), ver),
         _ => (Source::Other, String::new()),
     };
-    App { name: raw.name, icon, source, version }
+    App { name: raw.name, icon, source, version, desktop_id: raw.id, desktop_path: raw.desktop_path }
+}
+
+/// The graphics button of an app on a laptop with two chips: open it once on the stronger one, or always.
+fn gpu_button(app: &App, page: &gtk4::Box) -> gtk4::MenuButton {
+    use crate::backend::gpu_pref as pref;
+    let btn = gtk4::MenuButton::new();
+    btn.set_icon_name("video-display-symbolic");
+    btn.set_valign(gtk4::Align::Center);
+    btn.add_css_class("flat");
+    btn.set_tooltip_text(Some("Which graphics chip this app uses"));
+
+    let body = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+    body.set_margin_top(10);
+    body.set_margin_bottom(10);
+    body.set_margin_start(10);
+    body.set_margin_end(10);
+    let heading = gtk4::Label::builder().label("Dedicated graphics card").xalign(0.0).css_classes(vec!["heading".to_string()]).build();
+    body.append(&heading);
+    let now = gtk4::Button::with_label("Open now with it");
+    now.add_css_class("flat");
+    let always = gtk4::CheckButton::with_label("Always use it for this app");
+    let path = std::path::PathBuf::from(&app.desktop_path);
+    always.set_active(pref::is_set(&app.desktop_id, &path));
+    body.append(&now);
+    body.append(&always);
+    let pop = gtk4::Popover::new();
+    pop.set_child(Some(&body));
+    btn.set_popover(Some(&pop));
+
+    {
+        let (pop, path, page) = (pop.clone(), path.clone(), page.clone());
+        now.connect_clicked(move |_| {
+            pop.popdown();
+            if let Err(e) = pref::launch_now(&path) {
+                message(&page, "Couldn't start the app", &e);
+            }
+        });
+    }
+    {
+        let (id, page) = (app.desktop_id.clone(), page.clone());
+        let undoing = std::rc::Rc::new(std::cell::Cell::new(false));
+        always.connect_toggled(move |c| {
+            if undoing.get() {
+                return;
+            }
+            let on = c.is_active();
+            if let Err(e) = pref::set(&id, &path, on) {
+                undoing.set(true);
+                c.set_active(!on);
+                undoing.set(false);
+                message(&page, "Couldn't change it", &e);
+            }
+        });
+    }
+    btn
 }
 
 fn uninstall(app: &App, page: &gtk4::Box, row: &adw::ActionRow) {
@@ -259,6 +319,7 @@ fn installed_group(page: &gtk4::Box) -> adw::PreferencesGroup {
     g.add(&list);
 
     let (list2, page2, search2) = (list.clone(), page.clone(), search.clone());
+    let dual_gpu = crate::backend::gpu_pref::has_two_gpus();
     in_background(load_apps, move |loaded| {
         list2.remove(&loading);
         let apps: Vec<App> = loaded.into_iter().map(to_app).collect();
@@ -277,6 +338,10 @@ fn installed_group(page: &gtk4::Box) -> adw::PreferencesGroup {
             };
             img.set_pixel_size(32);
             row.add_prefix(&img);
+            // A laptop with two graphics chips: choose which one this app uses.
+            if dual_gpu && !matches!(app.source, Source::Flatpak(_)) {
+                row.add_suffix(&gpu_button(&app, &page2));
+            }
             let removable = match &app.source {
                 Source::Pacman(p) => !PROTECTED.contains(&p.as_str()) && !p.starts_with("plasma") && !p.starts_with("kf6"),
                 Source::Flatpak(_) => true,

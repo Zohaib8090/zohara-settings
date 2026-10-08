@@ -214,6 +214,9 @@ const ACTIONS: [(&str, &str); 8] = [
 fn action_row(title: &str, profile: &'static str, key: &'static str, choices: &[usize]) -> adw::ComboRow {
     let row = adw::ComboRow::new();
     row.set_title(title);
+    // Hibernate (2) and hybrid sleep (6) need swap and a resume option; hide them when the computer cannot do them.
+    let hib = crate::backend::hibernate::can_hibernate();
+    let choices: Vec<usize> = choices.iter().copied().filter(|i| hib || !matches!(ACTIONS[*i].1, "2" | "4")).collect();
     let mut labels = vec!["System default"];
     labels.extend(choices.iter().map(|i| ACTIONS[*i].0));
     row.set_model(Some(&gtk4::StringList::new(&labels)));
@@ -224,7 +227,6 @@ fn action_row(title: &str, profile: &'static str, key: &'static str, choices: &[
         .map(|i| i + 1)
         .unwrap_or(0);
     row.set_selected(idx as u32);
-    let choices = choices.to_vec();
     row.connect_selected_notify(move |r| {
         let value = match r.selected() {
             0 => None,
@@ -237,29 +239,37 @@ fn action_row(title: &str, profile: &'static str, key: &'static str, choices: &[
 
 /// "Sleep after" plus "When idle for that long": one timeout row and one row for what to do, sharing the chosen action
 /// (PowerDevil keeps both in `AutoSuspendAction`: 0 = never, 1 = sleep, 2 = hibernate, 8 = shut down).
-const IDLE_ACTIONS: [(&str, &str); 3] = [("Sleep", "1"), ("Hibernate", "2"), ("Shut down", "8")];
+const IDLE_ACTIONS_ALL: [(&str, &str); 3] = [("Sleep", "1"), ("Hibernate", "2"), ("Shut down", "8")];
+
+/// The idle actions this computer can really do (no Hibernate without swap, see `backend::hibernate`).
+fn idle_actions() -> Vec<(&'static str, &'static str)> {
+    let hib = crate::backend::hibernate::can_hibernate();
+    IDLE_ACTIONS_ALL.iter().copied().filter(|(_, v)| hib || *v != "2").collect()
+}
 
 fn sleep_rows(profile: &'static str) -> (adw::ComboRow, adw::ComboRow) {
     const GROUP: &str = "SuspendAndShutdown";
     let current = read(profile, GROUP, "AutoSuspendAction").unwrap_or_default();
-    let chosen = Rc::new(std::cell::Cell::new(IDLE_ACTIONS.iter().position(|(_, v)| *v == current).unwrap_or(0)));
+    let idle = Rc::new(idle_actions());
+    let chosen = Rc::new(std::cell::Cell::new(idle.iter().position(|(_, v)| *v == current).unwrap_or(0)));
 
     let pick = chosen.clone();
-    let timeout = idle_row("Sleep after", profile, GROUP, "AutoSuspendAction", "AutoSuspendIdleTimeoutSec", move || IDLE_ACTIONS[pick.get()].1.to_string(), "0");
+    let timeout = idle_row("Sleep after", profile, GROUP, "AutoSuspendAction", "AutoSuspendIdleTimeoutSec", { let idle = idle.clone(); move || idle[pick.get()].1.to_string() }, "0");
     let what = adw::ComboRow::new();
     what.set_title("When idle for that long");
     what.set_subtitle("Used when \"Sleep after\" has a time");
-    what.set_model(Some(&gtk4::StringList::new(&IDLE_ACTIONS.map(|a| a.0))));
+    what.set_model(Some(&gtk4::StringList::new(&idle.iter().map(|a| a.0).collect::<Vec<_>>())));
     what.set_selected(chosen.get() as u32);
     {
         let chosen = chosen.clone();
+        let idle = idle.clone();
         what.connect_selected_notify(move |r| {
-            let i = (r.selected() as usize).min(IDLE_ACTIONS.len() - 1);
+            let i = (r.selected() as usize).min(idle.len() - 1);
             chosen.set(i);
             // Only change what is stored when a sleep time is set (otherwise it would switch idle sleep on).
             let on = matches!(read(profile, GROUP, "AutoSuspendAction").as_deref(), Some(v) if v != "0");
             if on {
-                apply(profile, vec![(GROUP, "AutoSuspendAction", Some(IDLE_ACTIONS[i].1.to_string()))]);
+                apply(profile, vec![(GROUP, "AutoSuspendAction", Some(idle[i].1.to_string()))]);
             }
         });
     }
@@ -370,7 +380,7 @@ fn lock_group() -> adw::PreferencesGroup {
 
 const LOW_LEVELS: [u32; 5] = [10, 15, 20, 25, 30];
 const CRITICAL_LEVELS: [u32; 5] = [3, 5, 7, 10, 15];
-const CRITICAL_ACTIONS: [(&str, &str); 4] = [("Sleep", "1"), ("Hibernate", "2"), ("Shut down", "8"), ("Do nothing", "0")];
+const CRITICAL_ACTIONS_ALL: [(&str, &str); 4] = [("Sleep", "1"), ("Hibernate", "2"), ("Shut down", "8"), ("Do nothing", "0")];
 
 fn battery_levels_group() -> adw::PreferencesGroup {
     const GROUP: &str = "BatteryManagement";
@@ -398,13 +408,15 @@ fn battery_levels_group() -> adw::PreferencesGroup {
     g.add(&level_row("Low battery warning at", "Show a warning at this charge", "BatteryLowLevel", &LOW_LEVELS, 10));
     g.add(&level_row("Critical level at", "Act at this charge", "BatteryCriticalLevel", &CRITICAL_LEVELS, 5));
 
+    let hib = crate::backend::hibernate::can_hibernate();
+    let critical: Vec<(&'static str, &'static str)> = CRITICAL_ACTIONS_ALL.iter().copied().filter(|(_, v)| hib || *v != "2").collect();
     let act = adw::ComboRow::new();
     act.set_title("At the critical level");
-    act.set_model(Some(&gtk4::StringList::new(&CRITICAL_ACTIONS.map(|a| a.0))));
+    act.set_model(Some(&gtk4::StringList::new(&critical.iter().map(|a| a.0).collect::<Vec<_>>())));
     let cur = kconfig::read(RC, &[GROUP], "BatteryCriticalAction").unwrap_or_default();
-    act.set_selected(CRITICAL_ACTIONS.iter().position(|(_, v)| *v == cur).unwrap_or(0) as u32);
-    act.connect_selected_notify(|r| {
-        let v = CRITICAL_ACTIONS[(r.selected() as usize).min(CRITICAL_ACTIONS.len() - 1)].1;
+    act.set_selected(critical.iter().position(|(_, v)| *v == cur).unwrap_or(0) as u32);
+    act.connect_selected_notify(move |r| {
+        let v = critical[(r.selected() as usize).min(critical.len() - 1)].1;
         kconfig::spawn(move || {
             kconfig::write(RC, &[GROUP], "BatteryCriticalAction", v);
             reload_powerdevil();

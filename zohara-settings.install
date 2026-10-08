@@ -27,14 +27,19 @@ fix_localtime() {
 }
 
 # The terminal's banner logo is a file of the ISO's overlay (no package owns it, so a package cannot simply replace
-# it). Machines installed earlier still had the old pyramid: copy the Zohara logo over it. Only when it is the old
-# one (a person's own edit is left alone). Not on the live ISO, which already ships the new one.
+# it). Machines installed earlier had an older drawing: copy the current one over it. A note of what was copied last
+# lets a person's own edit stay: the file is only replaced when it is still the one Zohara put there (or when it is
+# one of the older Zohara drawings, which were never recorded). Not on the live ISO, which ships the current one.
 update_logo() {
     dst=/usr/share/zohara-logo.txt
     src=/usr/share/zohara/zohara-logo.txt
-    if [ -f "$src" ] && [ ! -e /run/archiso ]; then
-        if [ ! -f "$dst" ] || grep -q 'ZOHARA OS' "$dst" && ! grep -q '█' "$dst"; then
-            cp "$src" "$dst"
-        fi
+    note=/usr/share/zohara/logo-installed.sha256
+    [ -f "$src" ] && [ ! -e /run/archiso ] || return 0
+    new=$(sha256sum "$src" | cut -d' ' -f1)
+    now=$(sha256sum "$dst" 2>/dev/null | cut -d' ' -f1)
+    last=$(cat "$note" 2>/dev/null)
+    if [ "$now" != "$new" ] && { [ -z "$last" ] || [ "$now" = "$last" ] || [ -z "$now" ]; }; then
+        cp "$src" "$dst"
     fi
+    printf '%s\n' "$new" > "$note"
 }

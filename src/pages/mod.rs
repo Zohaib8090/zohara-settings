@@ -22,6 +22,7 @@ pub mod gaming;
 pub mod game_libraries;
 pub mod my_games;
 pub mod accessibility;
+pub mod app_details;
 pub mod printers;
 pub mod privacy;
 pub mod updates;

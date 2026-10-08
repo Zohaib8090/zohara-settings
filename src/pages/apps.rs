@@ -380,6 +380,27 @@ fn installed_group(page: &gtk4::Box) -> adw::PreferencesGroup {
                 btn.connect_clicked(move |_| uninstall(&app2, &page3, &row2));
                 row.add_suffix(&btn);
             }
+            // Clicking the app opens its details: storage, notifications, permissions, uninstall.
+            let target = super::app_details::Target {
+                name: app.name.clone(),
+                icon: app.icon.clone(),
+                version: app.version.clone(),
+                kind: match &app.source {
+                    Source::Flatpak(id) => super::app_details::Kind::Flatpak(id.clone()),
+                    Source::Pacman(p) => super::app_details::Kind::Pacman(p.clone()),
+                    Source::Other => super::app_details::Kind::Other,
+                },
+                desktop_id: app.desktop_id.clone(),
+            };
+            let remove_cb: Option<std::rc::Rc<dyn Fn()>> = if removable {
+                let (app3, page4, row3) = (app.clone(), page2.clone(), row.clone());
+                Some(std::rc::Rc::new(move || uninstall(&app3, &page4, &row3)))
+            } else {
+                None
+            };
+            row.set_activatable(true);
+            row.add_suffix(&gtk4::Image::from_icon_name("go-next-symbolic"));
+            row.connect_activated(move |r| super::app_details::open(r, target.clone(), remove_cb.clone()));
             list2.append(&row);
         }
         let s = search2.clone();

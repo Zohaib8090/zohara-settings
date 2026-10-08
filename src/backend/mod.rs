@@ -1,3 +1,4 @@
+pub mod app_details;
 pub mod autotz;
 pub mod dbus;
 pub mod diag;

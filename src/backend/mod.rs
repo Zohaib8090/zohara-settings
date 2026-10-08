@@ -10,5 +10,6 @@ pub mod process;
 pub mod system;
 pub mod branding;
 pub mod touch_keyboard;
+pub mod wallet;
 pub mod wifi_diag;
 pub mod worker;

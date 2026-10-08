@@ -177,6 +177,14 @@ fn security_group() -> adw::PreferencesGroup {
         fw.set_subtitle("The ufw firewall is not installed");
     }
     g.add(&fw);
+    let wallet = guarded_switch(
+        "Save passwords with KDE Wallet",
+        "Turn off to stop the wallet window that Brave and other apps open. Browsers then keep saved passwords in their own, less private store. Restart the browser after changing this",
+        "dialog-password-symbolic",
+        crate::backend::wallet::is_enabled,
+        crate::backend::wallet::set_enabled,
+    );
+    g.add(&wallet);
     g
 }
 

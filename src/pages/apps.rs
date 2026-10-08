@@ -207,31 +207,57 @@ fn gpu_button(app: &App, page: &gtk4::Box) -> gtk4::MenuButton {
     now.add_css_class("flat");
     let always = gtk4::CheckButton::with_label("Always use it for this app");
     let path = std::path::PathBuf::from(&app.desktop_path);
-    always.set_active(pref::is_set(&app.desktop_id, &path));
+    // A Flatpak app takes the choice as its own settings, an ordinary one through its launcher.
+    let flatpak_id = match &app.source {
+        Source::Flatpak(id) => Some(id.clone()),
+        _ => None,
+    };
+    always.set_active(match &flatpak_id {
+        Some(id) => pref::flatpak_is_set(id),
+        None => pref::is_set(&app.desktop_id, &path),
+    });
     body.append(&now);
     body.append(&always);
+    if flatpak_id.is_some() && !pref::flatpak_gpu_ready() {
+        let note = gtk4::Label::builder()
+            .label("This app can only use it once the NVIDIA part for Flatpak is installed. Update your Flatpak apps and runtimes (in the Store, or run “flatpak update”).")
+            .wrap(true)
+            .max_width_chars(34)
+            .xalign(0.0)
+            .css_classes(vec!["dim-label".to_string(), "caption".to_string()])
+            .build();
+        body.append(&note);
+    }
     let pop = gtk4::Popover::new();
     pop.set_child(Some(&body));
     btn.set_popover(Some(&pop));
 
     {
-        let (pop, path, page) = (pop.clone(), path.clone(), page.clone());
+        let (pop, path, page, fid) = (pop.clone(), path.clone(), page.clone(), flatpak_id.clone());
         now.connect_clicked(move |_| {
             pop.popdown();
-            if let Err(e) = pref::launch_now(&path) {
+            let started = match &fid {
+                Some(id) => pref::flatpak_launch_now(id),
+                None => pref::launch_now(&path),
+            };
+            if let Err(e) = started {
                 message(&page, "Couldn't start the app", &e);
             }
         });
     }
     {
-        let (id, page) = (app.desktop_id.clone(), page.clone());
+        let (id, page, fid) = (app.desktop_id.clone(), page.clone(), flatpak_id.clone());
         let undoing = std::rc::Rc::new(std::cell::Cell::new(false));
         always.connect_toggled(move |c| {
             if undoing.get() {
                 return;
             }
             let on = c.is_active();
-            if let Err(e) = pref::set(&id, &path, on) {
+            let saved = match &fid {
+                Some(app_id) => pref::flatpak_set(app_id, on),
+                None => pref::set(&id, &path, on),
+            };
+            if let Err(e) = saved {
                 undoing.set(true);
                 c.set_active(!on);
                 undoing.set(false);
@@ -339,7 +365,7 @@ fn installed_group(page: &gtk4::Box) -> adw::PreferencesGroup {
             img.set_pixel_size(32);
             row.add_prefix(&img);
             // A laptop with two graphics chips: choose which one this app uses.
-            if dual_gpu && !matches!(app.source, Source::Flatpak(_)) {
+            if dual_gpu {
                 row.add_suffix(&gpu_button(&app, &page2));
             }
             let removable = match &app.source {

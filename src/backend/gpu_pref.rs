@@ -168,6 +168,159 @@ pub fn launch_now(system_path: &Path) -> Result<(), String> {
         .map_err(|e| format!("Couldn't start the app ({e})"))
 }
 
+// ── Flatpak apps ───────────────────────────────────────────────────────────
+//
+// A Flatpak app runs in a sandbox that does not see the settings the desktop would give it, so the chip's settings go
+// in as that app's own environment: `flatpak run --env=...` for one launch, and an entry in the person's overrides file
+// for "always" (the same file `flatpak override --user --env=...` writes; `--unset-env` only blanks a value, so
+// taking the choice back out is done here).
+
+fn safe_flatpak_id(id: &str) -> bool {
+    !id.is_empty() && id.len() < 200 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)) && !id.starts_with('.')
+}
+
+pub fn flatpak_override_path(app_id: &str) -> PathBuf {
+    let base = std::env::var("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share"));
+    base.join("flatpak").join("overrides").join(app_id)
+}
+
+/// Whether every one of `env` is set, with that value, in the `[Environment]` group of an overrides file.
+pub fn override_has_env(text: &str, env: &[(String, String)]) -> bool {
+    if env.is_empty() {
+        return false;
+    }
+    let mut in_env = false;
+    let mut found = 0;
+    for line in text.lines() {
+        let l = line.trim();
+        if is_group_header(l) {
+            in_env = l == "[Environment]";
+        } else if in_env {
+            if let Some((k, v)) = l.split_once('=') {
+                if env.iter().any(|(ek, ev)| ek == k.trim() && ev == v.trim()) {
+                    found += 1;
+                }
+            }
+        }
+    }
+    found == env.len()
+}
+
+/// The overrides file with `env` set in `[Environment]` (on) or taken out of it (off). Nothing else is touched; an
+/// `[Environment]` group left empty goes too.
+pub fn override_with_env(text: &str, env: &[(String, String)], on: bool) -> String {
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new(); // (header line, body lines); the first group may have no header
+    let mut current: (String, Vec<String>) = (String::new(), Vec::new());
+    for line in text.lines() {
+        if is_group_header(line.trim()) {
+            groups.push(std::mem::take(&mut current));
+            current = (line.trim().to_string(), Vec::new());
+        } else {
+            current.1.push(line.to_string());
+        }
+    }
+    groups.push(current);
+    let ours = |line: &str| line.split_once('=').is_some_and(|(k, _)| env.iter().any(|(ek, _)| ek == k.trim()));
+    let mut has_env_group = false;
+    for (header, body) in groups.iter_mut() {
+        if header == "[Environment]" {
+            has_env_group = true;
+            body.retain(|l| !ours(l));
+            if on {
+                body.extend(env.iter().map(|(k, v)| format!("{k}={v}")));
+            }
+        }
+    }
+    if on && !has_env_group {
+        groups.push(("[Environment]".to_string(), env.iter().map(|(k, v)| format!("{k}={v}")).collect()));
+    }
+    let mut out = String::new();
+    for (header, body) in groups {
+        let has_content = body.iter().any(|l| !l.trim().is_empty());
+        if header.is_empty() {
+            if has_content {
+                out += &body.join("\n");
+                out.push('\n');
+            }
+            continue;
+        }
+        if header == "[Environment]" && !has_content {
+            continue; // nothing left in it
+        }
+        out += &header;
+        out.push('\n');
+        for l in body.iter().filter(|l| !l.trim().is_empty()) {
+            out += l;
+            out.push('\n');
+        }
+    }
+    out
+}
+
+pub fn flatpak_is_set(app_id: &str) -> bool {
+    safe_flatpak_id(app_id)
+        && std::fs::read_to_string(flatpak_override_path(app_id)).map(|t| override_has_env(&t, &dedicated_env())).unwrap_or(false)
+}
+
+pub fn flatpak_set(app_id: &str, on: bool) -> Result<(), String> {
+    if !safe_flatpak_id(app_id) {
+        return Err("That app can't be changed.".into());
+    }
+    let env = dedicated_env();
+    if env.is_empty() {
+        return Err("No second graphics chip was found. Is switcheroo-control running?".into());
+    }
+    let path = flatpak_override_path(app_id);
+    let old = std::fs::read_to_string(&path).unwrap_or_default();
+    let new = override_with_env(&old, &env, on);
+    if new.trim().is_empty() {
+        return match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.to_string()),
+        };
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, new).map_err(|e| format!("Couldn't save the choice ({e})"))
+}
+
+/// Starts a Flatpak app once on the stronger chip.
+pub fn flatpak_launch_now(app_id: &str) -> Result<(), String> {
+    if !safe_flatpak_id(app_id) {
+        return Err("That app can't be started.".into());
+    }
+    let env = dedicated_env();
+    if env.is_empty() {
+        return Err("No second graphics chip was found. Is switcheroo-control running?".into());
+    }
+    let mut cmd = Command::new("flatpak");
+    cmd.arg("run");
+    for (k, v) in &env {
+        cmd.arg(format!("--env={k}={v}"));
+    }
+    cmd.arg(app_id).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.spawn().map(drop).map_err(|e| format!("Couldn't start the app ({e})"))
+}
+
+/// Whether Flatpak apps can use the NVIDIA chip: the driver's Flatpak counterpart has to be installed, or the app
+/// quietly stays on the other chip. Always true when the stronger chip isn't NVIDIA.
+pub fn flatpak_gpu_ready() -> bool {
+    let nvidia = dedicated_env().iter().any(|(k, _)| k == "__NV_PRIME_RENDER_OFFLOAD");
+    if !nvidia {
+        return true;
+    }
+    let version = std::fs::read_to_string("/sys/module/nvidia/version").unwrap_or_default().trim().replace('.', "-");
+    if version.is_empty() {
+        return false;
+    }
+    let list = Command::new("flatpak").args(["list", "--runtime", "--columns=application"]).stderr(Stdio::null()).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    list.lines().any(|l| l.trim() == format!("org.freedesktop.Platform.GL.nvidia-{version}"))
+}
+
 /// A laptop with two graphics chips (from /sys: instant).
 pub fn has_two_gpus() -> bool {
     super::gpu::detect().count() >= 2
@@ -311,5 +464,74 @@ mod tests {
         assert!(with.contains("__NV_PRIME_RENDER_OFFLOAD=1") && with.contains("__GLX_VENDOR_LIBRARY_NAME=nvidia"), "always did not reach the app:\n{with}");
         assert!(!without.contains("__NV_PRIME_RENDER_OFFLOAD"), "off still used the stronger chip");
         assert!(now.contains("__NV_PRIME_RENDER_OFFLOAD=1"), "open now did not reach the app:\n{now}");
+    }
+
+    fn nv() -> Vec<(String, String)> {
+        vec![("__NV_PRIME_RENDER_OFFLOAD".into(), "1".into()), ("__GLX_VENDOR_LIBRARY_NAME".into(), "nvidia".into())]
+    }
+
+    #[test]
+    fn a_flatpak_override_gets_the_settings_added_and_taken_out_again_leaving_everything_else() {
+        let none = override_with_env("", &nv(), true);
+        assert_eq!(none, "[Environment]\n__NV_PRIME_RENDER_OFFLOAD=1\n__GLX_VENDOR_LIBRARY_NAME=nvidia\n");
+        assert!(override_has_env(&none, &nv()));
+        assert_eq!(override_with_env(&none, &nv(), false), "", "nothing left: the file can go");
+
+        let theirs = "[Context]\nshared=network;\nsockets=x11;\n\n[Environment]\nFOO=bar\n";
+        let on = override_with_env(theirs, &nv(), true);
+        assert!(on.contains("[Context]\nshared=network;\nsockets=x11;\n"));
+        assert!(on.contains("FOO=bar") && override_has_env(&on, &nv()));
+        assert_eq!(on.matches("__NV_PRIME_RENDER_OFFLOAD").count(), 1);
+        let off = override_with_env(&on, &nv(), false);
+        assert!(off.contains("FOO=bar") && !off.contains("NV_PRIME") && off.contains("[Context]\nshared=network;"));
+        assert!(!override_has_env(&off, &nv()));
+        // Turning on twice does not repeat the lines.
+        assert_eq!(override_with_env(&on, &nv(), true).matches("__GLX_VENDOR_LIBRARY_NAME").count(), 1);
+    }
+
+    #[test]
+    fn a_value_that_differs_or_is_missing_does_not_count_as_set() {
+        assert!(!override_has_env("[Environment]\n__NV_PRIME_RENDER_OFFLOAD=0\n__GLX_VENDOR_LIBRARY_NAME=nvidia\n", &nv()));
+        assert!(!override_has_env("[Environment]\n__NV_PRIME_RENDER_OFFLOAD=1\n", &nv()));
+        assert!(!override_has_env("[Context]\n__NV_PRIME_RENDER_OFFLOAD=1\n__GLX_VENDOR_LIBRARY_NAME=nvidia\n", &nv()), "wrong group");
+        assert!(!override_has_env("", &[]));
+    }
+
+    #[test]
+    fn flatpak_ids_are_checked() {
+        assert!(safe_flatpak_id("com.spotify.Client"));
+        assert!(!safe_flatpak_id("../x"));
+        assert!(!safe_flatpak_id("a b"));
+        assert!(!safe_flatpak_id(""));
+        assert!(flatpak_set("../x", true).is_err());
+    }
+
+    /// A real Flatpak app, without starting it: the settings must be inside its sandbox when "always" is on, and gone
+    /// when off, with the person's own overrides file left as it was. `cargo test live_flatpak_gpu -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_flatpak_gpu_choice_reaches_the_sandbox() {
+        assert!(has_two_gpus() && !dedicated_env().is_empty());
+        let app = "com.spotify.Client";
+        let path = flatpak_override_path(app);
+        let before = std::fs::read_to_string(&path).ok();
+        let inside = |key: &str| {
+            let o = Command::new("flatpak").args(["run", "--command=sh", app, "-c", &format!("echo \"V=${key}\"")]).output().unwrap();
+            String::from_utf8_lossy(&o.stdout).lines().find_map(|l| l.strip_prefix("V=")).unwrap_or("").to_string()
+        };
+        let off_value = inside("__NV_PRIME_RENDER_OFFLOAD");
+        flatpak_set(app, true).unwrap();
+        let on_value = inside("__NV_PRIME_RENDER_OFFLOAD");
+        let on_flag = flatpak_is_set(app);
+        flatpak_set(app, false).unwrap();
+        let back_value = inside("__NV_PRIME_RENDER_OFFLOAD");
+        let after = std::fs::read_to_string(&path).ok();
+        println!("before: {off_value:?} | always on: {on_value:?} (is_set {on_flag}) | off again: {back_value:?} | file restored: {}", before == after);
+        assert_eq!(off_value, "");
+        assert_eq!(on_value, "1");
+        assert!(on_flag && !flatpak_is_set(app));
+        assert_eq!(back_value, "");
+        assert_eq!(before, after, "the overrides file is as it was");
+        assert!(flatpak_gpu_ready(), "the NVIDIA part for Flatpak is installed");
     }
 }

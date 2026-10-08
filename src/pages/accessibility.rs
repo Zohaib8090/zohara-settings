@@ -191,7 +191,9 @@ fn speech_group() -> adw::PreferencesGroup {
             if on {
                 let _ = Command::new("orca").arg("--replace").spawn();
             } else {
-                let _ = Command::new("pkill").args(["-f", "/usr/bin/orca"]).status();
+                // Orca runs as the program "orca" (its command line is just `orca`), so match the
+                // name exactly; a pattern on "/usr/bin/orca" never matched and it kept talking.
+                let _ = Command::new("pkill").args(["-x", "orca"]).status();
             }
         });
     });

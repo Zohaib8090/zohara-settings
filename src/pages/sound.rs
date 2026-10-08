@@ -182,6 +182,42 @@ fn device_combo(title: &str, labels: &[String]) -> adw::ComboRow {
     row
 }
 
+/// Whether a drop-down in `w` is open right now. The mixer must not redraw itself then: the list under an open
+/// pick would be thrown away, and the choice lost.
+fn popover_open(w: &gtk4::Widget) -> bool {
+    if w.downcast_ref::<gtk4::Popover>().is_some_and(|p| p.is_visible()) {
+        return true;
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if popover_open(&c) {
+            return true;
+        }
+        child = c.next_sibling();
+    }
+    false
+}
+
+fn app_name(stream: &Value) -> String {
+    let p = &stream["properties"];
+    p["application.name"].as_str().or_else(|| p["media.name"].as_str()).unwrap_or_default().to_string()
+}
+
+/// Moves every stream of the app `app` to `device`. Looked up when the pick is made: a player such as Spotify opens a
+/// new stream for every track, so the stream that was on screen a moment ago may already be gone. (The sound server
+/// remembers the choice, so the app's later streams follow it.)
+fn move_app(kind: &'static str, app: String, device: String) {
+    std::thread::spawn(move || {
+        let (list, mover) = if kind == "sink-inputs" { ("sink-inputs", "move-sink-input") } else { ("source-outputs", "move-source-output") };
+        for stream in pactl_json(list) {
+            if app_name(&stream) == app {
+                let idx = stream["index"].as_u64().unwrap_or(0).to_string();
+                let _ = Command::new("pactl").args([mover, &idx, &device]).status();
+            }
+        }
+    });
+}
+
 /// Picker for "which device does this app use": the devices, the index of the one it is on now, and what to do on a pick.
 fn route_row(title: &str, devices: &[Value], current: Option<u64>, on_pick: impl Fn(String) + 'static) -> adw::ComboRow {
     let labels: Vec<String> = devices.iter().map(device_label).collect();
@@ -295,6 +331,9 @@ fn stream_signature(inputs: &[Value]) -> String {
 }
 
 fn refresh_apps(list: &gtk4::Box, last_sig: &Rc<RefCell<String>>, force: bool) {
+    if !force && popover_open(list.upcast_ref()) {
+        return;
+    }
     let inputs = pactl_json("sink-inputs");
     let sig = stream_signature(&inputs);
     // Rebuilding while the set of streams is unchanged would destroy a slider mid-drag.
@@ -359,9 +398,9 @@ fn refresh_apps(list: &gtk4::Box, last_sig: &Rc<RefCell<String>>, force: bool) {
 
         // Which speakers or headphones this app plays on.
         if sinks.len() > 1 {
-            let idx_r = idx.clone();
+            let app_r = app_name(input);
             list.append(&route_row("Play on", &sinks, input["sink"].as_u64(), move |sink| {
-                pactl_run(vec!["move-sink-input".into(), idx_r.clone(), sink]);
+                move_app("sink-inputs", app_r.clone(), sink);
             }));
         }
     }
@@ -380,6 +419,9 @@ fn mic_streams(outputs: &[Value]) -> Vec<&Value> {
 }
 
 fn refresh_mic_apps(list: &gtk4::Box, last_sig: &Rc<RefCell<String>>, force: bool) {
+    if !force && popover_open(list.upcast_ref()) {
+        return;
+    }
     let all = pactl_json("source-outputs");
     let outputs = mic_streams(&all);
     let sig = outputs
@@ -406,7 +448,6 @@ fn refresh_mic_apps(list: &gtk4::Box, last_sig: &Rc<RefCell<String>>, force: boo
         return;
     }
     for output in outputs {
-        let idx = output["index"].as_u64().unwrap_or(0).to_string();
         let props = &output["properties"];
         let app = props["application.name"].as_str().or_else(|| props["media.name"].as_str()).unwrap_or("Unknown application");
         let row = adw::ActionRow::new();
@@ -415,9 +456,9 @@ fn refresh_mic_apps(list: &gtk4::Box, last_sig: &Rc<RefCell<String>>, force: boo
         row.add_prefix(&gtk4::Image::from_icon_name(props["application.icon_name"].as_str().unwrap_or("audio-input-microphone-symbolic")));
         list.append(&row);
         if sources.len() > 1 {
-            let idx_r = idx.clone();
+            let app_r = app_name(output);
             list.append(&route_row("Listen with", &sources, output["source"].as_u64(), move |source| {
-                pactl_run(vec!["move-source-output".into(), idx_r.clone(), source]);
+                move_app("source-outputs", app_r.clone(), source);
             }));
         }
     }

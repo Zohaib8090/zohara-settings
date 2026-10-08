@@ -4,18 +4,29 @@
 //!
 //! Keys travel as Qt "combined" ints (key code | modifier bits); a shortcut is
 //! a list of key sequences, of which we use the first key of each.
+//!
+//! Custom shortcuts (a key that runs a command) are made the way Plasma makes them:
+//! a `.desktop` file in `~/.local/share/applications` marked
+//! `X-KDE-GlobalAccel-CommandShortcut=true`, registered with kglobalaccel as the
+//! "services" component named after that file. Removing one unregisters it and
+//! deletes the file.
 
 use crate::backend::worker::{block_on, in_background};
 use adw::prelude::*;
 use gtk4::glib::translate::IntoGlib;
 use gtk4::prelude::*;
 use libadwaita as adw;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 const SERVICE: &str = "org.kde.kglobalaccel";
 const PATH: &str = "/kglobalaccel";
 const IFACE: &str = "org.kde.KGlobalAccel";
+
+/// Desktop-file ids of the shortcuts made on this page start with this.
+const CUSTOM_PREFIX: &str = "net.zohara.customshortcut.";
+const CUSTOM_GROUP: &str = "Custom shortcuts";
+const LAUNCH_ACTION: &str = "_launch";
 
 const QT_SHIFT: i32 = 0x0200_0000;
 const QT_CTRL: i32 = 0x0400_0000;
@@ -76,6 +87,17 @@ impl Action {
     }
     fn name(&self) -> &str {
         self.id.get(3).filter(|s| !s.is_empty()).or(self.id.get(1)).map(String::as_str).unwrap_or("")
+    }
+    fn is_custom(&self) -> bool {
+        self.id.first().is_some_and(|c| c.starts_with(CUSTOM_PREFIX))
+    }
+    /// Heading of the group this action is listed under.
+    fn group(&self) -> &str {
+        if self.is_custom() {
+            CUSTOM_GROUP
+        } else {
+            self.component()
+        }
     }
 }
 
@@ -202,6 +224,151 @@ fn block_global_shortcuts(block: bool) {
     });
 }
 
+// ── Custom shortcuts (files + kglobalaccel) ─────────────────────────────────
+
+fn applications_dir() -> std::path::PathBuf {
+    let base = std::env::var("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share"));
+    base.join("applications")
+}
+
+fn custom_file(desktop_id: &str) -> std::path::PathBuf {
+    applications_dir().join(desktop_id)
+}
+
+/// A desktop-file id that is unique and safe as a file name: prefix, readable part of the name, time.
+fn custom_id(name: &str, stamp: u128) -> String {
+    let slug: String = name
+        .chars()
+        .filter_map(|c| if c.is_ascii_alphanumeric() { Some(c.to_ascii_lowercase()) } else if c == ' ' || c == '-' || c == '_' { Some('-') } else { None })
+        .take(24)
+        .collect();
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        format!("{CUSTOM_PREFIX}{stamp:x}.desktop")
+    } else {
+        format!("{CUSTOM_PREFIX}{slug}-{stamp:x}.desktop")
+    }
+}
+
+/// Desktop-entry string value: backslashes doubled (newlines are refused before this).
+fn entry_value(s: &str) -> String {
+    s.replace('\\', "\\\\")
+}
+
+fn entry_unvalue(s: &str) -> String {
+    s.replace("\\\\", "\\")
+}
+
+/// `Exec` that runs `command` through the shell. Plasma refuses shell syntax (`&&`, `|`, `~`) in a
+/// bare Exec, so the command is one double-quoted argument of `sh -c`. Per the Desktop Entry spec the
+/// quoted argument escapes `"` `` ` `` `$` `\` with a backslash, the string layer doubles every
+/// backslash again, and a literal `%` is written `%%`.
+fn exec_line(command: &str) -> String {
+    let mut q = String::new();
+    for c in command.chars() {
+        match c {
+            '"' | '`' | '$' => {
+                q.push_str("\\\\");
+                q.push(c);
+            }
+            '\\' => q.push_str("\\\\\\\\"),
+            '%' => q.push_str("%%"),
+            _ => q.push(c),
+        }
+    }
+    format!("sh -c \"{q}\"")
+}
+
+fn desktop_entry(name: &str, command: &str) -> String {
+    format!(
+        "[Desktop Entry]\nType=Application\nName={}\nComment={}\nExec={}\nNoDisplay=true\nStartupNotify=false\nX-KDE-GlobalAccel-CommandShortcut=true\n",
+        entry_value(name),
+        entry_value(command),
+        exec_line(command)
+    )
+}
+
+/// The command a custom shortcut runs, as the user typed it (kept in the file's Comment).
+fn custom_command(desktop_id: &str) -> Option<String> {
+    let text = std::fs::read_to_string(custom_file(desktop_id)).ok()?;
+    text.lines().find_map(|l| l.strip_prefix("Comment=")).map(entry_unvalue)
+}
+
+fn one_line(what: &str, s: &str) -> Result<String, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        Err(format!("{what} is empty."))
+    } else if s.contains(['\n', '\r']) {
+        Err(format!("{what} must be on one line."))
+    } else {
+        Ok(s.to_string())
+    }
+}
+
+fn custom_stamp() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+}
+
+/// Writes the desktop file and has kglobalaccel take the key for it.
+fn create_custom(name: String, command: String, key: i32) -> Result<(), String> {
+    let name = one_line("The name", &name)?;
+    let command = one_line("The command", &command)?;
+    let desktop_id = custom_id(&name, custom_stamp());
+    let path = custom_file(&desktop_id);
+    std::fs::create_dir_all(applications_dir()).map_err(|e| e.to_string())?;
+    std::fs::write(&path, desktop_entry(&name, &command)).map_err(|e| format!("Couldn't save the shortcut: {e}"))?;
+
+    let id = vec![desktop_id.clone(), LAUNCH_ACTION.to_string(), desktop_id.clone(), name];
+    let registered = block_on(async {
+        let conn = zbus::Connection::session().await.map_err(|e| e.to_string())?;
+        // SetPresent | NoAutoloading: a brand-new action, take exactly this key. kglobalaccel only builds the
+        // component once it can find the new desktop file, which can lag a second or two behind the write
+        // (more when shortcuts were just added or removed), so register again until the key is taken.
+        for attempt in 0..30 {
+            conn.call_method(Some(SERVICE), PATH, Some(IFACE), "doRegister", &id).await.map_err(|e| e.to_string())?;
+            let stored: Vec<i32> =
+                call(&conn, "setShortcut", &(id.clone(), vec![key], 6u32)).await.map_err(|e| e.to_string())?;
+            if stored.contains(&key) {
+                return Ok(());
+            }
+            if attempt < 29 {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+        }
+        Err("Plasma didn't accept that key. It may already be in use; try a different one.".to_string())
+    });
+    if registered.is_err() {
+        let _ = std::fs::remove_file(&path);
+        let _ = remove_registration(&desktop_id);
+    }
+    registered
+}
+
+fn remove_registration(desktop_id: &str) -> Result<(), String> {
+    block_on(async {
+        let conn = zbus::Connection::session().await.map_err(|e| e.to_string())?;
+        conn.call_method(Some(SERVICE), PATH, Some(IFACE), "unregister", &(desktop_id, LAUNCH_ACTION))
+            .await
+            .map(drop)
+            .map_err(|e| e.to_string())
+    })
+}
+
+fn delete_custom(desktop_id: String) -> Result<(), String> {
+    // Only ever our own files.
+    if !desktop_id.starts_with(CUSTOM_PREFIX) || desktop_id.contains('/') {
+        return Err("Not a custom shortcut.".into());
+    }
+    remove_registration(&desktop_id)?;
+    match std::fs::remove_file(custom_file(&desktop_id)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 // ── UI ──────────────────────────────────────────────────────────────────────
 
 enum Captured {
@@ -271,6 +438,18 @@ struct Ui {
     actions: RefCell<Vec<Action>>,
     labels: RefCell<Vec<(gtk4::Label, gtk4::Button)>>,
     window: gtk4::Window,
+    /// Search-box handler of the current list, dropped when the list is rebuilt.
+    search_handler: RefCell<Option<glib::SignalHandlerId>>,
+}
+
+/// The widgets that make up the open Shortcuts window, so the list can be rebuilt after a change.
+struct Page {
+    ui: Rc<Ui>,
+    list: gtk4::Box,
+    search: gtk4::SearchEntry,
+    stack: gtk4::Stack,
+    status: adw::StatusPage,
+    add_button: gtk4::Button,
 }
 
 fn refresh_row(ui: &Ui, i: usize) {
@@ -278,7 +457,7 @@ fn refresh_row(ui: &Ui, i: usize) {
     let labels = ui.labels.borrow();
     if let (Some(a), Some((label, reset))) = (actions.get(i), labels.get(i)) {
         label.set_label(&keys_text(&a.keys));
-        reset.set_visible(a.keys != a.defaults);
+        reset.set_visible(a.keys != a.defaults && !a.is_custom());
     }
 }
 
@@ -340,12 +519,23 @@ fn edit(ui: &Rc<Ui>, i: usize) {
     });
 }
 
-fn populate(ui: &Rc<Ui>, list: &gtk4::Box, search: &gtk4::SearchEntry) {
+fn show_error(window: &gtk4::Window, title: &str, message: &str) {
+    let d = adw::AlertDialog::new(Some(title), Some(message));
+    d.add_response("ok", "OK");
+    d.present(Some(window));
+}
+
+fn populate(page: &Rc<Page>) {
+    let ui = &page.ui;
     let actions = ui.actions.borrow().clone();
     let mut order: Vec<usize> = (0..actions.len()).collect();
+    // Custom shortcuts first, then the rest by program name.
     order.sort_by(|a, b| {
         let (x, y) = (&actions[*a], &actions[*b]);
-        x.component().to_lowercase().cmp(&y.component().to_lowercase()).then(x.name().cmp(y.name()))
+        y.is_custom()
+            .cmp(&x.is_custom())
+            .then(x.group().to_lowercase().cmp(&y.group().to_lowercase()))
+            .then(x.name().cmp(y.name()))
     });
 
     let mut labels = vec![(gtk4::Label::new(None), gtk4::Button::new()); actions.len()];
@@ -354,16 +544,22 @@ fn populate(ui: &Rc<Ui>, list: &gtk4::Box, search: &gtk4::SearchEntry) {
 
     for i in order {
         let a = &actions[i];
-        if current.as_deref() != Some(a.component()) {
-            current = Some(a.component().to_string());
+        if current.as_deref() != Some(a.group()) {
+            current = Some(a.group().to_string());
             let g = adw::PreferencesGroup::new();
-            g.set_title(&glib::markup_escape_text(a.component()));
-            list.append(&g);
+            g.set_title(&glib::markup_escape_text(a.group()));
+            page.list.append(&g);
             groups.push((g, Vec::new()));
         }
         let row = adw::ActionRow::new();
         row.set_title(&glib::markup_escape_text(a.name()));
         row.set_activatable(true);
+
+        let command = if a.is_custom() { a.id.first().and_then(|id| custom_command(id)) } else { None };
+        if let Some(c) = &command {
+            row.set_subtitle(&glib::markup_escape_text(c));
+            row.set_subtitle_lines(1);
+        }
 
         let label = gtk4::Label::new(Some(keys_text(&a.keys).as_str()));
         label.set_css_classes(&["dim-label"]);
@@ -371,9 +567,19 @@ fn populate(ui: &Rc<Ui>, list: &gtk4::Box, search: &gtk4::SearchEntry) {
         reset.set_css_classes(&["flat"]);
         reset.set_valign(gtk4::Align::Center);
         reset.set_tooltip_text(Some(format!("Reset to default ({})", keys_text(&a.defaults)).as_str()));
-        reset.set_visible(a.keys != a.defaults);
+        reset.set_visible(a.keys != a.defaults && !a.is_custom());
         row.add_suffix(&label);
         row.add_suffix(&reset);
+
+        if a.is_custom() {
+            let del = gtk4::Button::from_icon_name("user-trash-symbolic");
+            del.set_css_classes(&["flat"]);
+            del.set_valign(gtk4::Align::Center);
+            del.set_tooltip_text(Some("Delete this shortcut"));
+            let page = page.clone();
+            del.connect_clicked(move |_| confirm_delete(&page, i));
+            row.add_suffix(&del);
+        }
 
         {
             let ui = ui.clone();
@@ -388,7 +594,8 @@ fn populate(ui: &Rc<Ui>, list: &gtk4::Box, search: &gtk4::SearchEntry) {
         }
 
         labels[i] = (label, reset);
-        let haystack = format!("{} {} {}", a.name(), a.component(), keys_text(&a.keys)).to_lowercase();
+        let haystack =
+            format!("{} {} {} {}", a.name(), a.group(), keys_text(&a.keys), command.unwrap_or_default()).to_lowercase();
         let (g, rows) = groups.last_mut().expect("group exists");
         g.add(&row);
         rows.push((row, haystack));
@@ -396,7 +603,10 @@ fn populate(ui: &Rc<Ui>, list: &gtk4::Box, search: &gtk4::SearchEntry) {
     *ui.labels.borrow_mut() = labels;
 
     let groups = Rc::new(groups);
-    search.connect_search_changed(move |s| {
+    if let Some(old) = ui.search_handler.borrow_mut().take() {
+        page.search.disconnect(old);
+    }
+    let handler = page.search.connect_search_changed(move |s| {
         let q = s.text().to_lowercase();
         for (g, rows) in groups.iter() {
             let mut any = false;
@@ -408,6 +618,208 @@ fn populate(ui: &Rc<Ui>, list: &gtk4::Box, search: &gtk4::SearchEntry) {
             g.set_visible(any);
         }
     });
+    *ui.search_handler.borrow_mut() = Some(handler);
+}
+
+/// (Re)reads every shortcut from kglobalaccel and rebuilds the list.
+fn reload(page: &Rc<Page>) {
+    page.search.set_text("");
+    let page = page.clone();
+    in_background(load_actions, move |res| {
+        while let Some(child) = page.list.first_child() {
+            page.list.remove(&child);
+        }
+        match res {
+            Ok(actions) if !actions.is_empty() => {
+                *page.ui.actions.borrow_mut() = actions;
+                populate(&page);
+                page.add_button.set_sensitive(true);
+                page.stack.set_visible_child_name("list");
+            }
+            Ok(_) => {
+                page.status.set_title("No shortcuts found");
+                page.status.set_description(Some("No application has registered a global shortcut."));
+                page.stack.set_visible_child_name("status");
+            }
+            Err(e) => {
+                page.status.set_icon_name(Some("dialog-warning-symbolic"));
+                page.status.set_title("Shortcut service unavailable");
+                let msg = format!(
+                    "Global shortcuts are managed by KDE's kglobalaccel, which only runs in a Plasma session.\n\n{e}"
+                );
+                page.status.set_description(Some(msg.as_str()));
+                page.stack.set_visible_child_name("status");
+            }
+        }
+    });
+}
+
+fn confirm_delete(page: &Rc<Page>, i: usize) {
+    let (id, name, keys) = {
+        let actions = page.ui.actions.borrow();
+        let a = &actions[i];
+        (a.id.first().cloned().unwrap_or_default(), a.name().to_string(), keys_text(&a.keys))
+    };
+    let d = adw::AlertDialog::new(
+        Some(format!("Delete “{name}”?").as_str()),
+        Some(format!("{keys} will stop doing anything. The program it starts isn't touched.").as_str()),
+    );
+    d.add_responses(&[("cancel", "Cancel"), ("delete", "Delete")]);
+    d.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    let window = page.ui.window.clone();
+    let page = page.clone();
+    d.connect_response(None, move |_, resp| {
+        if resp != "delete" {
+            return;
+        }
+        let id = id.clone();
+        let page = page.clone();
+        in_background(move || delete_custom(id), move |res| match res {
+            Ok(()) => reload(&page),
+            Err(e) => show_error(&page.ui.window, "Couldn't delete the shortcut", &e),
+        });
+    });
+    d.present(Some(&window));
+}
+
+/// "Add a custom shortcut": a name, a command, and a key to press.
+fn add_custom(page: &Rc<Page>) {
+    let win = adw::Window::builder()
+        .modal(true)
+        .transient_for(&page.ui.window)
+        .default_width(460)
+        .resizable(false)
+        .title("Add a custom shortcut")
+        .build();
+
+    let name = adw::EntryRow::builder().title("Name").build();
+    let command = adw::EntryRow::builder().title("Command").build();
+    let key_label = gtk4::Label::new(Some("Not set"));
+    key_label.set_css_classes(&["dim-label"]);
+    let key_button = gtk4::Button::with_label("Set shortcut");
+    key_button.set_valign(gtk4::Align::Center);
+    let key_row = adw::ActionRow::builder().title("Shortcut").build();
+    key_row.add_suffix(&key_label);
+    key_row.add_suffix(&key_button);
+
+    let group = adw::PreferencesGroup::new();
+    group.add(&name);
+    group.add(&command);
+    group.add(&key_row);
+
+    let hint = gtk4::Label::builder()
+        .label("The command runs like it would in a terminal, for example “firefox https://example.org” or “systemctl --user restart plasma-plasmashell”.")
+        .wrap(true)
+        .xalign(0.0)
+        .css_classes(vec!["dim-label".to_string(), "caption".to_string()])
+        .build();
+    let error = gtk4::Label::builder()
+        .wrap(true)
+        .xalign(0.0)
+        .visible(false)
+        .css_classes(vec!["error".to_string()])
+        .build();
+
+    let body = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+    body.set_margin_top(12);
+    body.set_margin_bottom(24);
+    body.set_margin_start(24);
+    body.set_margin_end(24);
+    body.append(&group);
+    body.append(&hint);
+    body.append(&error);
+
+    let cancel = gtk4::Button::with_label("Cancel");
+    let add = gtk4::Button::with_label("Add");
+    add.set_css_classes(&["suggested-action"]);
+    add.set_sensitive(false);
+    let header = adw::HeaderBar::new();
+    header.pack_start(&cancel);
+    header.pack_end(&add);
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&header);
+    view.set_content(Some(&body));
+    win.set_content(Some(&view));
+
+    let key: Rc<Cell<Option<i32>>> = Rc::new(Cell::new(None));
+    let check = {
+        let (name, command, key, add) = (name.clone(), command.clone(), key.clone(), add.clone());
+        Rc::new(move || {
+            add.set_sensitive(
+                !name.text().trim().is_empty() && !command.text().trim().is_empty() && key.get().is_some(),
+            );
+        })
+    };
+    {
+        let check = check.clone();
+        name.connect_changed(move |_| check());
+    }
+    {
+        let check = check.clone();
+        command.connect_changed(move |_| check());
+    }
+    {
+        let win = win.clone();
+        cancel.connect_clicked(move |_| win.close());
+    }
+    {
+        let (win, key, key_label, check, name) = (win.clone(), key.clone(), key_label.clone(), check.clone(), name.clone());
+        key_button.connect_clicked(move |_| {
+            let (key, key_label, check) = (key.clone(), key_label.clone(), check.clone());
+            let what = {
+                let n = name.text();
+                if n.trim().is_empty() { "this shortcut".to_string() } else { n.trim().to_string() }
+            };
+            capture_shortcut(win.upcast_ref::<gtk4::Window>(), &what, move |cap| {
+                match cap {
+                    Captured::Set(k) => {
+                        key.set(Some(k));
+                        key_label.set_label(&key_text(k));
+                    }
+                    Captured::Clear => {
+                        key.set(None);
+                        key_label.set_label("Not set");
+                    }
+                }
+                check();
+            });
+        });
+    }
+    {
+        let (win, page, name, command, key, error, add2) =
+            (win.clone(), page.clone(), name.clone(), command.clone(), key.clone(), error.clone(), add.clone());
+        add.connect_clicked(move |_| {
+            let Some(k) = key.get() else { return };
+            let (n, c) = (name.text().to_string(), command.text().to_string());
+            let taken = page
+                .ui
+                .actions
+                .borrow()
+                .iter()
+                .find(|a| a.keys.contains(&k))
+                .map(|a| (a.name().to_string(), a.group().to_string()));
+            if let Some((other, group)) = taken {
+                error.set_label(&format!("{} is already used by “{other}” ({group}). Pick another key.", key_text(k)));
+                error.set_visible(true);
+                return;
+            }
+            error.set_visible(false);
+            add2.set_sensitive(false);
+            let (win, page, error, add2) = (win.clone(), page.clone(), error.clone(), add2.clone());
+            in_background(move || create_custom(n, c, k), move |res| match res {
+                Ok(()) => {
+                    win.close();
+                    reload(&page);
+                }
+                Err(e) => {
+                    error.set_label(&e);
+                    error.set_visible(true);
+                    add2.set_sensitive(true);
+                }
+            });
+        });
+    }
+    win.present();
 }
 
 pub fn open(parent: &gtk4::Widget) {
@@ -418,8 +830,12 @@ pub fn open(parent: &gtk4::Widget) {
     }
 
     let search = gtk4::SearchEntry::builder().placeholder_text("Search shortcuts").hexpand(true).build();
+    let add_button = gtk4::Button::from_icon_name("list-add-symbolic");
+    add_button.set_tooltip_text(Some("Add a custom shortcut"));
+    add_button.set_sensitive(false);
     let header = adw::HeaderBar::new();
     header.set_title_widget(Some(&search));
+    header.pack_start(&add_button);
 
     let list = gtk4::Box::new(gtk4::Orientation::Vertical, 18);
     list.set_margin_top(12);
@@ -441,29 +857,108 @@ pub fn open(parent: &gtk4::Widget) {
     win.set_content(Some(&view));
     win.present();
 
-    let ui = Rc::new(Ui {
-        actions: RefCell::new(Vec::new()),
-        labels: RefCell::new(Vec::new()),
-        window: win.clone().upcast(),
+    let page = Rc::new(Page {
+        ui: Rc::new(Ui {
+            actions: RefCell::new(Vec::new()),
+            labels: RefCell::new(Vec::new()),
+            window: win.clone().upcast(),
+            search_handler: RefCell::new(None),
+        }),
+        list,
+        search,
+        stack,
+        status,
+        add_button: add_button.clone(),
     });
+    {
+        let page = page.clone();
+        add_button.connect_clicked(move |_| add_custom(&page));
+    }
+    reload(&page);
+}
 
-    in_background(load_actions, move |res| match res {
-        Ok(actions) if !actions.is_empty() => {
-            *ui.actions.borrow_mut() = actions;
-            populate(&ui, &list, &search);
-            stack.set_visible_child_name("list");
-        }
-        Ok(_) => {
-            status.set_title("No shortcuts found");
-            status.set_description(Some("No application has registered a global shortcut."));
-        }
-        Err(e) => {
-            status.set_icon_name(Some("dialog-warning-symbolic"));
-            status.set_title("Shortcut service unavailable");
-            let msg = format!(
-                "Global shortcuts are managed by KDE's kglobalaccel, which only runs in a Plasma session.\n\n{e}"
-            );
-            status.set_description(Some(msg.as_str()));
-        }
-    });
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exec_runs_the_command_through_the_shell() {
+        assert_eq!(exec_line("echo hi"), r#"sh -c "echo hi""#);
+        assert_eq!(exec_line("a && b | c"), r#"sh -c "a && b | c""#);
+    }
+
+    #[test]
+    fn exec_escapes_quote_dollar_backtick_backslash_and_percent() {
+        assert_eq!(exec_line(r#"say "hi""#), r#"sh -c "say \\"hi\\"""#);
+        assert_eq!(exec_line("echo $HOME"), r#"sh -c "echo \\$HOME""#);
+        assert_eq!(exec_line("echo `id`"), r#"sh -c "echo \\`id\\`""#);
+        assert_eq!(exec_line(r"a\b"), r#"sh -c "a\\\\b""#);
+        assert_eq!(exec_line("100%"), r#"sh -c "100%%""#);
+    }
+
+    #[test]
+    fn desktop_entry_is_a_command_shortcut_and_keeps_the_typed_command() {
+        let e = desktop_entry("My app", "firefox https://example.org");
+        assert!(e.contains("X-KDE-GlobalAccel-CommandShortcut=true\n"));
+        assert!(e.contains("Name=My app\n"));
+        assert!(e.contains("Comment=firefox https://example.org\n"));
+        assert!(e.contains("NoDisplay=true\n"));
+        assert_eq!(entry_unvalue(&entry_value(r"a\b")), r"a\b");
+    }
+
+    #[test]
+    fn ids_are_safe_file_names_with_the_custom_prefix() {
+        let id = custom_id("../My Cool/App!", 0xabc);
+        assert_eq!(id, format!("{CUSTOM_PREFIX}my-coolapp-abc.desktop"));
+        assert!(!id.contains('/'));
+        assert_eq!(custom_id("???", 1), format!("{CUSTOM_PREFIX}1.desktop"));
+    }
+
+    #[test]
+    fn name_and_command_must_be_one_non_empty_line() {
+        assert!(one_line("The name", "  ").is_err());
+        assert!(one_line("The command", "a\nb").is_err());
+        assert_eq!(one_line("The command", "  ls  ").unwrap(), "ls");
+    }
+
+    #[test]
+    fn only_our_own_files_can_be_deleted() {
+        assert!(delete_custom("org.kde.dolphin.desktop".into()).is_err());
+        assert!(delete_custom(format!("{CUSTOM_PREFIX}../x.desktop")).is_err());
+    }
+
+    /// Needs a running Plasma session (kglobalaccel). `cargo test -- --ignored live_custom_shortcut`
+    #[test]
+    #[ignore]
+    fn live_custom_shortcut_runs_a_shell_command_and_cleans_up() {
+        let (a, b) = ("/tmp/zs-live-a", "/tmp/zs live b");
+        let _ = std::fs::remove_file(a);
+        let _ = std::fs::remove_file(b);
+        // Ctrl+Alt+Shift+F11: unlikely to be taken.
+        let key = 0x0100_003a | QT_CTRL | QT_ALT | QT_SHIFT;
+        let command = format!(r#"touch {a} && touch "{b}" && echo 100% $HOME >/dev/null"#);
+        if let Err(e) = create_custom("Live test".into(), command, key) { panic!("create failed: {e}"); }
+
+        let actions = load_actions().expect("load");
+        let found = actions.iter().find(|x| x.is_custom() && x.name() == "Live test").expect("listed");
+        assert_eq!(found.keys, vec![key]);
+        let id = found.id[0].clone();
+        assert!(custom_command(&id).unwrap().contains("touch /tmp/zs-live-a"));
+
+        let path = format!("/component/{}", id.replace(['.', '-'], "_"));
+        let status = std::process::Command::new("busctl")
+            .args(["--user", "call", SERVICE, &path, "org.kde.kglobalaccel.Component", "invokeShortcut", "s", LAUNCH_ACTION])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let ran = (std::path::Path::new(a).exists(), std::path::Path::new(b).exists());
+
+        delete_custom(id.clone()).expect("delete");
+        let _ = std::fs::remove_file(a);
+        let _ = std::fs::remove_file(b);
+        assert_eq!(ran, (true, true), "the command did not run");
+        assert!(!custom_file(&id).exists());
+        assert!(!load_actions().unwrap().iter().any(|x| x.id[0] == id), "still registered");
+    }
 }

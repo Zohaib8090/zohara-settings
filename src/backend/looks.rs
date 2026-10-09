@@ -81,7 +81,7 @@ pub fn capture() -> Look {
     Look {
         side: ds::button_side(),
         bar: ds::bar(),
-        toggles: effects::TOGGLES.iter().map(|t| effects::is_on(t.id)).collect(),
+        toggles: effects::TOGGLES.iter().map(|t| effects::available(t) && effects::is_on(t.id)).collect(),
         choices: effects::GROUPS
             .iter()
             .map(|g| g.options[effects::chosen_index(g, effects::is_on) as usize].1.to_string())
@@ -94,7 +94,7 @@ pub fn capture() -> Look {
 pub fn apply(look: &Look) -> bool {
     let mut ok = ds::set_button_side(look.side);
     ok &= ds::apply_bar(look.bar);
-    for (t, on) in effects::TOGGLES.iter().zip(&look.toggles) {
+    for (t, on) in effects::TOGGLES.iter().zip(&look.toggles).filter(|(t, _)| effects::available(t)) {
         ok &= effects::set(t.id, *on);
     }
     for (g, id) in effects::GROUPS.iter().zip(&look.choices) {

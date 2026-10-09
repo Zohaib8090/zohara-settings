@@ -6,21 +6,29 @@ use super::kconfig;
 use std::process::Command;
 
 pub struct Toggle {
+    /// Effects that come in a separate package are only usable once their files are there.
+    pub needs_files: bool,
     pub id: &'static str,
     pub title: &'static str,
     pub subtitle: &'static str,
 }
 
-pub const TOGGLES: [Toggle; 8] = [
-    Toggle { id: "wobblywindows", title: "Jelly windows", subtitle: "Windows wobble like jelly when you move them" },
-    Toggle { id: "blur", title: "Blur behind windows", subtitle: "Frosted glass behind see-through windows and menus" },
-    Toggle { id: "diminactive", title: "Dim inactive windows", subtitle: "Windows you are not using get a little darker" },
-    Toggle { id: "translucency", title: "See-through while moving", subtitle: "A window becomes see-through while you drag it" },
-    Toggle { id: "mouseclick", title: "Show mouse clicks", subtitle: "A ring appears where you click" },
-    Toggle { id: "shakecursor", title: "Shake to find the pointer", subtitle: "Move the mouse quickly and the pointer grows for a moment" },
-    Toggle { id: "highlightwindow", title: "Highlight window on hover", subtitle: "Point at a window's name in the overview to see where it is" },
-    Toggle { id: "zoom", title: "Screen zoom", subtitle: "Zoom in with Meta and + or -" },
+pub const TOGGLES: [Toggle; 9] = [
+    Toggle { needs_files: false, id: "wobblywindows", title: "Jelly windows", subtitle: "Windows wobble like jelly when you move them" },
+    Toggle { needs_files: false, id: "blur", title: "Blur behind windows", subtitle: "Frosted glass behind see-through windows and menus" },
+    Toggle { needs_files: false, id: "diminactive", title: "Dim inactive windows", subtitle: "Windows you are not using get a little darker" },
+    Toggle { needs_files: false, id: "translucency", title: "See-through while moving", subtitle: "A window becomes see-through while you drag it" },
+    Toggle { needs_files: false, id: "mouseclick", title: "Show mouse clicks", subtitle: "A ring appears where you click" },
+    Toggle { needs_files: false, id: "shakecursor", title: "Shake to find the pointer", subtitle: "Move the mouse quickly and the pointer grows for a moment" },
+    Toggle { needs_files: false, id: "highlightwindow", title: "Highlight window on hover", subtitle: "Point at a window's name in the overview to see where it is" },
+    Toggle { needs_files: true, id: "cube", title: "Desktop cube", subtitle: "Press Meta+C to see your desktops as the faces of a 3D cube and pick one (needs 2 or more desktops)" },
+    Toggle { needs_files: false, id: "zoom", title: "Screen zoom", subtitle: "Zoom in with Meta and + or -" },
 ];
+
+/// False for an effect whose files are not installed (the cube comes with the extra desktop add-ons).
+pub fn available(t: &Toggle) -> bool {
+    !t.needs_files || std::path::Path::new(&format!("/usr/share/kwin/effects/{}", t.id)).exists()
+}
 
 /// Choices where only one effect may run: `(title, effect ids)` and the options as `(label, id or "" for none)`.
 pub struct Group {
@@ -135,7 +143,7 @@ mod tests {
     #[test]
     fn every_effect_named_here_exists_in_kwin() {
         // the effect ids KWin 6.7 lists (checked on a real session)
-        let known = "fade scale glide squash magiclamp wobblywindows blur diminactive translucency mouseclick shakecursor highlightwindow zoom";
+        let known = "fade scale glide squash magiclamp wobblywindows blur diminactive translucency mouseclick shakecursor highlightwindow zoom cube";
         for t in &TOGGLES {
             assert!(known.split(' ').any(|k| k == t.id), "{}", t.id);
         }

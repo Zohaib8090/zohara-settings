@@ -859,6 +859,14 @@ fn effect_rows() -> Vec<gtk4::Widget> {
         let row = adw::SwitchRow::new();
         row.set_title(t.title);
         row.set_subtitle(t.subtitle);
+        if !effects::available(t) {
+            // not installed: say where to get it instead of a switch that does nothing
+            row.set_sensitive(false);
+            row.set_subtitle("Not installed yet. Zohara Update > New for your computer offers it (Desktop cube and extra widgets).");
+            switches.push((t.id, row.clone()));
+            rows.push(row.upcast());
+            continue;
+        }
         let (id, row2, note2) = (t.id, row.clone(), note.clone());
         let ready = Rc::new(Cell::new(false));
         let r = ready.clone();

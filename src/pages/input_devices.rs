@@ -249,8 +249,29 @@ fn device_group(dev: &Device) -> adw::PreferencesGroup {
 
     if dev.touchpad {
         switch(&g, dev, dev.enabled, "enabled", "Touchpad", "");
+    // First on the card: people look for the scroll direction before anything else.
+    switch(
+        &g,
+        dev,
+        dev.natural_scroll,
+        "naturalScroll",
+        "Reverse scroll direction (natural scrolling)",
+        "Off: moving down scrolls the page down, like a classic mouse wheel. On: the page follows your fingers or wheel, like a phone.",
+    );
+
         switch(&g, dev, dev.tap_to_click, "tapToClick", "Tap to click", "Tap the touchpad instead of pressing it");
         switch(&g, dev, dev.disable_while_typing, "disableWhileTyping", "Disable while typing", "");
+    }
+    if !dev.touchpad {
+    // First on the card: people look for the scroll direction before anything else.
+    switch(
+        &g,
+        dev,
+        dev.natural_scroll,
+        "naturalScroll",
+        "Reverse scroll direction (natural scrolling)",
+        "Off: moving down scrolls the page down, like a classic mouse wheel. On: the page follows your fingers or wheel, like a phone.",
+    );
     }
     slider(&g, dev, dev.accel, "pointerAcceleration", "Pointer speed", (-1.0, 1.0, 0.05), &[(-1.0, "Slow"), (0.0, ""), (1.0, "Fast")]);
     // Flat profile = no acceleration; present it as "acceleration on" to match how people think about it.
@@ -263,7 +284,6 @@ fn device_group(dev: &Device) -> adw::PreferencesGroup {
         row.connect_active_notify(move |r| set(&sys, "pointerAccelerationProfileFlat", Val::B(!r.is_active())));
         g.add(&row);
     }
-    switch(&g, dev, dev.natural_scroll, "naturalScroll", "Natural scrolling", "Content moves in the direction of your fingers");
     slider(&g, dev, dev.scroll_factor, "scrollFactor", "Scrolling speed", (0.1, 3.0, 0.1), &[(1.0, "Default")]);
     switch(&g, dev, dev.left_handed, "leftHanded", "Left-handed mode", "Swap the primary and secondary buttons");
     if !dev.touchpad {

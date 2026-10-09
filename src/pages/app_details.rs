@@ -37,14 +37,6 @@ impl Target {
         }
     }
 
-    /// Names an ordinary app's folders may go by.
-    fn folder_names(&self) -> Vec<String> {
-        let mut v = vec![ad::notification_id(&self.desktop_id), self.name.clone(), self.name.to_lowercase()];
-        if let Kind::Pacman(p) = &self.kind {
-            v.push(p.clone());
-        }
-        v
-    }
 }
 
 fn message(from: &impl IsA<gtk4::Widget>, title: &str, body: &str) {
@@ -66,6 +58,9 @@ struct Loaded {
     app_size: Option<String>,
     data_bytes: u64,
     cache_bytes: u64,
+    /// An ordinary app's folders in the person's own folders, each with its size, and the app's programs.
+    folders: Vec<(ad::Found, u64)>,
+    programs: Vec<String>,
     permissions: Option<ad::Context>,
     camera: Option<bool>,
     microphone: Option<bool>,
@@ -73,8 +68,8 @@ struct Loaded {
     running: bool,
 }
 
-fn load(kind: Kind, names: Vec<String>) -> Loaded {
-    let mut l = Loaded { app_size: None, data_bytes: 0, cache_bytes: 0, permissions: None, camera: None, microphone: None, notifications_portal: None, running: false };
+fn load(kind: Kind, desktop_id: String) -> Loaded {
+    let mut l = Loaded { app_size: None, data_bytes: 0, cache_bytes: 0, folders: Vec::new(), programs: Vec::new(), permissions: None, camera: None, microphone: None, notifications_portal: None, running: false };
     match &kind {
         Kind::Flatpak(id) => {
             l.app_size = ad::flatpak_app_size(id);
@@ -90,17 +85,34 @@ fn load(kind: Kind, names: Vec<String>) -> Loaded {
         }
         Kind::Pacman(pkg) => {
             l.app_size = ad::pacman_app_size(pkg);
-            let (data, cache) = ad::native_dirs(&names);
-            l.data_bytes = ad::total_size(&data);
-            l.cache_bytes = ad::total_size(&cache);
+            fill_native(&mut l, ad::package_names(pkg, &desktop_id));
         }
-        Kind::Other => {
-            let (data, cache) = ad::native_dirs(&names);
-            l.data_bytes = ad::total_size(&data);
-            l.cache_bytes = ad::total_size(&cache);
-        }
+        Kind::Other => fill_native(&mut l, ad::names_from_package_files("", "", &desktop_id)),
     }
     l
+}
+
+/// An ordinary app's folders, sizes and whether it is running, from the names its package gives.
+fn fill_native(l: &mut Loaded, names: ad::Names) {
+    l.folders = ad::native_folders(&names.all).into_iter().map(|f| {
+        let size = ad::dir_size(&f.path);
+        (f, size)
+    }).collect();
+    l.data_bytes = l.folders.iter().filter(|(f, _)| f.kind != ad::FolderKind::Cache).map(|(_, b)| *b).sum();
+    l.cache_bytes = l.folders.iter().filter(|(f, _)| f.kind == ad::FolderKind::Cache).map(|(_, b)| *b).sum();
+    let paths: Vec<std::path::PathBuf> = l.folders.iter().map(|(f, _)| f.path.clone()).collect();
+    l.running = ad::program_running(&names.programs) || ad::in_use(&paths);
+    l.programs = names.programs;
+}
+
+/// "~/.config/vlc" for the person's home.
+fn tilde(p: &std::path::Path) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let s = p.to_string_lossy().to_string();
+    match s.strip_prefix(&home) {
+        Some(rest) if !home.is_empty() => format!("~{rest}"),
+        _ => s,
+    }
 }
 
 /// Opens the details of `target` over `parent`. `uninstall` (when the app can be removed) is called after the person
@@ -159,7 +171,7 @@ pub fn open(parent: &impl IsA<gtk4::Widget>, target: Target, uninstall: Option<R
     clear_data.add_css_class("destructive-action");
     clear_data.set_valign(gtk4::Align::Center);
     clear_data.set_sensitive(false);
-    // Clearing saved data is only offered where the data's place is certain: a Flatpak app's own folder.
+    // A Flatpak app's data is in its own folder. An ordinary app's folders are found from its package once loaded.
     clear_data.set_visible(target.flatpak_id().is_some());
     data_row.add_suffix(&clear_data);
     storage.add(&data_row);
@@ -251,20 +263,35 @@ pub fn open(parent: &impl IsA<gtk4::Widget>, target: Target, uninstall: Option<R
     // ── Filling it in ──
     let running = Rc::new(Cell::new(false));
     let updating = Rc::new(Cell::new(true));
+    let folders_state: Rc<std::cell::RefCell<Vec<(ad::Found, u64)>>> = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let programs_state: Rc<std::cell::RefCell<Vec<String>>> = Rc::new(std::cell::RefCell::new(Vec::new()));
     {
-        let (kind, names) = (target.kind.clone(), target.folder_names());
-        let (size_label, data_label, cache_label) = (size_label.clone(), data_label.clone(), cache_label.clone());
+        let (kind, desktop_id) = (target.kind.clone(), target.desktop_id.clone());
+        let (size_label, data_label, cache_label, data_row) = (size_label.clone(), data_label.clone(), cache_label.clone(), data_row.clone());
+        let (folders_state, programs_state, is_flatpak) = (folders_state.clone(), programs_state.clone(), target.flatpak_id().is_some());
         let (clear_cache, clear_data, files, running, updating) = (clear_cache.clone(), clear_data.clone(), files.clone(), running.clone(), updating.clone());
         let (network, sound, graphics, devices, bluetooth, camera, microphone, reset, notif) =
             (network.clone(), sound.clone(), graphics.clone(), devices.clone(), bluetooth.clone(), camera.clone(), microphone.clone(), reset.clone(), notif.clone());
         in_background(
-            move || load(kind, names),
+            move || load(kind, desktop_id),
             move |l| {
                 size_label.set_text(&l.app_size.clone().unwrap_or_else(|| "Unknown".into()));
-                data_label.set_text(&ad::human_size(l.data_bytes));
-                cache_label.set_text(&ad::human_size(l.cache_bytes));
+                *folders_state.borrow_mut() = l.folders.clone();
+                *programs_state.borrow_mut() = l.programs.clone();
+                if is_flatpak || l.data_bytes > 0 {
+                    data_label.set_text(&ad::human_size(l.data_bytes));
+                } else {
+                    data_label.set_text("None found");
+                    data_row.set_subtitle("This app keeps its files somewhere other than its usual folders, or has none");
+                }
+                cache_label.set_text(&if is_flatpak || l.cache_bytes > 0 { ad::human_size(l.cache_bytes) } else { "None found".to_string() });
                 clear_cache.set_sensitive(l.cache_bytes > 0);
-                clear_data.set_sensitive(l.data_bytes > 0 || l.cache_bytes > 0);
+                if is_flatpak {
+                    clear_data.set_sensitive(l.data_bytes > 0 || l.cache_bytes > 0);
+                } else {
+                    clear_data.set_visible(l.data_bytes > 0);
+                    clear_data.set_sensitive(l.data_bytes > 0);
+                }
                 running.set(l.running);
                 // A Flatpak app's notification choice also lives in the desktop's permission store.
                 if l.notifications_portal == Some(false) {
@@ -406,14 +433,20 @@ pub fn open(parent: &impl IsA<gtk4::Widget>, target: Target, uninstall: Option<R
     // Clearing.
     {
         let t = target.clone();
-        let (cache_label, clear_cache, dialog) = (cache_label.clone(), clear_cache.clone(), dialog.clone());
+        let (cache_label, clear_cache, dialog, folders_state, programs_state) = (cache_label.clone(), clear_cache.clone(), dialog.clone(), folders_state.clone(), programs_state.clone());
         clear_cache.clone().connect_clicked(move |b| {
             if t.flatpak_id().is_some_and(ad::flatpak_running) {
                 message(&dialog, "Close the app first", "It is open now, and clearing its cache while it runs could confuse it.");
                 return;
             }
             b.set_sensitive(false);
-            let (kind, names) = (t.kind.clone(), t.folder_names());
+            let paths: Vec<std::path::PathBuf> = folders_state.borrow().iter().map(|(f, _)| f.path.clone()).collect();
+            if t.flatpak_id().is_none() && (ad::program_running(&programs_state.borrow()) || ad::in_use(&paths)) {
+                message(&dialog, "Close the app first", "It is open now, and clearing its cache while it runs could confuse it.");
+                return;
+            }
+            let kind = t.kind.clone();
+            let cache_dirs: Vec<std::path::PathBuf> = folders_state.borrow().iter().filter(|(f, _)| f.kind == ad::FolderKind::Cache).map(|(f, _)| f.path.clone()).collect();
             let (label, b2) = (cache_label.clone(), b.clone());
             in_background(
                 move || -> Result<u64, String> {
@@ -423,10 +456,9 @@ pub fn open(parent: &impl IsA<gtk4::Widget>, target: Target, uninstall: Option<R
                             if dir.is_dir() { ad::clear_contents(&dir) } else { Ok(0) }
                         }
                         _ => {
-                            let (_, caches) = ad::native_dirs(&names);
                             let mut freed = 0;
-                            for c in caches {
-                                freed += ad::clear_contents(&c)?;
+                            for c in &cache_dirs {
+                                freed += ad::clear_contents(c)?;
                             }
                             Ok(freed)
                         }
@@ -444,6 +476,10 @@ pub fn open(parent: &impl IsA<gtk4::Widget>, target: Target, uninstall: Option<R
                 },
             );
         });
+    }
+    if target.flatpak_id().is_none() {
+        let (dialog, folders, programs, data_label) = (dialog.clone(), folders_state.clone(), programs_state.clone(), data_label.clone());
+        clear_data.connect_clicked(move |b| clear_native_data(&dialog, folders.clone(), programs.clone(), data_label.clone(), b.clone()));
     }
     if let Some(app) = target.flatpak_id().map(String::from) {
         let (data_label, cache_label, dialog, data_row) = (data_label.clone(), cache_label.clone(), dialog.clone(), data_row.clone());
@@ -488,3 +524,75 @@ pub fn open(parent: &impl IsA<gtk4::Widget>, target: Target, uninstall: Option<R
         });
     }
 }
+
+/// "Clear data…" for an ordinary app: the folders found for it, each with a tick, moved to the Trash (not deleted).
+fn clear_native_data(
+    dialog: &adw::Dialog,
+    folders: Rc<std::cell::RefCell<Vec<(ad::Found, u64)>>>,
+    programs: Rc<std::cell::RefCell<Vec<String>>>,
+    data_label: gtk4::Label,
+    button: gtk4::Button,
+) {
+    let all_paths: Vec<std::path::PathBuf> = folders.borrow().iter().map(|(f, _)| f.path.clone()).collect();
+    if ad::program_running(&programs.borrow()) || ad::in_use(&all_paths) {
+        message(dialog, "Close the app first", "It is open now. Close it, then clear its data.");
+        return;
+    }
+    let found: Vec<(ad::Found, u64)> = folders.borrow().iter().filter(|(f, _)| f.kind != ad::FolderKind::Cache).cloned().collect();
+    if found.is_empty() {
+        return;
+    }
+    let list = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+    let mut checks: Vec<(gtk4::CheckButton, std::path::PathBuf)> = Vec::new();
+    for (f, bytes) in &found {
+        let what = match f.kind {
+            ad::FolderKind::Config => "settings",
+            ad::FolderKind::State => "state",
+            _ => "data",
+        };
+        let c = gtk4::CheckButton::with_label(&format!("{}  ·  {}  ·  {what}", tilde(&f.path), ad::human_size(*bytes)));
+        c.set_active(true);
+        list.append(&c);
+        checks.push((c, f.path.clone()));
+    }
+    let d = adw::AlertDialog::new(
+        Some("Move this app's saved data to the Trash?"),
+        Some("These are the folders found for it. Untick any you want to keep. They go to the Trash, so you can put them back from there; empty the Trash to get the space back."),
+    );
+    d.set_extra_child(Some(&list));
+    d.add_responses(&[("cancel", "Cancel"), ("trash", "Move to Trash")]);
+    d.set_response_appearance("trash", adw::ResponseAppearance::Destructive);
+    d.set_default_response(Some("cancel"));
+    d.set_close_response("cancel");
+    let dialog2 = dialog.clone();
+    d.connect_response(None, move |_, r| {
+        if r != "trash" {
+            return;
+        }
+        let chosen: Vec<std::path::PathBuf> = checks.iter().filter(|(c, _)| c.is_active()).map(|(_, p)| p.clone()).collect();
+        if chosen.is_empty() {
+            return;
+        }
+        button.set_sensitive(false);
+        let (folders, data_label, button, dialog3, chosen2) = (folders.clone(), data_label.clone(), button.clone(), dialog2.clone(), chosen.clone());
+        in_background(
+            move || ad::move_to_trash(&chosen),
+            move |res| match res {
+                Ok(()) => {
+                    folders.borrow_mut().retain(|(f, _)| !chosen2.contains(&f.path));
+                    let left: u64 = folders.borrow().iter().filter(|(f, _)| f.kind != ad::FolderKind::Cache).map(|(_, b)| *b).sum();
+                    data_label.set_text(&if left == 0 { "In the Trash".to_string() } else { ad::human_size(left) });
+                    button.set_visible(left > 0);
+                    button.set_sensitive(left > 0);
+                    message(&dialog3, "Moved to the Trash", "You can put it back from the Trash. Empty the Trash to get the space back.");
+                }
+                Err(e) => {
+                    button.set_sensitive(true);
+                    message(&dialog3, "Couldn't move it", &e);
+                }
+            },
+        );
+    });
+    d.present(Some(dialog));
+}
+

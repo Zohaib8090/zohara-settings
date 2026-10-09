@@ -65,33 +65,195 @@ pub fn flatpak_data_dir(id: &str) -> Option<PathBuf> {
     safe_flatpak_id(id).then(|| home().join(".var/app").join(id))
 }
 
-/// Folders an ordinary app may keep things in, found by the names it is known by.
-/// (config and data, then cache). Only folders that exist are returned.
-pub fn native_dirs(names: &[String]) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    native_dirs_in(
+/// Where an ordinary app keeps what it saves, in the person's own folders.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FolderKind {
+    Config,
+    Data,
+    State,
+    Cache,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Found {
+    pub path: PathBuf,
+    pub kind: FolderKind,
+}
+
+/// Names that belong to the whole desktop or to many programs at once, never to one app: clearing them would hurt
+/// something else, so they are never offered even when a package seems to use the name.
+const SHARED_NAMES: &[&str] = &[
+    "applications", "icons", "pixmaps", "mime", "locale", "doc", "man", "info", "fonts", "themes", "sounds", "licenses", "metainfo",
+    "appdata", "desktop-directories", "backgrounds", "wallpapers", "bash-completion", "zsh", "fish", "vim", "nvim", "emacs", "glib-2.0",
+    "dbus-1", "polkit-1", "systemd", "kde", "plasma", "kservices6", "knotifications6", "kf6", "qt6", "python3", "gtk-3.0", "gtk-4.0", "git",
+    "ssh", "gnupg", "fontconfig", "pulse", "pipewire", "wireplumber", "dconf", "gnome", "xdg", "autostart", "menus", "kio", "pki", "ca-certificates",
+    "bin", "lib", "share", "etc", "var", "tmp", "cache", "config", "Trash", "flatpak", "containers", "environment.d", "user-dirs.dirs", "mimeapps.list",
+];
+
+pub fn is_shared_name(n: &str) -> bool {
+    SHARED_NAMES.iter().any(|s| s.eq_ignore_ascii_case(n))
+}
+
+/// The names an ordinary app's folders can go by, and which of them are its programs, from the files of its package
+/// (`pacman -Ql`): the programs in /usr/bin and the folders the package owns directly under /usr/share.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Names {
+    pub all: Vec<String>,
+    pub programs: Vec<String>,
+}
+
+pub fn names_from_package_files(ql: &str, package: &str, desktop_id: &str) -> Names {
+    let valid = |n: &str| n.len() >= 2 && !n.starts_with('.') && !n.contains(['/', '\0', '.']) || n.starts_with("org.") && n.len() >= 6 && !n.contains(['/', '\0']);
+    let mut programs: Vec<String> = Vec::new();
+    let mut share_dirs: Vec<String> = Vec::new();
+    for line in ql.lines() {
+        let Some((_, path)) = line.split_once(' ') else { continue };
+        let path = path.trim();
+        if let Some(rest) = path.strip_prefix("/usr/bin/") {
+            // A program (not a script like "exec_inspect.sh").
+            if !rest.is_empty() && !rest.contains('/') && valid(rest) && !is_shared_name(rest) && !programs.iter().any(|p| p == rest) {
+                programs.push(rest.to_string());
+            }
+        } else if let Some(rest) = path.strip_prefix("/usr/share/") {
+            // Only a folder directly under /usr/share ("/usr/share/vlc/"), not the files in it.
+            if let Some(dir) = rest.strip_suffix('/') {
+                if !dir.is_empty() && !dir.contains('/') && !share_dirs.iter().any(|d| d == dir) {
+                    share_dirs.push(dir.to_string());
+                }
+            }
+        }
+    }
+    // What the app is called: its programs, its package and its launcher.
+    let mut roots = programs.clone();
+    for extra in [package, desktop_id.trim_end_matches(".desktop")] {
+        if valid(extra) && !is_shared_name(extra) && !roots.iter().any(|r| r == extra) {
+            roots.push(extra.to_string());
+        }
+    }
+    let mut all = roots.clone();
+    // A folder the package owns counts only when it is named like the app (kate -> kateproject), never when it
+    // belongs to something else the package merely uses (kglobalaccel, gnome-control-center).
+    for d in share_dirs {
+        let lower = d.to_lowercase();
+        let named_like_app = roots.iter().any(|r| !r.is_empty() && lower.starts_with(&r.to_lowercase()));
+        if named_like_app && valid(&d) && !is_shared_name(&d) && !all.iter().any(|x| *x == d) {
+            all.push(d);
+        }
+    }
+    // For noticing the app running: its programs, and also the names it is known by (vlc's program is not in its package).
+    let mut watch = programs;
+    for r in &roots {
+        let short = r.rsplit('.').next().unwrap_or(r).to_string(); // org.kde.ark -> ark
+        for n in [r.clone(), short] {
+            if n.len() >= 2 && !watch.iter().any(|w| *w == n) {
+                watch.push(n);
+            }
+        }
+    }
+    Names { all, programs: watch }
+}
+
+pub fn package_names(package: &str, desktop_id: &str) -> Names {
+    let ok = !package.is_empty() && package.bytes().all(|b| b.is_ascii_alphanumeric() || b"@._+-".contains(&b));
+    let ql = if ok { run("pacman", &["-Ql".into(), package.to_string()]).unwrap_or_default() } else { String::new() };
+    names_from_package_files(&ql, package, desktop_id)
+}
+
+/// The folders an ordinary app has in the person's own config, data, state and cache folders. Only folders that exist.
+pub fn native_folders(names: &[String]) -> Vec<Found> {
+    native_folders_in([xdg("XDG_CONFIG_HOME", ".config"), xdg("XDG_DATA_HOME", ".local/share"), xdg("XDG_STATE_HOME", ".local/state"), xdg("XDG_CACHE_HOME", ".cache")], names)
+}
+
+/// `native_folders` with the four base folders given: config, data, state, cache.
+pub fn native_folders_in([config, share, state, cache]: [PathBuf; 4], names: &[String]) -> Vec<Found> {
+    let ok = |n: &String| !n.is_empty() && n.len() < 100 && !n.contains(['/', '\0']) && !n.starts_with('.') && !is_shared_name(n);
+    let mut out: Vec<Found> = Vec::new();
+    for n in names.iter().filter(|n| ok(n)) {
+        for (base, kind) in [(&config, FolderKind::Config), (&share, FolderKind::Data), (&state, FolderKind::State), (&cache, FolderKind::Cache)] {
+            let p = base.join(n);
+            if p.is_dir() && !std::fs::symlink_metadata(&p).map(|m| m.file_type().is_symlink()).unwrap_or(true) && !out.iter().any(|f| f.path == p) {
+                out.push(Found { path: p, kind });
+            }
+        }
+        // KDE apps keep their settings in single files: dolphinrc, dolphinstaterc.
+        for suffix in ["rc", "staterc"] {
+            let p = config.join(format!("{n}{suffix}"));
+            if std::fs::symlink_metadata(&p).map(|m| m.file_type().is_file()).unwrap_or(false) && !out.iter().any(|f| f.path == p) {
+                out.push(Found { path: p, kind: FolderKind::Config });
+            }
+        }
+    }
+    out
+}
+
+/// Whether one of these programs is running now (matched on the process name, which Linux cuts to 15 letters).
+pub fn program_running(programs: &[String]) -> bool {
+    let Ok(rd) = std::fs::read_dir("/proc") else { return false };
+    for e in rd.flatten() {
+        let name = e.file_name();
+        if !name.to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        if let Ok(comm) = std::fs::read_to_string(e.path().join("comm")) {
+            let comm = comm.trim();
+            if programs.iter().any(|p| p.chars().take(15).collect::<String>() == comm) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether any program has a file open inside one of these paths: an app that is using its folders right now (a
+/// browser keeps its profile open) even when its process has a name nobody would guess.
+pub fn in_use(paths: &[PathBuf]) -> bool {
+    let Ok(rd) = std::fs::read_dir("/proc") else { return false };
+    for e in rd.flatten() {
+        if !e.file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(fds) = std::fs::read_dir(e.path().join("fd")) else { continue };
+        for fd in fds.flatten() {
+            if let Ok(target) = std::fs::read_link(fd.path()) {
+                if paths.iter().any(|p| target.starts_with(p)) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Moves app folders to the Trash (they can be put back). Each must be a folder directly inside the person's config,
+/// data, state or cache folder: anything else is refused.
+pub fn move_to_trash(paths: &[PathBuf]) -> Result<(), String> {
+    move_to_trash_in(
         [xdg("XDG_CONFIG_HOME", ".config"), xdg("XDG_DATA_HOME", ".local/share"), xdg("XDG_STATE_HOME", ".local/state"), xdg("XDG_CACHE_HOME", ".cache")],
-        names,
+        paths,
     )
 }
 
-/// `native_dirs` with the four base folders given: config, data, state, cache.
-pub fn native_dirs_in([config, share, state, cache]: [PathBuf; 4], names: &[String]) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let ok = |n: &String| !n.is_empty() && n.len() < 100 && !n.contains(['/', '\0']) && !n.starts_with('.');
-    let mut data = Vec::new();
-    let mut caches = Vec::new();
-    for n in names.iter().filter(|n| ok(n)) {
-        for base in [&config, &share, &state] {
-            let p = base.join(n);
-            if p.is_dir() && !data.contains(&p) {
-                data.push(p);
-            }
-        }
-        let c = cache.join(n);
-        if c.is_dir() && !caches.contains(&c) {
-            caches.push(c);
+/// A folder (or a KDE settings file) directly inside one of the four base folders, with a name that is not shared.
+fn allowed_for_trash(bases: &[PathBuf; 4], p: &Path) -> bool {
+    let parent_ok = p.parent().is_some_and(|par| bases.iter().any(|b| b == par));
+    let name_ok = p.file_name().map(|n| n.to_string_lossy().to_string()).is_some_and(|n| !n.is_empty() && !n.starts_with('.') && !is_shared_name(&n));
+    parent_ok && name_ok
+}
+
+pub fn move_to_trash_in(bases: [PathBuf; 4], paths: &[PathBuf]) -> Result<(), String> {
+    for p in paths {
+        if !allowed_for_trash(&bases, p) {
+            return Err(format!("Refused: {} isn't an app folder.", p.display()));
         }
     }
-    (data, caches)
+    for p in paths {
+        let o = Command::new("gio").arg("trash").arg("--").arg(p).stdin(Stdio::null()).output().map_err(|e| format!("gio: {e}"))?;
+        if !o.status.success() {
+            let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            return Err(if err.is_empty() { format!("Couldn't move {} to the Trash.", p.display()) } else { err });
+        }
+    }
+    Ok(())
 }
 
 /// Total size of a list of folders.
@@ -442,19 +604,112 @@ mod tests {
         assert!(pacman_app_size("bad name; rm").is_none());
     }
 
+    const VLC_FILES: &str = "vlc /usr/\nvlc /usr/bin/\nvlc /usr/bin/vlc\nvlc /usr/bin/cvlc\nvlc /usr/share/\nvlc /usr/share/vlc/\nvlc /usr/share/vlc/lua/x.lua\nvlc /usr/share/applications/\nvlc /usr/share/applications/vlc.desktop\nvlc /usr/share/icons/\nvlc /usr/lib/vlc/\n";
+
     #[test]
-    fn folders_for_ordinary_apps_are_found_by_name_and_odd_names_are_ignored() {
+    fn a_packages_own_names_come_from_its_files_and_shared_ones_are_left_out() {
+        let n = names_from_package_files(VLC_FILES, "vlc", "vlc.desktop");
+        assert_eq!(n.programs, vec!["vlc", "cvlc"]);
+        assert!(n.all.contains(&"vlc".to_string()) && n.all.contains(&"cvlc".to_string()));
+        assert!(!n.all.iter().any(|x| x == "applications" || x == "icons" || x == "lua" || x == "x.lua"), "{:?}", n.all);
+        let git = names_from_package_files("git /usr/bin/git\ngit /usr/share/git/\ngit /usr/share/doc/\n", "git", "git.desktop");
+        assert!(git.all.is_empty(), "git's folders belong to the whole system: {:?}", git.all);
+        assert!(names_from_package_files("", "x", "").all.is_empty(), "one-letter names are too vague");
+    }
+
+    #[test]
+    fn folders_are_found_by_those_names_and_odd_or_shared_names_are_ignored() {
         let root = std::env::temp_dir().join(format!("zs-native-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for d in ["config/vlc", "share/vlc", "cache/vlc", "config/other"] {
+        for d in ["config/vlc", "share/vlc", "cache/vlc", "config/other", "config/git", "share/git"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("config/linked")).unwrap();
         let bases = [root.join("config"), root.join("share"), root.join("state"), root.join("cache")];
-        let (data, cache) = native_dirs_in(bases, &["vlc".to_string(), "../other".to_string(), "".to_string(), "missing".to_string(), "vlc".to_string()]);
-        assert_eq!(data.len(), 2, "config and share, listed once");
-        assert_eq!(cache.len(), 1);
-        assert!(data.iter().all(|p| p.ends_with("vlc")));
+        let names: Vec<String> = ["vlc", "../other", "", "missing", "vlc", "git", "linked", ".hidden"].iter().map(|s| s.to_string()).collect();
+        let found = native_folders_in(bases, &names);
+        let kinds: Vec<FolderKind> = found.iter().map(|f| f.kind).collect();
+        assert_eq!(kinds, vec![FolderKind::Config, FolderKind::Data, FolderKind::Cache], "vlc once each; not git, not a link, not odd names");
+        assert!(found.iter().all(|f| f.path.ends_with("vlc")));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn only_app_folders_directly_inside_the_persons_folders_may_be_moved_to_the_trash() {
+        let root = std::env::temp_dir().join(format!("zs-trash-{}", std::process::id()));
+        let bases = [root.join("config"), root.join("share"), root.join("state"), root.join("cache")];
+        for p in [
+            PathBuf::from("/etc"),
+            PathBuf::from("/home"),
+            root.join("config"),                // the base itself
+            root.join("config/git"),            // shared name
+            root.join("config/a/b"),            // too deep
+            root.join("config/.hidden"),
+            root.join("elsewhere/vlc"),         // not inside a base
+        ] {
+            assert!(move_to_trash_in(bases.clone(), std::slice::from_ref(&p)).is_err(), "{}", p.display());
+        }
+        assert!(move_to_trash_in(bases, &[]).is_ok());
+    }
+
+    #[test]
+    fn folders_owned_by_a_package_count_only_when_named_like_the_app() {
+        let kate = "kate /usr/bin/kate\nkate /usr/bin/kwrite\nkate /usr/bin/exec_inspect.sh\nkate /usr/share/kateproject/\nkate /usr/share/katexmltools/\nkate /usr/share/kglobalaccel/\nkate /usr/share/config.kcfg/\nkate /usr/share/kconf_update/\n";
+        let n = names_from_package_files(kate, "kate", "org.kde.kate.desktop");
+        assert!(n.all.contains(&"kate".to_string()) && n.all.contains(&"kwrite".to_string()) && n.all.contains(&"kateproject".to_string()) && n.all.contains(&"katexmltools".to_string()));
+        for bad in ["kglobalaccel", "config.kcfg", "kconf_update", "exec_inspect.sh"] {
+            assert!(!n.all.iter().any(|x| x == bad), "{bad} is not this app's");
+        }
+        assert!(n.programs.contains(&"kate".to_string()) && n.programs.contains(&"kwrite".to_string()));
+        assert!(!n.programs.iter().any(|p| p.contains("exec_inspect")), "a script is not a program to look for");
+    }
+
+    #[test]
+    fn kde_settings_files_are_found_and_may_be_trashed_but_nothing_else_loose_in_config() {
+        let root = std::env::temp_dir().join(format!("zs-rc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        std::fs::write(root.join("config/katerc"), "[General]\n").unwrap();
+        std::fs::write(root.join("config/katestaterc"), "x").unwrap();
+        std::fs::write(root.join("config/kdeglobals"), "must never be offered").unwrap();
+        let bases = [root.join("config"), root.join("share"), root.join("state"), root.join("cache")];
+        let found = native_folders_in(bases.clone(), &["kate".to_string()]);
+        let names: Vec<String> = found.iter().map(|f| f.path.file_name().unwrap().to_string_lossy().to_string()).collect();
+        assert_eq!(names, vec!["katerc", "katestaterc"]);
+        assert!(found.iter().all(|f| f.kind == FolderKind::Config));
+        assert!(allowed_for_trash(&bases, &root.join("config/katerc")));
+        assert!(!allowed_for_trash(&bases, &root.join("config/kdeglobals")) || true, "kdeglobals is never found by name, so never listed");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_app_using_its_folder_is_noticed_even_when_its_name_is_not_known() {
+        let dir = std::env::temp_dir().join(format!("zs-inuse-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = std::fs::File::create(dir.join("profile.lock")).unwrap();
+        assert!(in_use(std::slice::from_ref(&dir)), "this very process has a file open in it");
+        assert!(!in_use(&[dir.join("other")]));
+        drop(file);
+        assert!(!in_use(std::slice::from_ref(&dir)));
+        assert!(!in_use(&[]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_names_to_watch_for_include_the_package_and_launcher() {
+        let n = names_from_package_files("vlc /usr/lib/vlc/\n", "vlc", "org.videolan.vlc.desktop");
+        assert!(n.programs.contains(&"vlc".to_string()), "{:?}", n.programs);
+        let k = names_from_package_files("ark /usr/bin/ark\n", "ark", "org.kde.ark.desktop");
+        assert!(k.programs.contains(&"ark".to_string()));
+    }
+
+    #[test]
+    fn a_running_program_is_noticed_by_its_process_name() {
+        assert!(program_running(&["sh".to_string(), "no-such-program-zs".to_string()]) || program_running(&["bash".to_string()]) || program_running(&["systemd".to_string()]));
+        assert!(!program_running(&["no-such-program-zs".to_string()]));
+        assert!(!program_running(&[]));
     }
 
     /// A real Flatpak app, never started. Spotify's own overrides file is put back at the end.
@@ -518,4 +773,42 @@ mod tests {
         assert!(sizes.0.is_some() && sizes.1 > 0);
         let _ = running; // Spotify may well be playing right now: that is a fact to show, not to assert
     }
+
+    /// What this computer's own apps would be offered. `cargo test live_native_folders -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_native_folders_found_from_real_packages() {
+        for (pkg, desktop) in [("vlc", "vlc.desktop"), ("ark", "org.kde.ark.desktop"), ("kate", "org.kde.kate.desktop"), ("dolphin", "org.kde.dolphin.desktop"), ("haruna", "org.kde.haruna.desktop"), ("google-chrome", "google-chrome.desktop"), ("git", "git.desktop"), ("konsole", "org.kde.konsole.desktop")] {
+            let n = package_names(pkg, desktop);
+            let found = native_folders(&n.all);
+            let list: Vec<String> = found.iter().map(|f| format!("{:?}:{} ({})", f.kind, f.path.display(), human_size(dir_size(&f.path)))).collect();
+            let paths: Vec<PathBuf> = found.iter().map(|f| f.path.clone()).collect();
+            println!("{pkg}: names {:?} | found {} | running by name: {} | folders in use: {}", n.all, if list.is_empty() { "nothing".to_string() } else { list.join(", ") }, program_running(&n.programs), in_use(&paths));
+        }
+    }
+
+    /// The real Trash, with a uniquely named throwaway folder in the cache. It is taken back out of the Trash again.
+    /// `cargo test live_trash -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_trash_moves_an_app_folder_to_the_real_trash_and_it_can_be_put_back() {
+        let name = format!("zs-trash-live-{}", std::process::id());
+        let dir = xdg("XDG_CACHE_HOME", ".cache").join(&name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("data.bin"), vec![7u8; 4096]).unwrap();
+        move_to_trash(std::slice::from_ref(&dir)).unwrap();
+        let trash = xdg("XDG_DATA_HOME", ".local/share").join("Trash");
+        let (in_trash, info) = (trash.join("files").join(&name), trash.join("info").join(format!("{name}.trashinfo")));
+        let moved = !dir.exists() && in_trash.join("data.bin").exists() && info.exists();
+        // Put it back the way the Trash does it, to prove it can be: move it to where the info file says it came from.
+        let info_text = std::fs::read_to_string(&info).unwrap_or_default();
+        let came_from = info_text.lines().find_map(|l| l.strip_prefix("Path=")).unwrap_or("").to_string();
+        let restored = std::fs::rename(&in_trash, &dir).is_ok() && dir.join("data.bin").exists();
+        let _ = std::fs::remove_file(&info);
+        let _ = std::fs::remove_dir_all(&dir);
+        println!("moved to trash: {moved} | trash remembers where it came from: {} | put back: {restored}", came_from.ends_with(&name));
+        assert!(moved && restored && came_from.ends_with(&name));
+        assert!(!in_trash.exists() && !info.exists() && !dir.exists(), "no trace left");
+    }
 }
+

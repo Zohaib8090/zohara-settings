@@ -4,6 +4,7 @@ use libadwaita as adw;
 use crate::backend::kconfig;
 use crate::backend::desktop_style;
 use crate::backend::effects;
+use crate::backend::looks;
 use adw::prelude::*;
 use std::process::Command;
 
@@ -286,6 +287,39 @@ pub fn build() -> gtk4::Widget {
     }
 
     rows_box.append(&taskbar_exp);
+
+    // 8a. Quick looks: a whole feel in one click
+    let looks_exp = adw::ExpanderRow::new();
+    looks_exp.set_title("Quick looks");
+    looks_exp.set_subtitle("Window buttons, taskbar and effects set together");
+    looks_exp.add_prefix(&gtk4::Image::from_icon_name("preferences-desktop-theme-symbolic"));
+    looks_exp.set_css_classes(&["win11-expander-row"]);
+    let looks_status = adw::ActionRow::new();
+    looks_status.set_title("Pick one to try it");
+    looks_status.set_subtitle("Your colors, icons and wallpaper stay as they are. You can still change every part below.");
+    looks_status.set_activatable(false);
+    for (i, preset) in looks::PRESETS.iter().enumerate() {
+        let row = adw::ActionRow::new();
+        row.set_title(preset.name);
+        row.set_subtitle(preset.about);
+        let btn = gtk4::Button::with_label("Use");
+        btn.set_valign(gtk4::Align::Center);
+        let status = looks_status.clone();
+        btn.connect_clicked(move |b| {
+            b.set_sensitive(false);
+            status.set_title("Applying…");
+            let (b, status) = (b.clone(), status.clone());
+            crate::backend::worker::in_background(move || looks::apply(&(looks::PRESETS[i].look)()), move |ok| {
+                b.set_sensitive(true);
+                status.set_title(if ok { "Done" } else { "Some parts were not accepted" });
+                status.set_subtitle("Open Personalization again to see every switch below in its new place.");
+            });
+        });
+        row.add_suffix(&btn);
+        looks_exp.add_row(&row);
+    }
+    looks_exp.add_row(&looks_status);
+    rows_box.append(&looks_exp);
 
     // 8b. Window buttons (close / minimize / maximize on the left like a Mac, or on the right)
     let buttons_row = adw::ComboRow::new();

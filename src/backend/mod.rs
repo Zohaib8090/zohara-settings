@@ -10,6 +10,7 @@ pub mod gpu;
 pub mod gpu_pref;
 pub mod health;
 pub mod kconfig;
+pub mod looks;
 pub mod network;
 pub mod privacy_indicator;
 pub mod process;

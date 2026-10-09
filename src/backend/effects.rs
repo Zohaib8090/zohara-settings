@@ -38,7 +38,7 @@ pub const GROUPS: [Group; 2] = [
     Group {
         title: "When a window opens or closes",
         subtitle: "How it appears and disappears",
-        options: &[("Fade (default)", "fade"), ("Scale up", "scale"), ("Glide in", "glide"), ("No animation", "")],
+        options: &[("Fade", "fade"), ("Scale up (default)", "scale"), ("Glide in", "glide"), ("No animation", "")],
     },
 ];
 

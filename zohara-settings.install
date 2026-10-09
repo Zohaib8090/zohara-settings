@@ -6,6 +6,7 @@ post_install() {
     fix_localtime
     update_logo
     update_release
+    fix_settings_launcher
 }
 
 post_upgrade() {
@@ -56,4 +57,15 @@ update_release() {
             -e 's/^VERSION=.*/VERSION="1.1"/' \
             -e 's/^VERSION_ID=.*/VERSION_ID="1.1"/' "$f"
     fi
+}
+
+# The taskbar pins "systemsettings" (the ISO makes that launcher open Zohara Settings). Plasma pairs an open window with
+# a pinned launcher by the window's app id, and ours is os.zohara.Settings, so the open window showed up as a second
+# icon beside the pinned one, with another picture. Give the pinned launcher our icon and our app id so they are one.
+# Only touched when it really starts Zohara Settings; the other file lines stay as they were.
+fix_settings_launcher() {
+    f=/usr/share/applications/systemsettings.desktop
+    [ -f "$f" ] && grep -q '^Exec=zohara-settings' "$f" || return 0
+    sed -i -e 's/^Icon=.*/Icon=zohara-settings/' -e '/^StartupWMClass=/d' "$f"
+    printf '%s\n' 'StartupWMClass=os.zohara.Settings' >> "$f"
 }

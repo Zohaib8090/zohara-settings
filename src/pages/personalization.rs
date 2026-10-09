@@ -4,6 +4,7 @@ use libadwaita as adw;
 use crate::backend::kconfig;
 use crate::backend::desktop_style;
 use crate::backend::cube;
+use crate::backend::desktops;
 use crate::backend::effects;
 use crate::backend::live_wallpaper;
 use crate::backend::looks;
@@ -349,6 +350,17 @@ pub fn build() -> gtk4::Widget {
         ready.set(true);
     }
     rows_box.append(&super::in_list(&buttons_row));
+
+    // 8b2. Desktops: how many, and the dynamic mode where every new app gets its own
+    let desk_exp = adw::ExpanderRow::new();
+    desk_exp.set_title("Desktops");
+    desk_exp.set_subtitle("More desktops, or a new desktop for every app you open");
+    desk_exp.add_prefix(&gtk4::Image::from_icon_name("view-grid-symbolic"));
+    desk_exp.set_css_classes(&["win11-expander-row"]);
+    for r in desktop_rows() {
+        desk_exp.add_row(&r);
+    }
+    rows_box.append(&desk_exp);
 
     // 8c. Desktop effects (jelly windows, minimize style, open/close style, dimming, mouse finders)
     let fx_exp = adw::ExpanderRow::new();
@@ -1220,6 +1232,154 @@ fn live_wallpaper_rows() -> Vec<gtk4::Widget> {
     }
 
     let mut rows: Vec<gtk4::Widget> = vec![row.upcast()];
+    rows.extend(options);
+    rows
+}
+
+/// Desktops: the number of them, and Dynamic desktops (a new app opens on a desktop of its own and the desktop goes away
+/// with the app). Changes apply at once; options of the dynamic mode are saved after typing stops.
+fn desktop_rows() -> Vec<gtk4::Widget> {
+    use std::{cell::{Cell, RefCell}, rc::Rc};
+    let installed = desktops::installed();
+    let state = Rc::new(RefCell::new(desktops::Dynamic::default()));
+    let ready = Rc::new(Cell::new(false));
+    let pending: Rc<RefCell<Option<gtk4::glib::SourceId>>> = Rc::new(RefCell::new(None));
+    let debounce = |pending: &Rc<RefCell<Option<gtk4::glib::SourceId>>>, f: Box<dyn Fn() + 'static>| {
+        if let Some(id) = pending.borrow_mut().take() {
+            id.remove();
+        }
+        let pending2 = pending.clone();
+        let id = gtk4::glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+            pending2.borrow_mut().take();
+            f();
+        });
+        *pending.borrow_mut() = Some(id);
+    };
+
+    // ── How many desktops ──
+    let count = adw::SpinRow::with_range(desktops::MIN as f64, desktops::MAX as f64, 1.0);
+    count.set_title("Number of desktops");
+    count.set_subtitle("Each desktop is its own workspace. Removing one moves its windows to another; nothing is closed");
+    count.set_value(3.0);
+    let count_ready = Rc::new(Cell::new(false));
+    {
+        let (count, count_ready) = (count.clone(), count_ready.clone());
+        crate::backend::worker::in_background(desktops::count, move |n| {
+            count.set_value(n.max(1) as f64);
+            count_ready.set(true);
+        });
+    }
+    {
+        let count_ready = count_ready.clone();
+        let pending_count: Rc<RefCell<Option<gtk4::glib::SourceId>>> = Rc::new(RefCell::new(None));
+        count.connect_value_notify(move |r| {
+            if !count_ready.get() {
+                return;
+            }
+            let want = r.value() as u32;
+            debounce(&pending_count, Box::new(move || {
+                crate::backend::worker::in_background(move || desktops::set_count(want), |_| {});
+            }));
+        });
+    }
+
+    // ── Dynamic desktops ──
+    let on = adw::SwitchRow::new();
+    on.set_title("Dynamic desktops");
+    on.set_subtitle(if installed {
+        "Every app you open gets a desktop of its own, and the desktop goes away when the app closes"
+    } else {
+        "Not installed on this computer."
+    });
+    on.set_sensitive(installed);
+    let group = adw::SwitchRow::new();
+    group.set_title("Keep windows of the same app together");
+    group.set_subtitle("A second window of an app opens on the desktop that app already has");
+    let switch = adw::SwitchRow::new();
+    switch.set_title("Go to the new desktop");
+    switch.set_subtitle("Off: the app opens on its own desktop but you stay where you are");
+    let close = adw::SwitchRow::new();
+    close.set_title("Remove the desktop when the app closes");
+    close.set_subtitle("Only desktops made this way are removed, never ones you made yourself");
+    let max = adw::SpinRow::with_range(2.0, desktops::MAX as f64, 1.0);
+    max.set_title("Most desktops");
+    max.set_subtitle("Past this number new apps open on the desktop you are on");
+    let ignore = adw::EntryRow::new();
+    ignore.set_title("Apps that stay on the current desktop (names, comma separated)");
+    let note = adw::ActionRow::new();
+    note.set_title("Apps that are already open stay where they are");
+    note.set_subtitle("Dialogs, popups and the panel never get a desktop. Windows that come back when you log in are left alone.");
+    note.set_activatable(false);
+
+    let options: Vec<gtk4::Widget> = vec![group.clone().upcast(), switch.clone().upcast(), close.clone().upcast(), max.clone().upcast(), ignore.clone().upcast(), note.clone().upcast()];
+    for o in &options {
+        o.set_visible(false);
+    }
+
+    let save: Rc<dyn Fn()> = {
+        let (state, ready, pending) = (state.clone(), ready.clone(), pending.clone());
+        Rc::new(move || {
+            if !ready.get() {
+                return;
+            }
+            let state = state.clone();
+            debounce(&pending, Box::new(move || {
+                let d = state.borrow().clone();
+                crate::backend::worker::in_background(move || desktops::write(&d), |_| {});
+            }));
+        })
+    };
+    {
+        let (state, save) = (state.clone(), save.clone());
+        group.connect_active_notify(move |r| { state.borrow_mut().group_by_app = r.is_active(); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        switch.connect_active_notify(move |r| { state.borrow_mut().switch_to_new = r.is_active(); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        close.connect_active_notify(move |r| { state.borrow_mut().close_empty = r.is_active(); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        max.connect_value_notify(move |r| { state.borrow_mut().max_desktops = r.value() as u32; save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        ignore.connect_changed(move |r| { state.borrow_mut().ignore = r.text().to_string(); save(); });
+    }
+    {
+        let (state, ready, options) = (state.clone(), ready.clone(), options.clone());
+        on.connect_active_notify(move |r| {
+            for o in &options {
+                o.set_visible(r.is_active());
+            }
+            if !ready.get() {
+                return;
+            }
+            state.borrow_mut().enabled = r.is_active();
+            let d = state.borrow().clone();
+            crate::backend::worker::in_background(move || desktops::write(&d), |_| {});
+        });
+    }
+
+    if installed {
+        let (state, ready) = (state.clone(), ready.clone());
+        let (on, group, switch, close, max, ignore) = (on.clone(), group.clone(), switch.clone(), close.clone(), max.clone(), ignore.clone());
+        crate::backend::worker::in_background(desktops::read, move |d| {
+            group.set_active(d.group_by_app);
+            switch.set_active(d.switch_to_new);
+            close.set_active(d.close_empty);
+            max.set_value(d.max_desktops as f64);
+            ignore.set_text(&d.ignore);
+            on.set_active(d.enabled);
+            *state.borrow_mut() = d;
+            ready.set(true);
+        });
+    }
+
+    let mut rows: Vec<gtk4::Widget> = vec![count.upcast(), on.upcast()];
     rows.extend(options);
     rows
 }

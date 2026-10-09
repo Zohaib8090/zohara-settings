@@ -1,0 +1,19 @@
+{
+    "KPackageStructure": "KWin/Script",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "zohaibbaig144@gmail.com",
+                "Name": "Zohara OS"
+            }
+        ],
+        "Category": "Window Management",
+        "Description": "Open every new app on its own desktop, and close the desktop when the app closes",
+        "EnabledByDefault": false,
+        "Id": "zoharadynamicdesktops",
+        "License": "GPL-3.0-or-later",
+        "Name": "Dynamic desktops"
+    },
+    "X-Plasma-API": "javascript",
+    "X-Plasma-MainScript": "code/main.js"
+}

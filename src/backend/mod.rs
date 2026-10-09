@@ -3,6 +3,7 @@ pub mod autotz;
 pub mod dbus;
 pub mod cube;
 pub mod desktop_style;
+pub mod desktops;
 pub mod diag;
 pub mod dictation;
 pub mod effects;

@@ -99,6 +99,10 @@ package() {
   (cd "$startdir/data/cube-effect" && find . -type f -print0) | while IFS= read -r -d '' f; do
     install -Dm644 "$startdir/data/cube-effect/$f" "$pkgdir/usr/share/kwin/effects/zoharacube/${f#./}"
   done
+  # Dynamic desktops: a KWin script (JavaScript, nothing to compile). Settings > Personalization > Desktops.
+  (cd "$startdir/data/dynamic-desktops" && find . -type f -print0) | while IFS= read -r -d '' f; do
+    install -Dm644 "$startdir/data/dynamic-desktops/$f" "$pkgdir/usr/share/kwin/scripts/zoharadynamicdesktops/${f#./}"
+  done
   # Live wallpaper: a small Plasma wallpaper plugin that loops a video (QML only). Settings > Personalization > Background.
   (cd "$startdir/data/live-wallpaper" && find . -type f -print0) | while IFS= read -r -d '' f; do
     install -Dm644 "$startdir/data/live-wallpaper/$f" "$pkgdir/usr/share/plasma/wallpapers/org.zohara.livewallpaper/${f#./}"

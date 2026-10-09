@@ -1287,17 +1287,21 @@ fn desktop_rows() -> Vec<gtk4::Widget> {
     let on = adw::SwitchRow::new();
     on.set_title("Dynamic desktops");
     on.set_subtitle(if installed {
-        "Every app you open gets a desktop of its own, and the desktop goes away when the app closes"
+        "Send windows to new desktops, by hand or automatically. A desktop made this way goes away when its last window closes"
     } else {
         "Not installed on this computer."
     });
     on.set_sensitive(installed);
+    let mode = adw::ComboRow::new();
+    mode.set_title("New apps");
+    mode.set_subtitle("Manual: apps open where you are, you send one to a new desktop yourself (right-click its title bar > Move to a new desktop, or Meta+Shift+N)");
+    mode.set_model(Some(&gtk4::StringList::new(&["Manual: I send apps to new desktops myself", "Automatic: each new app gets its own desktop"])));
     let group = adw::SwitchRow::new();
     group.set_title("Keep windows of the same app together");
-    group.set_subtitle("A second window of an app opens on the desktop that app already has");
+    group.set_subtitle("Automatic mode: a second window of an app opens on the desktop that app already has");
     let switch = adw::SwitchRow::new();
     switch.set_title("Go to the new desktop");
-    switch.set_subtitle("Off: the app opens on its own desktop but you stay where you are");
+    switch.set_subtitle("Off: the app moves to its new desktop but you stay where you are");
     let close = adw::SwitchRow::new();
     close.set_title("Remove the desktop when the app closes");
     close.set_subtitle("Only desktops made this way are removed, never ones you made yourself");
@@ -1308,10 +1312,10 @@ fn desktop_rows() -> Vec<gtk4::Widget> {
     ignore.set_title("Apps that stay on the current desktop (names, comma separated)");
     let note = adw::ActionRow::new();
     note.set_title("Apps that are already open stay where they are");
-    note.set_subtitle("Dialogs, popups and the panel never get a desktop. Windows that come back when you log in are left alone.");
+    note.set_subtitle("Dialogs, password prompts and the panel never get a desktop. Windows that come back when you log in are left alone.");
     note.set_activatable(false);
 
-    let options: Vec<gtk4::Widget> = vec![group.clone().upcast(), switch.clone().upcast(), close.clone().upcast(), max.clone().upcast(), ignore.clone().upcast(), note.clone().upcast()];
+    let options: Vec<gtk4::Widget> = vec![mode.clone().upcast(), group.clone().upcast(), switch.clone().upcast(), close.clone().upcast(), max.clone().upcast(), ignore.clone().upcast(), note.clone().upcast()];
     for o in &options {
         o.set_visible(false);
     }
@@ -1329,6 +1333,10 @@ fn desktop_rows() -> Vec<gtk4::Widget> {
             }));
         })
     };
+    {
+        let (state, save) = (state.clone(), save.clone());
+        mode.connect_selected_notify(move |r| { state.borrow_mut().automatic = r.selected() == 1; save(); });
+    }
     {
         let (state, save) = (state.clone(), save.clone());
         group.connect_active_notify(move |r| { state.borrow_mut().group_by_app = r.is_active(); save(); });
@@ -1366,8 +1374,9 @@ fn desktop_rows() -> Vec<gtk4::Widget> {
 
     if installed {
         let (state, ready) = (state.clone(), ready.clone());
-        let (on, group, switch, close, max, ignore) = (on.clone(), group.clone(), switch.clone(), close.clone(), max.clone(), ignore.clone());
+        let (on, mode, group, switch, close, max, ignore) = (on.clone(), mode.clone(), group.clone(), switch.clone(), close.clone(), max.clone(), ignore.clone());
         crate::backend::worker::in_background(desktops::read, move |d| {
+            mode.set_selected(if d.automatic { 1 } else { 0 });
             group.set_active(d.group_by_app);
             switch.set_active(d.switch_to_new);
             close.set_active(d.close_empty);

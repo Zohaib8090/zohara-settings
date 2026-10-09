@@ -1,9 +1,14 @@
 /*
     SPDX-License-Identifier: GPL-3.0-or-later
     Zohara OS: dynamic desktops. A new app gets a desktop of its own; when its last window closes that desktop goes away.
-    Options (kwinrc [Script-zoharadynamicdesktops]): GroupByApp, SwitchToNew, CloseEmpty, MaxDesktops, Ignore, SettleSeconds.
+    Two ways to use it (kwinrc [Script-zoharadynamicdesktops] Mode):
+      "manual" (default): apps open where they open. You send a window to a new desktop yourself: right-click its title bar >
+                          "Move to a new desktop", or the shortcut Meta+Shift+N (changeable in Keyboard shortcuts).
+      "auto":             every new app gets a desktop of its own.
+    Other options: GroupByApp, SwitchToNew, CloseEmpty, MaxDesktops, Ignore, SettleSeconds.
 */
 
+var automatic = String(readConfig("Mode", "manual")) === "auto";
 var groupByApp = readConfig("GroupByApp", true);
 var switchToNew = readConfig("SwitchToNew", true);
 var closeEmpty = readConfig("CloseEmpty", true);
@@ -37,7 +42,7 @@ function isAppWindow(w) {
 // see them (a password prompt on a desktop of its own is a prompt you never answer).
 var SYSTEM = ["polkit", "pkexec", "kwallet", "ksecret", "gcr-prompter", "pinentry", "ssh-askpass", "plasmashell", "krunner",
               "kscreenlocker", "ksmserver", "ksplash", "kded", "xdg-desktop-portal", "org.freedesktop.impl.portal", "kdeconnect",
-              "org.kde.kwin", "kwin_", "plasma-", "org.kde.plasma", "systemsettings-kcm", "zohara-polkit", "sddm"];
+              "org.kde.kwin", "kwin_", "org.kde.plasmashell", "zohara-polkit", "sddm"];
 
 function isSystemHelper(w) {
     var names = [appName(w), String(w.resourceClass || "").toLowerCase(), String(w.resourceName || "").toLowerCase()];
@@ -72,6 +77,7 @@ function title(w) {
 }
 
 function onAdded(w) {
+    if (!automatic) return;
     if (!isAppWindow(w) || ignored(w) || w.onAllDesktops) return;
     if (Date.now() - startedAt < settleMs) return;
 
@@ -93,6 +99,20 @@ function onAdded(w) {
 }
 
 // `leaving` is the window that is closing right now: it may still be in the list, and must not keep its own desktop alive
+// The manual way: make a desktop for this window and put it there. Works in both modes, for any app window you point at.
+function sendToNewDesktop(w) {
+    if (!w || !isAppWindow(w) || isSystemHelper(w)) return;
+    if (workspace.desktops.length >= maxDesktops) return;
+    workspace.createDesktop(workspace.desktops.length, title(w) + MARK);
+    var d = workspace.desktops[workspace.desktops.length - 1];
+    if (!d) return;
+    var old = w.desktops ? w.desktops.slice() : [];
+    w.desktops = [d];
+    if (switchToNew) workspace.currentDesktop = d;
+    // the desktop it came from may have been one of ours and is empty now
+    for (var i = 0; i < old.length; i++) if (closeEmpty) removeIfEmpty(old[i], w);
+}
+
 function hasAppWindows(d, leaving) {
     var all = workspace.windowList();
     for (var i = 0; i < all.length; i++) {
@@ -129,3 +149,13 @@ function onRemoved(w) {
 
 workspace.windowAdded.connect(onAdded);
 workspace.windowRemoved.connect(onRemoved);
+
+registerShortcut("Zohara: Move window to a new desktop", "Move the window to a new desktop", "Meta+Shift+N", function () {
+    sendToNewDesktop(workspace.activeWindow);
+});
+
+// right-click on a window's title bar
+registerUserActionsMenu(function (w) {
+    if (!isAppWindow(w) || isSystemHelper(w)) return undefined;
+    return { text: "Move to a new desktop", triggered: function () { sendToNewDesktop(w); } };
+});

@@ -1,8 +1,10 @@
 // Runs the KWin script against a tiny fake workspace (mujs or gjs): `mujs tests/dynamic_desktops_test.js` from the repo root
 // after concatenating with the script: see the shell snippet in docs. The script is loaded by the harness below.
-var cfg = { GroupByApp: true, SwitchToNew: true, CloseEmpty: true, MaxDesktops: 4, SettleSeconds: 0, Ignore: "ignoredapp" };
+var cfg = { Mode: "auto", GroupByApp: true, SwitchToNew: true, CloseEmpty: true, MaxDesktops: 4, SettleSeconds: 0, Ignore: "ignoredapp" };
 function readConfig(k, d) { return cfg.hasOwnProperty(k) ? cfg[k] : d; }
-var nextId = 1, handlers = {};
+var nextId = 1, handlers = {}, shortcuts = [], menus = [];
+function registerShortcut(title, text, keys, cb) { shortcuts.push({ title: title, keys: keys, cb: cb }); }
+function registerUserActionsMenu(cb) { menus.push(cb); }
 function Signal(name) { this.connect = function (f) { handlers[name] = f; }; }
 var desk0 = { id: "d0", name: "Desktop 1" };
 var workspace = {
@@ -56,6 +58,9 @@ var helpers = ["polkit-kde-authentication-agent-1", "org.kde.polkit-kde-authenti
 var beforeHelpers = workspace.desktops.length;
 helpers.forEach(function (h) { open(win(h)); });
 check("a password prompt or other system helper never gets a desktop of its own", workspace.desktops.length === beforeHelpers);
+var monitor = win("plasma-systemmonitor"); open(monitor);
+check("a normal Plasma app such as System Monitor is not mistaken for a system helper", monitor.desktops[0].id !== "d0");
+close(monitor);
 open(win("ignoredapp"));
 check("an ignored app stays where it is", workspace.desktops.length === 3);
 

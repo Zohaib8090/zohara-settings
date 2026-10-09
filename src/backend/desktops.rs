@@ -88,6 +88,9 @@ pub fn set_count(want: u32) -> bool {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Dynamic {
     pub enabled: bool,
+    /// true: every new app gets a desktop of its own. false (manual): apps open where they open and you send a window to a
+    /// new desktop yourself (title bar menu or Meta+Shift+N).
+    pub automatic: bool,
     /// Windows of an app that already has a desktop open there, instead of making another one.
     pub group_by_app: bool,
     pub switch_to_new: bool,
@@ -99,7 +102,7 @@ pub struct Dynamic {
 
 impl Default for Dynamic {
     fn default() -> Self {
-        Dynamic { enabled: false, group_by_app: true, switch_to_new: true, close_empty: true, max_desktops: 12, ignore: String::new() }
+        Dynamic { enabled: false, automatic: false, group_by_app: true, switch_to_new: true, close_empty: true, max_desktops: 12, ignore: String::new() }
     }
 }
 
@@ -118,6 +121,7 @@ pub fn read() -> Dynamic {
     let flag = |k: &str, default: bool| kconfig::read("kwinrc", &GROUP, k).map(|v| v != "false").unwrap_or(default);
     Dynamic {
         enabled: kconfig::read("kwinrc", &["Plugins"], &format!("{SCRIPT}Enabled")).map(|v| v == "true").unwrap_or(false),
+        automatic: kconfig::read("kwinrc", &GROUP, "Mode").map(|v| v == "auto").unwrap_or(d.automatic),
         group_by_app: flag("GroupByApp", d.group_by_app),
         switch_to_new: flag("SwitchToNew", d.switch_to_new),
         close_empty: flag("CloseEmpty", d.close_empty),
@@ -133,6 +137,7 @@ fn reconfigure() {
 /// Saves the options and, when the mode is on, restarts the script so it reads them (a script reads its options once).
 pub fn write(d: &Dynamic) {
     let w = |k: &str, v: String| kconfig::write("kwinrc", &GROUP, k, &v);
+    w("Mode", if d.automatic { "auto" } else { "manual" }.to_string());
     w("GroupByApp", d.group_by_app.to_string());
     w("SwitchToNew", d.switch_to_new.to_string());
     w("CloseEmpty", d.close_empty.to_string());
@@ -179,7 +184,7 @@ mod tests {
     #[test]
     fn the_script_in_this_repo_reads_every_option_used_here() {
         let js = include_str!("../../data/dynamic-desktops/contents/code/main.js");
-        for key in ["GroupByApp", "SwitchToNew", "CloseEmpty", "MaxDesktops", "Ignore"] {
+        for key in ["Mode", "GroupByApp", "SwitchToNew", "CloseEmpty", "MaxDesktops", "Ignore"] {
             assert!(js.contains(&format!("readConfig(\"{key}\"")), "main.js does not read {key}");
         }
         assert!(include_str!("../../data/dynamic-desktops/metadata.json").contains(SCRIPT));

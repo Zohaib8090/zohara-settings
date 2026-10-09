@@ -24,6 +24,8 @@ depends=(
   'zohara-keyring' # Zohara's package-signing key; a new package only reaches existing machines if an installed one needs it
   'polkit'         # the administrator prompt for system updates
   'qt6-quick3d'    # the 3D scene of the desktop cube
+  'qt6-multimedia'         # the video player of the live wallpaper
+  'qt6-multimedia-ffmpeg'  # ...and the codecs it plays with
   'curl'           # downloads the signed update approval list
   'fakeroot'       # lets the update check use a private copy of the package lists
   'libinput-tools' # the Mouse page's "Which one am I using?" listens to input devices with `libinput debug-events`
@@ -96,6 +98,10 @@ package() {
   # The same files live in ~/Documents/zohara-cube (the development home); this is the copy that ships.
   (cd "$startdir/data/cube-effect" && find . -type f -print0) | while IFS= read -r -d '' f; do
     install -Dm644 "$startdir/data/cube-effect/$f" "$pkgdir/usr/share/kwin/effects/zoharacube/${f#./}"
+  done
+  # Live wallpaper: a small Plasma wallpaper plugin that loops a video (QML only). Settings > Personalization > Background.
+  (cd "$startdir/data/live-wallpaper" && find . -type f -print0) | while IFS= read -r -d '' f; do
+    install -Dm644 "$startdir/data/live-wallpaper/$f" "$pkgdir/usr/share/plasma/wallpapers/org.zohara.livewallpaper/${f#./}"
   done
   # The lock screen must not lock the account out when it wakes from sleep (see the comments inside the file).
   install -Dm644 "$startdir/data/pam-kde" "$pkgdir/etc/pam.d/kde"

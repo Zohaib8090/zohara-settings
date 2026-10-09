@@ -5,6 +5,7 @@ use crate::backend::kconfig;
 use crate::backend::desktop_style;
 use crate::backend::cube;
 use crate::backend::effects;
+use crate::backend::live_wallpaper;
 use crate::backend::looks;
 use adw::prelude::*;
 use std::process::Command;
@@ -114,7 +115,7 @@ pub fn build() -> gtk4::Widget {
     // 1. Background (with In-App Wallpapers)
     let bg_exp = adw::ExpanderRow::new();
     bg_exp.set_title("Background");
-    bg_exp.set_subtitle("Background image, color, slideshow");
+    bg_exp.set_subtitle("Background image, live video wallpaper, color, slideshow");
     bg_exp.add_prefix(&gtk4::Image::from_icon_name("preferences-desktop-wallpaper-symbolic"));
     bg_exp.set_css_classes(&["win11-expander-row"]);
 
@@ -142,6 +143,9 @@ pub fn build() -> gtk4::Widget {
     });
     choose_file_row.add_suffix(&browse_btn);
     bg_exp.add_row(&choose_file_row);
+    for r in live_wallpaper_rows() {
+        bg_exp.add_row(&r);
+    }
     rows_box.append(&bg_exp);
 
     // 2. Colors (with In-App Accent Colors)
@@ -1063,5 +1067,159 @@ fn cube_rows() -> Vec<gtk4::Widget> {
     let mut rows: Vec<gtk4::Widget> = vec![on.upcast()];
     rows.extend(options);
     rows.push(note.upcast());
+    rows
+}
+
+/// Live wallpaper: pick a video; it loops as the desktop background. The options show while a video is playing.
+fn live_wallpaper_rows() -> Vec<gtk4::Widget> {
+    use std::{cell::{Cell, RefCell}, rc::Rc};
+    let installed = live_wallpaper::installed();
+    let state = Rc::new(RefCell::new(live_wallpaper::Live::default()));
+    let ready = Rc::new(Cell::new(false));
+
+    let row = adw::ActionRow::new();
+    row.set_title("Live wallpaper");
+    row.set_subtitle(if installed {
+        "A video that plays on a loop. It uses some battery, so a short looping clip works best."
+    } else {
+        "Not installed on this computer."
+    });
+    let choose = gtk4::Button::builder().label("Choose a video").valign(gtk4::Align::Center).css_classes(vec!["win11-secondary-btn".to_string()]).build();
+    choose.set_sensitive(installed);
+    row.add_suffix(&choose);
+
+    let fill = adw::ComboRow::new();
+    fill.set_title("How the video fits");
+    fill.set_model(Some(&gtk4::StringList::new(&live_wallpaper::FILL.map(|f| f.0))));
+    let sound = adw::SwitchRow::new();
+    sound.set_title("Play the sound");
+    sound.set_subtitle("Off by default: the wallpaper stays quiet");
+    let speed = adw::SpinRow::with_range(live_wallpaper::SPEED.0, live_wallpaper::SPEED.1, 0.25);
+    speed.set_digits(2);
+    speed.set_title("Speed");
+    speed.set_subtitle("1 is normal speed");
+    let stop = adw::ActionRow::new();
+    stop.set_title("Go back to a picture");
+    stop.set_subtitle("Stops the video and shows your picture wallpaper again");
+    let stop_btn = gtk4::Button::builder().label("Stop").valign(gtk4::Align::Center).css_classes(vec!["win11-secondary-btn".to_string()]).build();
+    stop.add_suffix(&stop_btn);
+
+    let options: Vec<gtk4::Widget> = vec![fill.clone().upcast(), sound.clone().upcast(), speed.clone().upcast(), stop.clone().upcast()];
+    for o in &options {
+        o.set_visible(false);
+    }
+
+    // Changes are sent after typing stops (a spin row fires at every step) and only while a video is chosen.
+    let pending: Rc<RefCell<Option<gtk4::glib::SourceId>>> = Rc::new(RefCell::new(None));
+    let send = {
+        let (state, ready, pending) = (state.clone(), ready.clone(), pending.clone());
+        Rc::new(move || {
+            if !ready.get() || state.borrow().path.is_empty() {
+                return;
+            }
+            if let Some(id) = pending.borrow_mut().take() {
+                id.remove();
+            }
+            let (state, pending2) = (state.clone(), pending.clone());
+            let id = gtk4::glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+                pending2.borrow_mut().take();
+                let l = state.borrow().clone();
+                crate::backend::worker::in_background(move || live_wallpaper::apply(&l), |_| {});
+            });
+            *pending.borrow_mut() = Some(id);
+        })
+    };
+    {
+        let (state, send) = (state.clone(), send.clone());
+        fill.connect_selected_notify(move |r| {
+            state.borrow_mut().fill = live_wallpaper::FILL[(r.selected() as usize).min(2)].1;
+            send();
+        });
+    }
+    {
+        let (state, send) = (state.clone(), send.clone());
+        sound.connect_active_notify(move |r| { state.borrow_mut().muted = !r.is_active(); send(); });
+    }
+    {
+        let (state, send) = (state.clone(), send.clone());
+        speed.connect_value_notify(move |r| { state.borrow_mut().speed = r.value(); send(); });
+    }
+
+    // the video that plays now, if any, comes from the running desktop; nothing is sent while it is filled in
+    let show = {
+        let (state, ready, row, options) = (state.clone(), ready.clone(), row.clone(), options.clone());
+        let (fill, sound, speed) = (fill.clone(), sound.clone(), speed.clone());
+        Rc::new(move |now: Option<live_wallpaper::Live>| {
+            ready.set(false);
+            match now {
+                Some(l) => {
+                    fill.set_selected(live_wallpaper::FILL.iter().position(|f| f.1 == l.fill).unwrap_or(0) as u32);
+                    sound.set_active(!l.muted);
+                    speed.set_value(l.speed);
+                    let name = std::path::Path::new(&l.path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    row.set_subtitle(&format!("Playing: {name}"));
+                    *state.borrow_mut() = l;
+                    for o in &options {
+                        o.set_visible(true);
+                    }
+                }
+                None => {
+                    *state.borrow_mut() = live_wallpaper::Live::default();
+                    for o in &options {
+                        o.set_visible(false);
+                    }
+                }
+            }
+            ready.set(true);
+        })
+    };
+    if installed {
+        let show = show.clone();
+        crate::backend::worker::in_background(live_wallpaper::current, move |now| show(now));
+    }
+
+    {
+        let (state, show, row) = (state.clone(), show.clone(), row.clone());
+        choose.connect_clicked(move |btn| {
+            let dialog = gtk4::FileDialog::new();
+            dialog.set_title("Choose a video for your wallpaper");
+            let filter = gtk4::FileFilter::new();
+            filter.set_name(Some("Videos"));
+            for e in live_wallpaper::EXTENSIONS {
+                filter.add_suffix(e);
+            }
+            let filters = gio::ListStore::new::<gtk4::FileFilter>();
+            filters.append(&filter);
+            dialog.set_filters(Some(&filters));
+            let (state, show, row) = (state.clone(), show.clone(), row.clone());
+            dialog.open(btn.root().and_downcast::<gtk4::Window>().as_ref(), None::<&gio::Cancellable>, move |res| {
+                let Some(path) = res.ok().and_then(|f| f.path()) else { return };
+                let path = path.to_string_lossy().to_string();
+                if !live_wallpaper::is_video(&path) {
+                    row.set_subtitle("That file is not a video the player can show.");
+                    return;
+                }
+                let mut l = state.borrow().clone();
+                l.path = path;
+                row.set_subtitle("Starting…");
+                let show = show.clone();
+                crate::backend::worker::in_background(move || { live_wallpaper::apply(&l); live_wallpaper::current() }, move |now| show(now));
+            });
+        });
+    }
+    {
+        let (show, row) = (show.clone(), row.clone());
+        stop_btn.connect_clicked(move |_| {
+            row.set_subtitle("Stopping…");
+            let (show, row) = (show.clone(), row.clone());
+            crate::backend::worker::in_background(live_wallpaper::stop, move |_| {
+                show(None);
+                row.set_subtitle("A video that plays on a loop. It uses some battery, so a short looping clip works best.");
+            });
+        });
+    }
+
+    let mut rows: Vec<gtk4::Widget> = vec![row.upcast()];
+    rows.extend(options);
     rows
 }

@@ -11,6 +11,7 @@ pub mod gpu;
 pub mod gpu_pref;
 pub mod health;
 pub mod kconfig;
+pub mod live_wallpaper;
 pub mod looks;
 pub mod memory;
 pub mod network;

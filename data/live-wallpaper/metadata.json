@@ -1,0 +1,19 @@
+{
+    "KPackageStructure": "Plasma/Wallpaper",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "zohaibbaig144@gmail.com",
+                "Name": "Zohara OS"
+            }
+        ],
+        "Category": "",
+        "Description": "Play a video on a loop as your desktop background",
+        "Icon": "video-x-generic",
+        "Id": "org.zohara.livewallpaper",
+        "License": "GPL-3.0-or-later",
+        "Name": "Live wallpaper",
+        "Website": "https://github.com/Zohaib8090/zohara-settings"
+    },
+    "X-KDE-ParentApp": "org.kde.plasmashell"
+}

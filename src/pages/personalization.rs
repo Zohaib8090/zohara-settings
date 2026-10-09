@@ -3,6 +3,7 @@ use gtk4::gio;
 use libadwaita as adw;
 use crate::backend::kconfig;
 use crate::backend::desktop_style;
+use crate::backend::effects;
 use adw::prelude::*;
 use std::process::Command;
 
@@ -309,6 +310,17 @@ pub fn build() -> gtk4::Widget {
         ready.set(true);
     }
     rows_box.append(&super::in_list(&buttons_row));
+
+    // 8c. Desktop effects (jelly windows, minimize style, open/close style, dimming, mouse finders)
+    let fx_exp = adw::ExpanderRow::new();
+    fx_exp.set_title("Desktop effects");
+    fx_exp.set_subtitle("Jelly windows, minimize and open animations, blur, dimming");
+    fx_exp.add_prefix(&gtk4::Image::from_icon_name("preferences-desktop-effects-symbolic"));
+    fx_exp.set_css_classes(&["win11-expander-row"]);
+    for r in effect_rows() {
+        fx_exp.add_row(&r);
+    }
+    rows_box.append(&fx_exp);
 
     // 9. Fonts
     let fonts_exp = adw::ExpanderRow::new();
@@ -797,4 +809,79 @@ fn bar_style_rows() -> Vec<gtk4::Widget> {
 
     ready.set(true);
     vec![hide.upcast(), floating.upcast(), look.upcast(), size.upcast()]
+}
+
+/// One row per effect or choice. The running state is read from KWin when the page is built (off the UI thread), and a
+/// change is sent at once. A row that cannot reach KWin says so instead of pretending.
+fn effect_rows() -> Vec<gtk4::Widget> {
+    use std::{cell::Cell, rc::Rc};
+    let mut rows: Vec<gtk4::Widget> = Vec::new();
+    let note = adw::ActionRow::new();
+    note.set_title("Changes apply right away");
+    note.set_activatable(false);
+
+    let mut switches: Vec<(&'static str, adw::SwitchRow)> = Vec::new();
+    for t in &effects::TOGGLES {
+        let row = adw::SwitchRow::new();
+        row.set_title(t.title);
+        row.set_subtitle(t.subtitle);
+        let (id, row2, note2) = (t.id, row.clone(), note.clone());
+        let ready = Rc::new(Cell::new(false));
+        let r = ready.clone();
+        row.connect_active_notify(move |sw| {
+            if !r.get() {
+                return;
+            }
+            let (on, note3) = (sw.is_active(), note2.clone());
+            crate::backend::worker::in_background(move || effects::set(id, on), move |ok| {
+                note3.set_title(if ok { "Saved" } else { "KWin did not accept the change" });
+            });
+        });
+        // the real state comes from KWin
+        let ready2 = ready.clone();
+        crate::backend::worker::in_background(move || effects::is_on(id), move |on| {
+            row2.set_active(on);
+            ready2.set(true);
+        });
+        switches.push((t.id, row.clone()));
+        rows.push(row.upcast());
+    }
+
+    // jelly strength follows the jelly switch
+    let strength = adw::ComboRow::new();
+    strength.set_title("Jelly strength");
+    strength.set_subtitle("How much windows wobble");
+    strength.set_model(Some(&gtk4::StringList::new(&effects::JELLY.map(|j| j.0))));
+    strength.set_selected(effects::jelly_index());
+    if let Some((_, jelly)) = switches.iter().find(|(id, _)| *id == "wobblywindows") {
+        jelly.bind_property("active", &strength, "sensitive").sync_create().build();
+    }
+    strength.connect_selected_notify(|r| {
+        let i = r.selected();
+        crate::backend::worker::in_background(move || effects::set_jelly(i), |_| {});
+    });
+    rows.insert(1, strength.upcast());
+
+    for (n, g) in effects::GROUPS.iter().enumerate() {
+        let row = adw::ComboRow::new();
+        row.set_title(g.title);
+        row.set_subtitle(g.subtitle);
+        row.set_model(Some(&gtk4::StringList::new(&g.options.iter().map(|o| o.0).collect::<Vec<_>>())));
+        let ready = Rc::new(Cell::new(false));
+        let (r, row2, ready2) = (ready.clone(), row.clone(), ready.clone());
+        row.connect_selected_notify(move |c| {
+            if !r.get() {
+                return;
+            }
+            let id = effects::GROUPS[n].options[(c.selected() as usize).min(effects::GROUPS[n].options.len() - 1)].1;
+            crate::backend::worker::in_background(move || effects::choose(&effects::GROUPS[n], id), |_| {});
+        });
+        crate::backend::worker::in_background(move || effects::chosen_index(&effects::GROUPS[n], effects::is_on), move |i| {
+            row2.set_selected(i);
+            ready2.set(true);
+        });
+        rows.push(row.upcast());
+    }
+    rows.push(note.upcast());
+    rows
 }

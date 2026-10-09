@@ -4,6 +4,7 @@ pub mod dbus;
 pub mod desktop_style;
 pub mod diag;
 pub mod dictation;
+pub mod effects;
 pub mod equalizer;
 pub mod gpu;
 pub mod gpu_pref;

@@ -31,7 +31,7 @@ jobs:
     name: Build + package
     runs-on: ubuntu-latest
     container:
-      image: archlinux:latest
+      image: mirror.gcr.io/library/archlinux:latest  # Google's mirror of the Docker Hub image: Docker Hub rate-limits the shared GitHub runners
     permissions:
       contents: write   # to create / update releases in zohara-packages
     steps:

@@ -32,7 +32,7 @@ var a = win("kate");
 open(a);
 check("first app gets its own new desktop", workspace.desktops.length === 2 && a.desktops[0].id === "d1");
 check("it switches to the new desktop", workspace.currentDesktop.id === "d1");
-check("the desktop is named after the app", workspace.desktops[1].name === "Kate");
+check("the desktop is named after the app (plus the invisible mark)", workspace.desktops[1].name === "Kate\u200b");
 
 var a2 = win("kate");
 open(a2);
@@ -40,7 +40,7 @@ check("a second window of the same app joins its desktop", workspace.desktops.le
 
 var dotted = win("org.kde.kwrite");
 open(dotted);
-check("a dotted app id gives a short desktop name", workspace.desktops[workspace.desktops.length - 1].name === "Kwrite");
+check("a dotted app id gives a short desktop name", workspace.desktops[workspace.desktops.length - 1].name === "Kwrite\u200b");
 close(dotted);
 var b = win("konsole");
 open(b);
@@ -69,6 +69,12 @@ var w1 = win("gimp"); open(w1);
 check("the maximum number of desktops is respected", workspace.desktops.length <= 4);
 var extra = win("inkscape"); open(extra);
 check("past the maximum a new app stays on the current desktop", workspace.desktops.length <= 4 && extra.desktops[0].id === workspace.currentDesktop.id || workspace.desktops.length === 4);
+
+// a desktop left over by an earlier run of the script (its mark is in the name) is cleared at the next close
+var stray = { id: "s1", name: "Gimp\u200b" };
+workspace.desktops.push(stray);
+var tmp = win("calc"); open(tmp); close(tmp);
+check("an empty desktop of ours left over from an earlier run is cleared", !workspace.desktops.some(function (x) { return x.id === "s1"; }));
 
 // desktops the script did not make are never removed
 var userDesk = { id: "u1", name: "mine" };

@@ -13,8 +13,15 @@ var settleMs = Math.max(0, Number(readConfig("SettleSeconds", 15))) * 1000;
 var ignore = String(readConfig("Ignore", "")).toLowerCase().split(",").map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
 
 var startedAt = Date.now();
-// the desktops this script made: only these are ever removed again
-var made = {};
+
+// The desktops this script makes carry an invisible mark at the end of their name, so a script that was restarted (Settings
+// restarts it when an option changes) still knows which desktops are its own. Only marked desktops are ever removed again;
+// rename a desktop and it is yours.
+var MARK = "\u200b";
+function isMine(d) {
+    var n = d ? String(d.name) : "";
+    return n.length > 0 && n.charAt(n.length - 1) === MARK;
+}
 
 function appName(w) {
     return String(w.desktopFileName || w.resourceClass || w.resourceName || "").toLowerCase();
@@ -62,10 +69,9 @@ function onAdded(w) {
     }
     if (workspace.desktops.length >= maxDesktops) return;
 
-    workspace.createDesktop(workspace.desktops.length, title(w));
+    workspace.createDesktop(workspace.desktops.length, title(w) + MARK);
     var d = workspace.desktops[workspace.desktops.length - 1];
     if (!d) return;
-    made[d.id] = true;
     w.desktops = [d];
     if (switchToNew) workspace.currentDesktop = d;
 }
@@ -82,23 +88,27 @@ function hasAppWindows(d, leaving) {
     return false;
 }
 
+// Removes `d` if it is one of ours and nothing is on it. Never leaves you looking at a desktop that is about to disappear.
+function removeIfEmpty(d, leaving) {
+    if (!d || !isMine(d) || hasAppWindows(d, leaving)) return;
+    if (workspace.currentDesktop && workspace.currentDesktop.id === d.id) {
+        var all = workspace.desktops;
+        for (var k = 0; k < all.length; k++) {
+            if (all[k].id === d.id) { workspace.currentDesktop = all[Math.max(0, k - 1)]; break; }
+        }
+    }
+    workspace.removeDesktop(d);
+}
+
 function onRemoved(w) {
     if (!closeEmpty || !w) return;
     var ds = w.desktops ? w.desktops.slice() : [];
-    for (var i = 0; i < ds.length; i++) {
-        var d = ds[i];
-        if (!d || !made[d.id]) continue;
-        if (hasAppWindows(d, w)) continue;
-        // never leave you looking at a desktop that is about to disappear
-        if (workspace.currentDesktop && workspace.currentDesktop.id === d.id) {
-            var all = workspace.desktops;
-            for (var k = 0; k < all.length; k++) {
-                if (all[k].id === d.id) { workspace.currentDesktop = all[Math.max(0, k - 1)]; break; }
-            }
-        }
-        delete made[d.id];
-        workspace.removeDesktop(d);
-    }
+    for (var i = 0; i < ds.length; i++) removeIfEmpty(ds[i], w);
+    // Also clear empty desktops of ours that an earlier run left behind. Not while you are logging in: the windows of the
+    // last session are still on their way and their desktops only look empty.
+    if (Date.now() - startedAt < settleMs) return;
+    var all = workspace.desktops.slice();
+    for (var j = 0; j < all.length; j++) removeIfEmpty(all[j], w);
 }
 
 workspace.windowAdded.connect(onAdded);

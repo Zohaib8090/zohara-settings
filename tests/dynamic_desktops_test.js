@@ -51,6 +51,11 @@ open(win("kate", { transient: true }));
 open(win("plasmashell", { dock: true }));
 check("dialogs, popups and panels never get a desktop", workspace.desktops.length === 3);
 
+var helpers = ["polkit-kde-authentication-agent-1", "org.kde.polkit-kde-authentication-agent-1", "kwalletd6", "org.kde.kwalletd6",
+               "gcr-prompter", "pinentry-qt", "krunner", "org.kde.krunner", "kscreenlocker_greet", "plasmashell", "xdg-desktop-portal-kde"];
+var beforeHelpers = workspace.desktops.length;
+helpers.forEach(function (h) { open(win(h)); });
+check("a password prompt or other system helper never gets a desktop of its own", workspace.desktops.length === beforeHelpers);
 open(win("ignoredapp"));
 check("an ignored app stays where it is", workspace.desktops.length === 3);
 

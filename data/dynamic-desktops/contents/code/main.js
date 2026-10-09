@@ -32,9 +32,25 @@ function isAppWindow(w) {
     return w && w.normalWindow && !w.transient && !w.dialog && !w.desktopWindow && !w.dock && !w.splash && !w.skipTaskbar;
 }
 
+// System helpers are never "apps you opened": the password prompt (polkit), wallet and key prompts, the lock and login
+// screens, the shell itself, portals and background services. Their windows must appear where you are, or you would not
+// see them (a password prompt on a desktop of its own is a prompt you never answer).
+var SYSTEM = ["polkit", "pkexec", "kwallet", "ksecret", "gcr-prompter", "pinentry", "ssh-askpass", "plasmashell", "krunner",
+              "kscreenlocker", "ksmserver", "ksplash", "kded", "xdg-desktop-portal", "org.freedesktop.impl.portal", "kdeconnect",
+              "org.kde.kwin", "kwin_", "plasma-", "org.kde.plasma", "systemsettings-kcm", "zohara-polkit", "sddm"];
+
+function isSystemHelper(w) {
+    var names = [appName(w), String(w.resourceClass || "").toLowerCase(), String(w.resourceName || "").toLowerCase()];
+    for (var i = 0; i < names.length; i++) {
+        if (names[i] === "") continue;
+        for (var j = 0; j < SYSTEM.length; j++) if (names[i].indexOf(SYSTEM[j]) >= 0) return true;
+    }
+    return false;
+}
+
 function ignored(w) {
     var a = appName(w), c = String(w.resourceClass || "").toLowerCase();
-    return ignore.indexOf(a) >= 0 || ignore.indexOf(c) >= 0;
+    return isSystemHelper(w) || ignore.indexOf(a) >= 0 || ignore.indexOf(c) >= 0;
 }
 
 function otherWindowOfSameApp(w) {

@@ -2,6 +2,7 @@ use gtk4::prelude::*;
 use gtk4::gio;
 use libadwaita as adw;
 use crate::backend::kconfig;
+use crate::backend::desktop_style;
 use adw::prelude::*;
 use std::process::Command;
 
@@ -279,8 +280,35 @@ pub fn build() -> gtk4::Widget {
     taskbar_exp.add_row(&pos_row);
     taskbar_exp.add_row(&align_row);
     taskbar_exp.add_row(&status);
+    for r in bar_style_rows() {
+        taskbar_exp.add_row(&r);
+    }
 
     rows_box.append(&taskbar_exp);
+
+    // 8b. Window buttons (close / minimize / maximize on the left like a Mac, or on the right)
+    let buttons_row = adw::ComboRow::new();
+    buttons_row.set_title("Window buttons");
+    buttons_row.set_subtitle("Which side of a window the close, minimize and maximize buttons are on");
+    buttons_row.add_prefix(&gtk4::Image::from_icon_name("window-close-symbolic"));
+    buttons_row.set_model(Some(&gtk4::StringList::new(&["Right (like Windows)", "Left (like a Mac)"])));
+    buttons_row.set_selected(match desktop_style::button_side() {
+        desktop_style::ButtonSide::Right => 0,
+        desktop_style::ButtonSide::Left => 1,
+    });
+    {
+        let ready = std::rc::Rc::new(std::cell::Cell::new(false));
+        let r2 = ready.clone();
+        buttons_row.connect_selected_notify(move |r| {
+            if !r2.get() {
+                return;
+            }
+            let side = if r.selected() == 1 { desktop_style::ButtonSide::Left } else { desktop_style::ButtonSide::Right };
+            crate::backend::worker::in_background(move || desktop_style::set_button_side(side), |_| {});
+        });
+        ready.set(true);
+    }
+    rows_box.append(&super::in_list(&buttons_row));
 
     // 9. Fonts
     let fonts_exp = adw::ExpanderRow::new();
@@ -688,4 +716,85 @@ mod tests {
         assert_eq!(v, ["Segoe UI", "DejaVu Sans", "Inter", "Noto Sans"]);
         assert_eq!(parse_families("Inter\n", "inter"), ["Inter"]);
     }
+}
+
+/// Taskbar look: when it hides, floating, see-through, thickness. Each change is sent to the running shell at once.
+fn bar_style_rows() -> Vec<gtk4::Widget> {
+    use std::{cell::{Cell, RefCell}, rc::Rc};
+    let start = desktop_style::bar();
+    let state = Rc::new(RefCell::new(start));
+    let ready = Rc::new(Cell::new(false));
+    let push = {
+        let (state, ready) = (state.clone(), ready.clone());
+        Rc::new(move || {
+            if !ready.get() {
+                return;
+            }
+            let bar = *state.borrow();
+            crate::backend::worker::in_background(move || desktop_style::apply_bar(bar), |_| {});
+        })
+    };
+
+    let hide = adw::ComboRow::new();
+    hide.set_title("Hide the taskbar");
+    hide.set_subtitle("Slides away and comes back when the pointer reaches the screen edge");
+    hide.set_model(Some(&gtk4::StringList::new(&desktop_style::HIDING.map(|h| h.0))));
+    hide.set_selected(desktop_style::HIDING.iter().position(|h| h.1 == start.hiding).unwrap_or(0) as u32);
+    {
+        let (state, push) = (state.clone(), push.clone());
+        hide.connect_selected_notify(move |r| {
+            state.borrow_mut().hiding = desktop_style::HIDING[(r.selected() as usize).min(2)].1;
+            push();
+        });
+    }
+
+    let floating = adw::SwitchRow::new();
+    floating.set_title("Floating taskbar");
+    floating.set_subtitle("A gap around the taskbar, like a dock");
+    floating.set_active(start.floating);
+    {
+        let (state, push) = (state.clone(), push.clone());
+        floating.connect_active_notify(move |r| {
+            state.borrow_mut().floating = r.is_active();
+            push();
+        });
+    }
+
+    let look = adw::ComboRow::new();
+    look.set_title("Taskbar background");
+    look.set_subtitle("Solid, see-through, or decided by Plasma");
+    look.set_model(Some(&gtk4::StringList::new(&desktop_style::OPACITY.map(|o| o.0))));
+    look.set_selected(desktop_style::OPACITY.iter().position(|o| o.1 == start.opacity).unwrap_or(0) as u32);
+    {
+        let (state, push) = (state.clone(), push.clone());
+        look.connect_selected_notify(move |r| {
+            state.borrow_mut().opacity = desktop_style::OPACITY[(r.selected() as usize).min(2)].1;
+            push();
+        });
+    }
+
+    let size = adw::SpinRow::with_range(desktop_style::MIN_THICKNESS as f64, desktop_style::MAX_THICKNESS as f64, 2.0);
+    size.set_title("Taskbar size");
+    size.set_subtitle("Height in pixels (width on a side bar)");
+    size.set_value(start.thickness as f64);
+    {
+        // A spin row fires on every step: wait until the typing stops before touching the shell.
+        let (state, push) = (state.clone(), push.clone());
+        let pending: Rc<RefCell<Option<gtk4::glib::SourceId>>> = Rc::new(RefCell::new(None));
+        size.connect_value_notify(move |r| {
+            state.borrow_mut().thickness = r.value() as u32;
+            if let Some(id) = pending.borrow_mut().take() {
+                id.remove();
+            }
+            let (push, pending2) = (push.clone(), pending.clone());
+            let id = gtk4::glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+                pending2.borrow_mut().take();
+                push();
+            });
+            *pending.borrow_mut() = Some(id);
+        });
+    }
+
+    ready.set(true);
+    vec![hide.upcast(), floating.upcast(), look.upcast(), size.upcast()]
 }

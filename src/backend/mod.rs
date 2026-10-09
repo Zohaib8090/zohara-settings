@@ -1,6 +1,7 @@
 pub mod app_details;
 pub mod autotz;
 pub mod dbus;
+pub mod cube;
 pub mod desktop_style;
 pub mod diag;
 pub mod dictation;

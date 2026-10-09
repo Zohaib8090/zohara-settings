@@ -6,11 +6,6 @@
       "why": "The Print Screen key and the Screenshot app."
     },
     {
-      "package": "kdeplasma-addons",
-      "title": "Desktop cube and extra widgets",
-      "why": "Adds the 3D desktop cube (Settings > Personalization > Desktop effects) and more widgets for the taskbar and desktop."
-    },
-    {
       "package": "intel-media-driver",
       "title": "Intel video acceleration",
       "why": "Smoother video and less battery use on Intel graphics.",

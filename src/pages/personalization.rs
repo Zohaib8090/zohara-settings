@@ -3,6 +3,7 @@ use gtk4::gio;
 use libadwaita as adw;
 use crate::backend::kconfig;
 use crate::backend::desktop_style;
+use crate::backend::cube;
 use crate::backend::effects;
 use crate::backend::looks;
 use adw::prelude::*;
@@ -862,7 +863,7 @@ fn effect_rows() -> Vec<gtk4::Widget> {
         if !effects::available(t) {
             // not installed: say where to get it instead of a switch that does nothing
             row.set_sensitive(false);
-            row.set_subtitle("Not installed yet. Zohara Update > New for your computer offers it (Desktop cube and extra widgets).");
+            row.set_subtitle("Not installed on this computer.");
             switches.push((t.id, row.clone()));
             rows.push(row.upcast());
             continue;
@@ -904,6 +905,8 @@ fn effect_rows() -> Vec<gtk4::Widget> {
     });
     rows.insert(1, strength.upcast());
 
+    rows.extend(cube_rows());
+
     for (n, g) in effects::GROUPS.iter().enumerate() {
         let row = adw::ComboRow::new();
         row.set_title(g.title);
@@ -924,6 +927,141 @@ fn effect_rows() -> Vec<gtk4::Widget> {
         });
         rows.push(row.upcast());
     }
+    rows.push(note.upcast());
+    rows
+}
+
+/// Zohara Cube: the on/off switch and its options. The options are only usable while the cube is on; every change is
+/// saved to kwinrc at once and the running effect is told to read it again.
+fn cube_rows() -> Vec<gtk4::Widget> {
+    use std::{cell::{Cell, RefCell}, rc::Rc};
+    let installed = cube::installed();
+    let state = Rc::new(RefCell::new(cube::Cube::default()));
+    let ready = Rc::new(Cell::new(false));
+
+    let on = adw::SwitchRow::new();
+    on.set_title("Desktop cube");
+    on.set_subtitle(if installed {
+        "Desktops turn as a 3D cube and follow 3 and 4 finger swipes. 4 fingers up (or Meta+C) shows the whole cube."
+    } else {
+        "Not installed on this computer."
+    });
+    on.set_sensitive(installed);
+
+    let turn = adw::SpinRow::with_range(cube::DURATION.0 as f64, cube::DURATION.1 as f64, 50.0);
+    turn.set_title("Turning time");
+    turn.set_subtitle("How long the cube takes to settle after you let go, in milliseconds");
+    let gap = adw::SwitchRow::new();
+    gap.set_title("Gap between the first and last desktop");
+    gap.set_subtitle("On: the desktops sit on half a circle. Off: a closed cube you can turn all the way round");
+    let pull = adw::SpinRow::with_range(cube::PULLBACK.0, cube::PULLBACK.1, 0.1);
+    pull.set_digits(1);
+    pull.set_title("Pull back while turning");
+    pull.set_subtitle("How far the cube moves away from you while it turns");
+    let tilt = adw::SpinRow::with_range(cube::TILT.0, cube::TILT.1, 1.0);
+    tilt.set_title("Tilt while turning");
+    tilt.set_subtitle("Degrees; 0 keeps the cube level");
+    let gesture = adw::SwitchRow::new();
+    gesture.set_title("4 fingers up opens the cube");
+    gesture.set_subtitle("Off: leave that swipe to KWin's own Overview (windows and desktops). Meta+C always opens the cube");
+    let note = adw::ActionRow::new();
+    note.set_title("Changes apply right away");
+    note.set_subtitle("After a Zohara update, log out and in once to get the newest cube.");
+    note.set_activatable(false);
+
+    let options: Vec<gtk4::Widget> = vec![
+        turn.clone().upcast(), gap.clone().upcast(), pull.clone().upcast(), tilt.clone().upcast(), gesture.clone().upcast(),
+    ];
+    for o in &options {
+        o.set_sensitive(false);
+    }
+
+    // Saves the options after typing stops (a spin row fires at every step).
+    let pending: Rc<RefCell<Option<gtk4::glib::SourceId>>> = Rc::new(RefCell::new(None));
+    let save = {
+        let (state, ready, pending) = (state.clone(), ready.clone(), pending.clone());
+        Rc::new(move || {
+            if !ready.get() {
+                return;
+            }
+            if let Some(id) = pending.borrow_mut().take() {
+                id.remove();
+            }
+            let (state, pending2) = (state.clone(), pending.clone());
+            let id = gtk4::glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+                pending2.borrow_mut().take();
+                let c = *state.borrow();
+                crate::backend::worker::in_background(move || cube::write(c), |_| {});
+            });
+            *pending.borrow_mut() = Some(id);
+        })
+    };
+
+    {
+        let (state, save) = (state.clone(), save.clone());
+        turn.connect_value_notify(move |r| { state.borrow_mut().duration = r.value() as u32; save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        gap.connect_active_notify(move |r| { state.borrow_mut().open_cube = r.is_active(); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        pull.connect_value_notify(move |r| { state.borrow_mut().pullback = r.value(); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        tilt.connect_value_notify(move |r| { state.borrow_mut().tilt = r.value(); save(); });
+    }
+    {
+        let (state, ready, on) = (state.clone(), ready.clone(), on.clone());
+        gesture.connect_active_notify(move |r| {
+            if !ready.get() {
+                return;
+            }
+            state.borrow_mut().overview_gesture = r.is_active();
+            let (c, cube_on) = (*state.borrow(), on.is_active());
+            crate::backend::worker::in_background(move || cube::set_overview_gesture(c, cube_on), |_| {});
+        });
+    }
+    {
+        let (state, ready, options, note) = (state.clone(), ready.clone(), options.clone(), note.clone());
+        on.connect_active_notify(move |r| {
+            for o in &options {
+                o.set_sensitive(r.is_active());
+            }
+            if !ready.get() {
+                return;
+            }
+            let (want, gesture) = (r.is_active(), state.borrow().overview_gesture);
+            let note = note.clone();
+            crate::backend::worker::in_background(move || cube::set_on(want, gesture), move |ok| {
+                note.set_title(if ok { "Saved" } else { "KWin did not accept the change" });
+            });
+        });
+    }
+
+    // the real state comes from the system; nothing is sent while it is being filled in
+    if installed {
+        let (state, ready) = (state.clone(), ready.clone());
+        let (on, turn, gap, pull, tilt, gesture) = (on.clone(), turn.clone(), gap.clone(), pull.clone(), tilt.clone(), gesture.clone());
+        crate::backend::worker::in_background(
+            || (cube::read(), cube::is_on()),
+            move |(c, is_on)| {
+                *state.borrow_mut() = c;
+                turn.set_value(c.duration as f64);
+                gap.set_active(c.open_cube);
+                pull.set_value(c.pullback);
+                tilt.set_value(c.tilt);
+                gesture.set_active(c.overview_gesture);
+                on.set_active(is_on);
+                ready.set(true);
+            },
+        );
+    }
+
+    let mut rows: Vec<gtk4::Widget> = vec![on.upcast()];
+    rows.extend(options);
     rows.push(note.upcast());
     rows
 }

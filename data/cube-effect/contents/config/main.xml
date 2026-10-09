@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0
+                          http://www.kde.org/standards/kcfg/1.0/kcfg.xsd" >
+    <kcfgfile name=""/>
+    <group name="">
+        <!-- how long the turn takes after you let go (milliseconds) -->
+        <entry name="Duration" type="Int">
+            <default>450</default>
+        </entry>
+        <!-- true: the faces cover half a circle with a gap between the last and the first desktop (like Zorin); false: a closed prism -->
+        <entry name="OpenCube" type="Bool">
+            <default>true</default>
+        </entry>
+        <!-- how far the cube moves away from you while it turns, 0 to 1 -->
+        <entry name="Pullback" type="Double">
+            <default>0.6</default>
+        </entry>
+        <!-- vertical tilt in degrees while turning -->
+        <entry name="Tilt" type="Double">
+            <default>0</default>
+        </entry>
+        <!-- 0 to 1: how much a window floats in front of its face (parallax) -->
+        <entry name="Parallax" type="Double">
+            <default>0.5</default>
+        </entry>
+        <!-- true: 4 fingers up opens the cube's overview (and KWin's own Overview is off); false: leave that gesture to KWin's Overview -->
+        <entry name="OverviewGesture" type="Bool">
+            <default>true</default>
+        </entry>
+    </group>
+</kcfg>

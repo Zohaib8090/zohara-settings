@@ -193,7 +193,7 @@ pub fn build() -> gtk4::Widget {
     specs_card.add(&mem_row);
     specs_card.add(&disk_row);
     // Memory and disk use change all the time: follow them while this page is open.
-    super::live::every(&specs_card, 3, move || {
+    super::live::every(&specs_card, 1, move || {
         let (mem_row, disk_row) = (mem_row.clone(), disk_row.clone());
         crate::backend::worker::in_background(system::read, move |now| {
             mem_row.set_subtitle(&text_ram(now.ram_used_bytes, now.ram_total_bytes));

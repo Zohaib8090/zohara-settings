@@ -455,7 +455,7 @@ pub fn build() -> gtk4::Widget {
                 let (group, show) = battery_group(b);
                 content.append(&group);
                 // Percentage, charging state and time left follow the battery while this page is open.
-                super::live::every(&group, 2, move || {
+                super::live::every(&group, 1, move || {
                     let show = show.clone();
                     in_background(read_battery, move |now| {
                         if let Some(now) = now {

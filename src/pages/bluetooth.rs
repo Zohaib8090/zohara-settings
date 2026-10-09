@@ -341,7 +341,7 @@ pub fn build() -> gtk4::Widget {
     // Devices connect, disconnect and report their battery by themselves: follow that while the page is open.
     {
         let ui = ui.clone();
-        super::live::every(&root, 6, move || refresh(&ui));
+        super::live::every(&root, 2, move || refresh(&ui));
     }
 
     // Opening the page must not wait for `bluetoothctl` or `v4l2-ctl` (each can take a while, and a stuck

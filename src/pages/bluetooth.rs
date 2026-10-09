@@ -338,6 +338,11 @@ pub fn build() -> gtk4::Widget {
     root.append(&found);
 
     let ui = Rc::new(Ui { page: root.clone(), paired: paired.clone(), found: found.clone(), rows: RefCell::new(Vec::new()) });
+    // Devices connect, disconnect and report their battery by themselves: follow that while the page is open.
+    {
+        let ui = ui.clone();
+        super::live::every(&root, 6, move || refresh(&ui));
+    }
 
     // Opening the page must not wait for `bluetoothctl` or `v4l2-ctl` (each can take a while, and a stuck
     // bluetoothd would freeze the whole window), so the page appears at once and these fill in from a thread.

@@ -49,6 +49,7 @@ conflicts=('zohara-settings-git')
 # Source: the workflow has already cloned this repo at $srcdir. The binary
 # is prebuilt at ../target/release/zohara-settings so we don't re-cargo here
 # (the workflow does that with proper caching).
+backup=('etc/pam.d/kde')
 source=()
 sha256sums=()
 
@@ -90,6 +91,8 @@ package() {
   install -Dm644 "$startdir/data/icons/scalable/apps/zohara-start.svg" \
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/zohara-start.svg"
   install -Dm644 "$startdir/data/zohara-branding.desktop" "$pkgdir/etc/xdg/autostart/zohara-branding.desktop"
+  # The lock screen must not lock the account out when it wakes from sleep (see the comments inside the file).
+  install -Dm644 "$startdir/data/pam-kde" "$pkgdir/etc/pam.d/kde"
   install -Dm644 "$startdir/data/zohara-wallet-default.desktop" "$pkgdir/etc/xdg/autostart/zohara-wallet-default.desktop"
 
   # The terminal banner logo (copied over the ISO's old one by the install hook on machines installed earlier).

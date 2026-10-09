@@ -180,25 +180,26 @@ pub fn build() -> gtk4::Widget {
     let specs_card = adw::PreferencesGroup::builder()
         .title("Hardware")
         .build();
-    specs_card.add(&make_row(
-        "Memory",
-        &format!(
-            "{} / {} ({:.0}%)",
-            ram_used_h,
-            ram_total_h,
-            ram_pct * 100.0
-        ),
-    ));
-    specs_card.add(&make_row(
-        "Storage",
-        &format!(
-            "{} / {} ({:.0}%) on {}",
-            disk_used_h,
-            disk_total_h,
-            disk_pct * 100.0,
-            info.disk_mount
-        ),
-    ));
+    let text_ram = |used: u64, total: u64| {
+        let pct = if total == 0 { 0.0 } else { used as f64 / total as f64 };
+        format!("{} / {} ({:.0}%)", system::human_bytes(used), system::human_bytes(total), pct * 100.0)
+    };
+    let text_disk = |used: u64, total: u64, mount: &str| {
+        let pct = if total == 0 { 0.0 } else { used as f64 / total as f64 };
+        format!("{} / {} ({:.0}%) on {}", system::human_bytes(used), system::human_bytes(total), pct * 100.0, mount)
+    };
+    let mem_row = make_row("Memory", &text_ram(info.ram_used_bytes, info.ram_total_bytes));
+    let disk_row = make_row("Storage", &text_disk(info.disk_used_bytes, info.disk_total_bytes, &info.disk_mount));
+    specs_card.add(&mem_row);
+    specs_card.add(&disk_row);
+    // Memory and disk use change all the time: follow them while this page is open.
+    super::live::every(&specs_card, 3, move || {
+        let (mem_row, disk_row) = (mem_row.clone(), disk_row.clone());
+        crate::backend::worker::in_background(system::read, move |now| {
+            mem_row.set_subtitle(&text_ram(now.ram_used_bytes, now.ram_total_bytes));
+            disk_row.set_subtitle(&text_disk(now.disk_used_bytes, now.disk_total_bytes, &now.disk_mount));
+        });
+    });
     rows_box.append(&specs_card);
 
     // 3) Migration tools

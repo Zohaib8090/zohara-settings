@@ -44,34 +44,44 @@ fn read_battery() -> Option<Battery> {
     })
 }
 
-fn battery_group(b: &Battery) -> adw::PreferencesGroup {
+/// The battery card, and a function that shows newer readings in it.
+fn battery_group(b: &Battery) -> (adw::PreferencesGroup, std::rc::Rc<dyn Fn(&Battery)>) {
     let g = adw::PreferencesGroup::new();
     g.set_title("Battery");
     let row = adw::ActionRow::new();
-    row.set_title(&format!("{:.0}%", b.percent));
-    let state = match b.state.as_str() {
-        "charging" => "Charging",
-        "fully-charged" => "Fully charged",
-        "pending-charge" => "Plugged in, not charging",
-        "discharging" => "On battery",
-        _ => "Unknown state",
-    };
-    row.set_subtitle(&match &b.time {
-        Some(t) if b.state == "charging" => format!("{state} · full in {t}"),
-        Some(t) if b.state == "discharging" => format!("{state} · {t} remaining"),
-        _ => state.to_string(),
-    });
-    let level = ((b.percent / 10.0).round() as u32 * 10).min(100);
-    let charging = if b.state == "charging" { "-charging" } else { "" };
-    row.add_prefix(&gtk4::Image::from_icon_name(&format!("battery-level-{level}{charging}-symbolic")));
+    let icon = gtk4::Image::new();
+    row.add_prefix(&icon);
     let bar = gtk4::LevelBar::for_interval(0.0, 100.0);
-    bar.set_value(b.percent);
     bar.set_size_request(160, -1);
     bar.set_valign(gtk4::Align::Center);
     row.add_suffix(&bar);
     row.set_activatable(false);
     g.add(&row);
-    g
+
+    let show = {
+        let (row, icon, bar) = (row.clone(), icon.clone(), bar.clone());
+        move |b: &Battery| {
+            let state = match b.state.as_str() {
+                "charging" => "Charging",
+                "fully-charged" => "Fully charged",
+                "pending-charge" => "Plugged in, not charging",
+                "discharging" => "On battery",
+                _ => "Unknown state",
+            };
+            row.set_title(&format!("{:.0}%", b.percent));
+            row.set_subtitle(&match &b.time {
+                Some(t) if b.state == "charging" => format!("{state} · full in {t}"),
+                Some(t) if b.state == "discharging" => format!("{state} · {t} remaining"),
+                _ => state.to_string(),
+            });
+            let level = ((b.percent / 10.0).round() as u32 * 10).min(100);
+            let charging = if b.state == "charging" { "-charging" } else { "" };
+            icon.set_icon_name(Some(&format!("battery-level-{level}{charging}-symbolic")));
+            bar.set_value(b.percent);
+        }
+    };
+    show(b);
+    (g, std::rc::Rc::new(show))
 }
 
 // ── Power mode ─────────────────────────────────────────────────────────────
@@ -442,7 +452,17 @@ pub fn build() -> gtk4::Widget {
         || (read_battery(), output("powerprofilesctl", &["get"]).is_some()),
         move |(battery, has_profiles)| {
             if let Some(b) = &battery {
-                content.append(&battery_group(b));
+                let (group, show) = battery_group(b);
+                content.append(&group);
+                // Percentage, charging state and time left follow the battery while this page is open.
+                super::live::every(&group, 2, move || {
+                    let show = show.clone();
+                    in_background(read_battery, move |now| {
+                        if let Some(now) = now {
+                            show(&now);
+                        }
+                    });
+                });
             }
             if has_profiles {
                 if let Some(g) = power_mode_group() {

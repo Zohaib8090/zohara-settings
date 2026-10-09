@@ -468,9 +468,132 @@ pub fn build() -> gtk4::Widget {
                 content.append(&profile_group("Screen and sleep", "AC", false));
             }
             content.append(&lock_group());
+            content.append(&memory_group());
         },
     );
 
     scroll.set_child(Some(&root));
     scroll.upcast()
+}
+
+// ── Memory & performance ───────────────────────────────────────────────────
+
+/// Swap eagerness, file cache and compressed swap. Each change asks for the administrator password once; if that is
+/// cancelled the rows go back to what the system really has.
+fn memory_group() -> adw::PreferencesGroup {
+    use crate::backend::memory;
+    use std::{cell::{Cell, RefCell}, rc::Rc};
+
+    let g = adw::PreferencesGroup::new();
+    g.set_title("Memory & performance");
+    g.set_description(Some("How the computer uses memory and swap. The defaults suit most people."));
+
+    let info = adw::ActionRow::new();
+    info.set_title("In use now");
+    info.set_subtitle(&memory::summary());
+    info.set_activatable(false);
+    g.add(&info);
+
+    let start = memory::current();
+    let state = Rc::new(RefCell::new(start));
+    let ready = Rc::new(Cell::new(false));
+
+    // "Custom" is added when the system has a value that is not one of ours.
+    fn model(options: &[(&str, u32)], value: u32) -> (gtk4::StringList, u32) {
+        let mut labels: Vec<String> = options.iter().map(|o| o.0.to_string()).collect();
+        let idx = match memory::index_of(options, value) {
+            Some(i) => i,
+            None => {
+                labels.push(format!("Custom ({value})"));
+                labels.len() - 1
+            }
+        };
+        (gtk4::StringList::new(&labels.iter().map(String::as_str).collect::<Vec<_>>()), idx as u32)
+    }
+
+    let swap_row = adw::ComboRow::new();
+    swap_row.set_title("Use of swap");
+    swap_row.set_subtitle("Lower keeps apps in memory longer; higher moves idle apps to the disk sooner");
+    let (m, i) = model(&memory::SWAPPINESS, start.swappiness);
+    swap_row.set_model(Some(&m));
+    swap_row.set_selected(i);
+
+    let cache_row = adw::ComboRow::new();
+    cache_row.set_title("File cache");
+    cache_row.set_subtitle("How long recently used files stay in memory");
+    let (m, i) = model(&memory::CACHE, start.cache_pressure);
+    cache_row.set_model(Some(&m));
+    cache_row.set_selected(i);
+
+    let zswap_row = adw::SwitchRow::new();
+    zswap_row.set_title("Compress memory before swapping");
+    zswap_row.set_subtitle("Squeezes idle memory in RAM first, so the disk is used less (zswap)");
+    zswap_row.set_active(start.zswap);
+    zswap_row.set_visible(memory::zswap_available());
+
+    let status = adw::ActionRow::new();
+    status.set_title("Changes ask for your password once");
+    status.set_activatable(false);
+
+    let apply: Rc<dyn Fn()> = {
+        let (state, ready, status) = (state.clone(), ready.clone(), status.clone());
+        let (swap_row, cache_row, zswap_row) = (swap_row.clone(), cache_row.clone(), zswap_row.clone());
+        Rc::new(move || {
+            if !ready.get() {
+                return;
+            }
+            let want = *state.borrow();
+            status.set_title("Applying…");
+            let (status, ready, state) = (status.clone(), ready.clone(), state.clone());
+            let (swap_row, cache_row, zswap_row) = (swap_row.clone(), cache_row.clone(), zswap_row.clone());
+            in_background(move || memory::apply(want), move |ok| {
+                if ok {
+                    status.set_title("Saved");
+                    status.set_subtitle("Stays this way after a restart.");
+                } else {
+                    // cancelled or refused: show what the system really has
+                    let real = memory::current();
+                    ready.set(false);
+                    *state.borrow_mut() = real;
+                    swap_row.set_selected(memory::index_of(&memory::SWAPPINESS, real.swappiness).unwrap_or(0) as u32);
+                    cache_row.set_selected(memory::index_of(&memory::CACHE, real.cache_pressure).unwrap_or(0) as u32);
+                    zswap_row.set_active(real.zswap);
+                    ready.set(true);
+                    status.set_title("Not changed");
+                    status.set_subtitle("The password prompt was closed or the change was refused.");
+                }
+            });
+        })
+    };
+    {
+        let (state, apply) = (state.clone(), apply.clone());
+        swap_row.connect_selected_notify(move |r| {
+            if let Some(o) = memory::SWAPPINESS.get(r.selected() as usize) {
+                state.borrow_mut().swappiness = o.1;
+                apply();
+            }
+        });
+    }
+    {
+        let (state, apply) = (state.clone(), apply.clone());
+        cache_row.connect_selected_notify(move |r| {
+            if let Some(o) = memory::CACHE.get(r.selected() as usize) {
+                state.borrow_mut().cache_pressure = o.1;
+                apply();
+            }
+        });
+    }
+    {
+        let (state, apply) = (state.clone(), apply.clone());
+        zswap_row.connect_active_notify(move |r| {
+            state.borrow_mut().zswap = r.is_active();
+            apply();
+        });
+    }
+    g.add(&swap_row);
+    g.add(&cache_row);
+    g.add(&zswap_row);
+    g.add(&status);
+    ready.set(true);
+    g
 }

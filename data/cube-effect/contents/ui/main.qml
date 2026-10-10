@@ -125,11 +125,11 @@ KWinComponents.SceneEffect {
     }
 
     function openOverview() {
-        if (desktopCount < 2) return;
+        // works with a single desktop too: the overview is also where you make the next one ("+ New desktop")
         glide.stop();
         dragging = false;
         pos = currentIndex();
-        show();
+        effect.visible = true;
         selected = KWinComponents.Workspace.currentDesktop;
         appFilter = "";
         armed = null;
@@ -396,8 +396,9 @@ KWinComponents.SceneEffect {
             property bool engaged: false
 
             onProgressChanged: {
-                if (effect.desktopCount < 2 || progress <= 0) return;
+                if (progress <= 0) return;
                 if (modelData.kind === "switch") {
+                    if (effect.desktopCount < 2) return;
                     if (effect.overview || (effect.gesture !== "" && effect.gesture !== "switch")) return;
                     if (!engaged) {
                         engaged = true;

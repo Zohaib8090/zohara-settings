@@ -37,5 +37,13 @@
         <entry name="TrayTime" type="Int">
             <default>350</default>
         </entry>
+        <!-- scrolling in the overview: 0 up/down and left/right, 1 up/down only, 2 left/right only -->
+        <entry name="ScrollMode" type="Int">
+            <default>0</default>
+        </entry>
+        <!-- true: scroll the other way round -->
+        <entry name="ScrollReverse" type="Bool">
+            <default>false</default>
+        </entry>
     </group>
 </kcfg>

@@ -162,9 +162,12 @@ Item {
         enabled: effect.overview
         acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
         onWheel: ev => {
+            // which axis counts: both (the stronger one), only up/down or only left/right (Settings: Scroll in the overview)
+            const pick = (x, y) => effect.scrollMode === 1 ? y : (effect.scrollMode === 2 ? x : (Math.abs(x) > Math.abs(y) ? x : y));
+            const sign = effect.scrollReverse ? -1 : 1;
             // a wheel notch is 120 units; a touchpad sends many small steps (and some drivers fill pixelDelta instead)
-            const px = Math.abs(ev.pixelDelta.x) > Math.abs(ev.pixelDelta.y) ? ev.pixelDelta.x : ev.pixelDelta.y;
-            const an = Math.abs(ev.angleDelta.x) > Math.abs(ev.angleDelta.y) ? ev.angleDelta.x : ev.angleDelta.y;
+            const px = pick(ev.pixelDelta.x, ev.pixelDelta.y) * sign;
+            const an = pick(ev.angleDelta.x, ev.angleDelta.y) * sign;
             if (px === 0 && Math.abs(an) >= 120) {
                 effect.snapNearest(an > 0 ? -1 : 1);
                 return;

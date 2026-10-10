@@ -154,20 +154,38 @@ Item {
             // one action: a labelled button that does nothing when it is not available
             component MenuAction: Rectangle {
                 id: action
-                property alias label: text.text
+                property alias label: title.text
+                // a smaller second line under the label; it wraps inside the button
+                property string hint: ""
                 property bool available: true
                 property color tint: "#33ffffff"
                 signal activated()
                 width: parent.width
-                height: 38
+                height: Math.max(38, content.implicitHeight + 18)
                 radius: 8
                 color: available ? tint : "#1affffff"
-                Text {
-                    id: text
+                Column {
+                    id: content
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.left: parent.left
+                    anchors.right: parent.right
                     anchors.leftMargin: 12
-                    color: action.available ? "white" : "#77ffffff"
+                    anchors.rightMargin: 12
+                    spacing: 2
+                    Text {
+                        id: title
+                        width: parent.width
+                        elide: Text.ElideRight
+                        color: action.available ? "white" : "#77ffffff"
+                    }
+                    Text {
+                        visible: action.hint !== ""
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 12
+                        color: action.available ? "#ddffffff" : "#55ffffff"
+                        text: action.hint
+                    }
                 }
                 // always taking the tap, even when the action is not available, so it never falls through to the cube underneath
                 TapHandler { onTapped: { if (action.available) action.activated(); } }
@@ -193,7 +211,8 @@ Item {
             }
             MenuAction {
                 objectName: "menuDelete"
-                label: "Delete this desktop  (its windows move to another desktop, nothing is closed)"
+                label: "Delete this desktop"
+                hint: "Its windows move to another desktop. Nothing is closed."
                 available: menu.count > 1
                 tint: "#99b91c1c"
                 onActivated: effect.deleteDesktop(effect.menuDesktop)

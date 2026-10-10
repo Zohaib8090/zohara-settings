@@ -100,6 +100,7 @@ KWinComponents.SceneEffect {
 
     function maybeHide() {
         if (!dragging && !overview && amount === 0 && !glide.running && !zoom.running) {
+            clearSelection();
             visible = false;
             lastIndex = currentIndex();
         }
@@ -109,7 +110,7 @@ KWinComponents.SceneEffect {
         id: zoom
         target: effect
         property: "amount"
-        duration: 380
+        duration: 480
         easing.type: Easing.OutCubic
         onFinished: effect.maybeHide()
     }
@@ -140,7 +141,10 @@ KWinComponents.SceneEffect {
 
     function closeOverview() {
         if (!overview && amount === 0) return;
-        clearSelection();
+        // what is picked stays until the layer has glided away (maybeHide clears it), so the tray does not empty as it leaves
+        menuDesktop = null;
+        armed = null;
+        appFilter = "";
         overview = false;
         // the whole cube was turned round: bring the turn back into one lap so it ends on a real desktop
         const n = desktopCount;
@@ -418,6 +422,7 @@ KWinComponents.SceneEffect {
                         zoom.stop();
                         effect.dragging = true;
                         effect.pos = effect.currentIndex();
+                        effect.selected = KWinComponents.Workspace.currentDesktop;
                         effect.show();
                     }
                     effect.amount = Math.min(1, progress);

@@ -1,5 +1,6 @@
 pub mod app_details;
 pub mod autotz;
+pub mod balance;
 pub mod dbus;
 pub mod cube;
 pub mod desktop_style;

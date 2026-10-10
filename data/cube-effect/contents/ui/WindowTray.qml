@@ -12,7 +12,10 @@ Item {
     id: windowLayer
 
     required property QtObject targetScreen
-    readonly property bool trayShown: effect.overview
+    // The layer follows the cube's own zoom-out (effect.amount, 0 closed .. 1 open, which also follows your fingers on a 4 finger
+    // swipe): the desktop bar glides down from the top and the tray up from the bottom, fading in a little after the cube starts.
+    readonly property real p: Math.max(0, Math.min(1, (effect.amount - 0.08) / 0.92))
+    readonly property bool trayShown: effect.amount > 0.02
 
     // an application window: not a panel, the wallpaper, a popup or a dialog
     function isApp(w) {
@@ -33,7 +36,10 @@ Item {
     // ── desktops along the top: drop targets ──
     Row {
         id: bar
+        objectName: "desktopBar"
         visible: windowLayer.trayShown
+        opacity: windowLayer.p
+        transform: Translate { y: -(1 - windowLayer.p) * 70 }
         anchors.top: parent.top
         anchors.topMargin: Kirigami.Units.largeSpacing
         anchors.horizontalCenter: parent.horizontalCenter
@@ -228,7 +234,10 @@ Item {
     // ── windows along the bottom ──
     Rectangle {
         id: tray
+        objectName: "windowTray"
         visible: windowLayer.trayShown
+        opacity: windowLayer.p
+        transform: Translate { y: (1 - windowLayer.p) * tray.height }
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom

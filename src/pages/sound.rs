@@ -5,6 +5,7 @@
 //! enabled on Zohara OS) using `pactl -f json`. State is always read back from
 //! the server rather than assumed, so the sliders and switches reflect reality.
 
+use crate::backend::balance;
 use crate::backend::equalizer as eq;
 use crate::backend::kconfig;
 use adw::prelude::*;
@@ -49,6 +50,56 @@ fn pactl_run(args: Vec<String>) {
     std::thread::spawn(move || {
         let _ = Command::new("pactl").args(&args).status();
     });
+}
+
+/// Runs `work` for the newest value only: while it is busy, newer values replace the waiting one (a slider drag sends dozens).
+struct Latest<T: Send + 'static> {
+    pending: std::sync::Arc<std::sync::Mutex<Option<T>>>,
+    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl<T: Send + 'static> Latest<T> {
+    fn new() -> Self {
+        Latest { pending: Default::default(), running: Default::default() }
+    }
+
+    fn submit(&self, value: T, work: impl Fn(T) + Send + Sync + 'static) {
+        *self.pending.lock().unwrap() = Some(value);
+        if self.running.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return; // the worker is going; it will pick the newest value up
+        }
+        let (pending, running) = (self.pending.clone(), self.running.clone());
+        std::thread::spawn(move || {
+            loop {
+                let next = pending.lock().unwrap().take();
+                match next {
+                    Some(v) => work(v),
+                    None => {
+                        running.store(false, std::sync::atomic::Ordering::SeqCst);
+                        // a value may have arrived between the check and the store
+                        if pending.lock().unwrap().is_some() && !running.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                            continue;
+                        }
+                        break;
+                    }
+                }
+            }
+        });
+    }
+}
+
+fn find_sink(name: &str) -> Option<balance::Sink> {
+    pactl_json("sinks").iter().find(|d| d["name"].as_str() == Some(name)).and_then(balance::parse_sink)
+}
+
+/// Sets the default output to a volume, keeping its left-right balance (a plain `set-sink-volume 60%` would make both sides equal).
+fn set_default_output_volume(percent: u32) {
+    let default = pactl_text(&["get-default-sink"]);
+    let args = match find_sink(&default) {
+        Some(sink) if balance::can_balance(&sink.channels) => balance::args_for_master(&sink, percent as f64),
+        _ => vec!["set-sink-volume".to_string(), "@DEFAULT_SINK@".to_string(), format!("{percent}%")],
+    };
+    let _ = Command::new("pactl").args(&args).status();
 }
 
 fn volume_percent(v: &Value) -> u32 {
@@ -314,8 +365,13 @@ fn append_device_section(rows: &gtk4::Box, output: bool, boost: bool) -> Option<
 
     // The microphone stays at 100%: boosting the input only adds noise.
     let scale = volume_scale(volume_percent(current), output && boost);
+    let latest_volume: Latest<u32> = Latest::new();
     scale.connect_value_changed(move |s| {
-        pactl_run(vec![set_volume.into(), default_token.into(), format!("{}%", s.value() as u32)]);
+        if output {
+            latest_volume.submit(s.value() as u32, set_default_output_volume);
+        } else {
+            pactl_run(vec![set_volume.into(), default_token.into(), format!("{}%", s.value() as u32)]);
+        }
     });
     let vol_row = adw::ActionRow::new();
     vol_row.set_title(if output { "Volume" } else { "Input volume" });
@@ -594,6 +650,79 @@ fn speaker_test_group() -> gtk4::Box {
     group
 }
 
+/// One slider per output device for the left-right balance. Each device keeps its own (the volumes belong to the device and
+/// PipeWire remembers them). Devices without a left and a right side (mono, 8 "aux" channels) are not listed.
+fn balance_group() -> Option<gtk4::Box> {
+    let default = pactl_text(&["get-default-sink"]);
+    let mut sinks: Vec<(String, balance::Sink)> = pactl_json("sinks")
+        .iter()
+        .filter(|d| !eq::is_equalizer_device(d["name"].as_str().unwrap_or_default()))
+        .filter_map(|d| balance::parse_sink(d).map(|s| (device_label(d), s)))
+        .filter(|(_, s)| balance::can_balance(&s.channels))
+        .collect();
+    if sinks.is_empty() {
+        return None;
+    }
+    // the device in use first
+    sinks.sort_by_key(|(_, s)| s.name != default);
+
+    let outer = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+    outer.append(
+        &gtk4::Label::builder()
+            .label("Balance")
+            .halign(gtk4::Align::Start)
+            .css_classes(vec!["heading".to_string()])
+            .build(),
+    );
+    let card = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+    card.set_css_classes(&["win11-card-group"]);
+    for (label, sink) in sinks {
+        let row = adw::ActionRow::new();
+        row.set_title(&glib::markup_escape_text(&label));
+        row.set_activatable(false);
+        row.add_prefix(&gtk4::Image::from_icon_name("audio-speakers-symbolic"));
+        let start = sink.balance();
+        row.set_subtitle(&balance::describe(start));
+
+        let scale = gtk4::Scale::with_range(gtk4::Orientation::Horizontal, -100.0, 100.0, 5.0);
+        scale.set_value((start * 100.0).round());
+        scale.set_draw_value(false);
+        scale.set_size_request(240, -1);
+        scale.set_valign(gtk4::Align::Center);
+        scale.add_mark(0.0, gtk4::PositionType::Bottom, None);
+        row.add_suffix(&scale);
+
+        let center = gtk4::Button::builder().label("Center").valign(gtk4::Align::Center).css_classes(vec!["flat".to_string()]).build();
+        center.set_sensitive(start.abs() >= 0.005);
+        row.add_suffix(&center);
+
+        let name = sink.name.clone();
+        let latest: std::rc::Rc<Latest<f64>> = std::rc::Rc::new(Latest::new());
+        {
+            let (row, center) = (row.clone(), center.clone());
+            scale.connect_value_changed(move |s| {
+                let b = (s.value() / 100.0).clamp(-1.0, 1.0);
+                row.set_subtitle(&balance::describe(b));
+                center.set_sensitive(b.abs() >= 0.005);
+                let name = name.clone();
+                // the device is read again each time: its volume may have changed since the page was built
+                latest.submit(b, move |b| {
+                    if let Some(sink) = find_sink(&name) {
+                        let _ = Command::new("pactl").args(balance::args_for_balance(&sink, b)).status();
+                    }
+                });
+            });
+        }
+        {
+            let scale = scale.clone();
+            center.connect_clicked(move |_| scale.set_value(0.0));
+        }
+        card.append(&row);
+    }
+    outer.append(&card);
+    Some(outer)
+}
+
 pub fn build() -> gtk4::Widget {
     let scroll = gtk4::ScrolledWindow::builder()
         .hscrollbar_policy(gtk4::PolicyType::Never)
@@ -625,6 +754,9 @@ pub fn build() -> gtk4::Widget {
     boost_row.set_active(boost);
     output.append(&boost_row);
     root.append(&output);
+    if let Some(balance) = balance_group() {
+        root.append(&balance);
+    }
     root.append(&speaker_test_group());
     root.append(&super::equalizer::section());
 

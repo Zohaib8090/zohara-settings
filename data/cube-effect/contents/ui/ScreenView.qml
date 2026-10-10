@@ -155,6 +155,31 @@ Item {
         }
     }
 
+    // Overview: the mouse wheel and two-finger scrolling turn the cube. A wheel notch moves one desktop; a touchpad turns it
+    // as your fingers move and settles on the nearest desktop when they stop.
+    WheelHandler {
+        id: wheel
+        enabled: effect.overview
+        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+        onWheel: ev => {
+            const touch = ev.pixelDelta.x !== 0 || ev.pixelDelta.y !== 0;
+            if (touch) {
+                const d = Math.abs(ev.pixelDelta.x) > Math.abs(ev.pixelDelta.y) ? ev.pixelDelta.x : ev.pixelDelta.y;
+                glide.stop();
+                effect.pos = effect.pos - d / (root.faceW * 0.55);
+                settleTimer.restart();
+            } else {
+                const d = Math.abs(ev.angleDelta.x) > Math.abs(ev.angleDelta.y) ? ev.angleDelta.x : ev.angleDelta.y;
+                if (d !== 0) effect.snapNearest(d > 0 ? -1 : 1);
+            }
+        }
+    }
+    Timer {
+        id: settleTimer
+        interval: 160
+        onTriggered: effect.snapNearest(0)
+    }
+
     WindowTray {
         anchors.fill: parent
         targetScreen: root.targetScreen

@@ -12,7 +12,7 @@ Item {
     id: windowLayer
 
     required property QtObject targetScreen
-    readonly property bool trayShown: effect.overview && (effect.selected !== null || effect.appFilter !== "")
+    readonly property bool trayShown: effect.overview
 
     // an application window: not a panel, the wallpaper, a popup or a dialog
     function isApp(w) {
@@ -46,7 +46,7 @@ Item {
                 objectName: "chip_" + desktop.id
                 required property QtObject desktop
                 required property int index
-                width: Math.max(110, label.implicitWidth + 28)
+                width: Math.max(110, label.implicitWidth + 28) + (effect.selected !== null && effect.selected.id === desktop.id ? 30 : 0)
                 height: 40
                 radius: 8
                 color: drop.containsDrag ? "#cc3b82f6" : (effect.selected !== null && effect.selected.id === desktop.id ? "#cc2a2d38" : "#99181a22")
@@ -65,7 +65,35 @@ Item {
                     keys: ["zwin"]
                     onDropped: d => effect.moveWindowTo(d.source.win, chip.desktop)
                 }
-                TapHandler { onTapped: effect.selectDesktop(chip.desktop) }
+                TapHandler {
+                    id: chipTap
+                    property real lastTap: 0
+                    onTapped: {
+                        // two taps close together open the desktop's menu; a single tap picks the desktop
+                        const now = Date.now();
+                        if (now - chipTap.lastTap < 450) {
+                            chipTap.lastTap = 0;
+                            effect.openDesktopMenu(chip.desktop);
+                        } else {
+                            chipTap.lastTap = now;
+                            effect.chipTapped(chip.desktop);
+                        }
+                    }
+                }
+                // the same menu from a button, for the picked desktop
+                Rectangle {
+                    visible: effect.selected !== null && effect.selected.id === chip.desktop.id
+                    objectName: "chipMore_" + chip.desktop.id
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.rightMargin: 6
+                    width: 26
+                    height: 26
+                    radius: 13
+                    color: "#55ffffff"
+                    Text { anchors.centerIn: parent; text: "\u22ef"; color: "white" }
+                    TapHandler { onTapped: effect.openDesktopMenu(chip.desktop) }
+                }
             }
         }
 
@@ -89,7 +117,92 @@ Item {
                 onDropped: d => effect.moveWindowToNew(d.source.win)
             }
             // a click makes an empty desktop; dropping a window on it makes one with that window
-            TapHandler { onTapped: effect.newDesktop() }
+            TapHandler { onTapped: effect.newChipTapped() }
+        }
+    }
+
+    // ── the menu of one desktop: move it, or delete it ──
+    Rectangle {
+        id: menu
+        objectName: "desktopMenu"
+        visible: windowLayer.trayShown && effect.menuDesktop !== null
+        readonly property int idx: effect.menuDesktop !== null ? effect.indexOf(effect.menuDesktop) : -1
+        readonly property int count: effect.desktopCount
+        anchors.top: bar.bottom
+        anchors.topMargin: 10
+        anchors.horizontalCenter: parent.horizontalCenter
+        width: 330
+        height: col.implicitHeight + 24
+        radius: 12
+        color: "#f0181a22"
+        border.width: 1
+        border.color: "#88ffffff"
+        z: 2000
+
+        Column {
+            id: col
+            anchors.fill: parent
+            anchors.margins: 12
+            spacing: 8
+
+            Text {
+                color: "white"
+                font.bold: true
+                text: effect.menuDesktop !== null ? effect.menuDesktop.name.replace(/\u200b/g, "") + "  (desktop " + (menu.idx + 1) + " of " + menu.count + ")" : ""
+            }
+
+            // one action: a labelled button that does nothing when it is not available
+            component MenuAction: Rectangle {
+                id: action
+                property alias label: text.text
+                property bool available: true
+                property color tint: "#33ffffff"
+                signal activated()
+                width: parent.width
+                height: 38
+                radius: 8
+                color: available ? tint : "#1affffff"
+                Text {
+                    id: text
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.left: parent.left
+                    anchors.leftMargin: 12
+                    color: action.available ? "white" : "#77ffffff"
+                }
+                // always taking the tap, even when the action is not available, so it never falls through to the cube underneath
+                TapHandler { onTapped: { if (action.available) action.activated(); } }
+            }
+
+            MenuAction {
+                objectName: "menuLeft"
+                label: "\u25c0  Move left"
+                available: menu.idx > 0
+                onActivated: effect.moveDesktop(effect.menuDesktop, menu.idx - 1)
+            }
+            MenuAction {
+                objectName: "menuRight"
+                label: "Move right  \u25b6"
+                available: menu.idx >= 0 && menu.idx < menu.count - 1
+                onActivated: effect.moveDesktop(effect.menuDesktop, menu.idx + 1)
+            }
+            MenuAction {
+                objectName: "menuFirst"
+                label: "\u23ee  Move to the first place"
+                available: menu.idx > 0
+                onActivated: effect.moveDesktop(effect.menuDesktop, 0)
+            }
+            MenuAction {
+                objectName: "menuDelete"
+                label: "Delete this desktop  (its windows move to another desktop, nothing is closed)"
+                available: menu.count > 1
+                tint: "#99b91c1c"
+                onActivated: effect.deleteDesktop(effect.menuDesktop)
+            }
+            MenuAction {
+                objectName: "menuClose"
+                label: "Close"
+                onActivated: effect.closeDesktopMenu()
+            }
         }
     }
 
@@ -119,7 +232,9 @@ Item {
             anchors.top: parent.top
             anchors.margins: Kirigami.Units.largeSpacing
             color: "#bbbbbb"
-            text: effect.appFilter !== "" ? "Click the app icon again to go back to this desktop" : "Drag a window to a desktop above. Click a window to go to it. Click the desktop again to open it"
+            text: effect.armed !== null
+                  ? "Tap a desktop above to move \u201c" + effect.armed.caption + "\u201d there (or New desktop)"
+                  : (effect.appFilter !== "" ? "Tap the app icon again to go back to this desktop" : "Tap a window to go to it. Tap Move, then a desktop above, to move it. Or drag it")
         }
 
         Flow {
@@ -156,8 +271,8 @@ Item {
                             anchors.fill: parent
                             radius: 10
                             color: "#99202330"
-                            border.width: dragHandler.active ? 2 : 0
-                            border.color: "#3b82f6"
+                            border.width: (dragHandler.active || effect.armed === slot.win) ? 2 : 0
+                            border.color: effect.armed === slot.win ? "#22c55e" : "#3b82f6"
                         }
                         KWinComponents.WindowThumbnail {
                             id: thumb
@@ -186,6 +301,25 @@ Item {
                                 onTapped: effect.toggleAppFilter(String(slot.win.resourceClass || ""))
                             }
                         }
+                        // Move: pick this window up, then tap a desktop at the top
+                        Rectangle {
+                            id: moveButton
+                            objectName: "move_" + String(slot.win.resourceClass)
+                            x: card.width - 70
+                            y: 8
+                            width: 62
+                            height: 28
+                            radius: 8
+                            color: effect.armed === slot.win ? "#cc22a55a" : "#99202330"
+                            border.width: 1
+                            border.color: "#88ffffff"
+                            Text {
+                                anchors.centerIn: parent
+                                color: "white"
+                                text: effect.armed === slot.win ? "Cancel" : "Move"
+                            }
+                            TapHandler { onTapped: effect.toggleArm(slot.win) }
+                        }
                         Text {
                             x: 52
                             y: card.height - 40
@@ -198,7 +332,8 @@ Item {
                             // a press on the icon is handled by the icon; anywhere else on the card goes to the window
                             gesturePolicy: TapHandler.DragThreshold
                             onTapped: eventPoint => {
-                                if (!appButton.contains(appButton.mapFromItem(card, eventPoint.position.x, eventPoint.position.y))) {
+                                if (!appButton.contains(appButton.mapFromItem(card, eventPoint.position.x, eventPoint.position.y))
+                                        && !moveButton.contains(moveButton.mapFromItem(card, eventPoint.position.x, eventPoint.position.y))) {
                                     effect.goToWindow(slot.win);
                                 }
                             }

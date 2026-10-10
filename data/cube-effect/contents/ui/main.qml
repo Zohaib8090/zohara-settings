@@ -38,12 +38,30 @@ KWinComponents.SceneEffect {
     readonly property real maxTilt: 50
     property QtObject selected: null
     property string appFilter: ""
+    // the desktop whose menu (move, delete) is open, opened by a double tap on its chip
+    property QtObject menuDesktop: null
+
+    // a window "picked up" with its Move button: tap a desktop above to put it there (for touchpads, where dragging is awkward)
+    property QtObject armed: null
 
     // the desktop whose face is number `i`
     function desktopAt(i) {
         const list = KWinComponents.Workspace.desktops;
         const n = list.length;
         return list[((i % n) + n) % n];
+    }
+
+    KWinComponents.DBusCall {
+        id: renameCall
+        service: "org.kde.KWin"
+        path: "/VirtualDesktopManager"
+        dbusInterface: "org.kde.KWin.VirtualDesktopManager"
+        method: "setDesktopName"
+    }
+
+    function setDesktopName(id, name) {
+        renameCall.arguments = [String(id), String(name)];
+        renameCall.call();
     }
 
     function indexOf(desktop) {
@@ -111,6 +129,9 @@ KWinComponents.SceneEffect {
         dragging = false;
         pos = currentIndex();
         show();
+        selected = KWinComponents.Workspace.currentDesktop;
+        appFilter = "";
+        armed = null;
         overview = true;
         zoom.stop();
         zoom.to = 1;
@@ -145,6 +166,7 @@ KWinComponents.SceneEffect {
     function selectDesktop(d) {
         selected = d;
         appFilter = "";
+        armed = null;
         glide.stop();
         glide.from = pos;
         glide.to = nearestEquivalent(indexOf(d));
@@ -152,9 +174,102 @@ KWinComponents.SceneEffect {
         glide.restart();
     }
 
+    // leaves the overview's layers: nothing picked, no app filter, nothing armed
     function clearSelection() {
         selected = null;
         appFilter = "";
+        armed = null;
+        menuDesktop = null;
+    }
+
+    function toggleArm(w) {
+        armed = armed === w ? null : w;
+    }
+
+    // ── the desktop menu (double tap on a chip) ──
+    function openDesktopMenu(d) {
+        armed = null;
+        menuDesktop = d;
+    }
+
+    function closeDesktopMenu() {
+        menuDesktop = null;
+    }
+
+    // Moves the desktop `d` to position `to` (0 is the first), like dragging it in a list: the desktops in between shift by one.
+    // KWin cannot reorder desktops, so the same thing is done by hand: every window follows its desktop to the new place and
+    // the names are handed along, so what you see is exactly a moved desktop. You stay on the same windows.
+    function moveDesktop(d, to) {
+        const ws = KWinComponents.Workspace;
+        const list = [];
+        for (let i = 0; i < ws.desktops.length; i++) list.push(ws.desktops[i]);
+        const n = list.length;
+        const from = list.findIndex(x => x.id === d.id);
+        if (from < 0 || to < 0 || to >= n || from === to) return;
+
+        // order[newPosition] = oldPosition
+        const order = [];
+        for (let p = 0; p < n; p++) order.push(p);
+        order.splice(from, 1);
+        order.splice(to, 0, from);
+        const newPosOf = {};
+        for (let p = 0; p < n; p++) newPosOf[order[p]] = p;
+
+        const names = list.map(x => String(x.name));
+        const currentOld = list.findIndex(x => ws.currentDesktop && x.id === ws.currentDesktop.id);
+        const selectedOld = selected ? list.findIndex(x => x.id === selected.id) : -1;
+
+        // windows follow their desktop
+        const wins = ws.windows;
+        for (let k = 0; k < wins.length; k++) {
+            const w = wins[k];
+            if (!w || w.onAllDesktops || w.desktops.length === 0) continue;
+            const next = [];
+            for (let j = 0; j < w.desktops.length; j++) {
+                const at = list.findIndex(x => x.id === w.desktops[j].id);
+                if (at >= 0) next.push(list[newPosOf[at]]);
+            }
+            if (next.length > 0) w.desktops = next;
+        }
+        // names travel with their desktop
+        for (let p = 0; p < n; p++) setDesktopName(list[p].id, names[order[p]]);
+
+        if (currentOld >= 0) ws.currentDesktop = list[newPosOf[currentOld]];
+        if (selectedOld >= 0) selected = list[newPosOf[selectedOld]];
+        menuDesktop = list[to];
+        pos = to;
+    }
+
+    // Removes a desktop. KWin moves its windows to another desktop; nothing is closed.
+    function deleteDesktop(d) {
+        const ws = KWinComponents.Workspace;
+        if (ws.desktops.length <= 1) return;
+        const wasSelected = selected !== null && selected.id === d.id;
+        menuDesktop = null;
+        ws.removeDesktop(d);
+        if (wasSelected || selected === null) selected = ws.currentDesktop;
+        appFilter = "";
+        armed = null;
+    }
+
+    // a tap on a desktop chip: with a window armed it moves there, otherwise it picks that desktop
+    function chipTapped(d) {
+        if (armed !== null) {
+            moveWindowTo(armed, d);
+            armed = null;
+        } else {
+            selectDesktop(d);
+        }
+    }
+
+    // a tap on "+ New desktop": with a window armed it goes to a new desktop of its own, otherwise an empty one is made
+    function newChipTapped() {
+        if (armed !== null) {
+            moveWindowToNew(armed);
+            armed = null;
+        } else {
+            newDesktop();
+        }
     }
 
     function toggleAppFilter(app) {
@@ -172,7 +287,11 @@ KWinComponents.SceneEffect {
 
     // a click on nothing: close what is open, one layer at a time
     function emptyClicked() {
-        if (appFilter !== "" || selected !== null) clearSelection(); else closeOverview();
+        // the tray is always there now: a click on nothing steps back one layer, then closes the overview
+        if (menuDesktop !== null) menuDesktop = null;
+        else if (armed !== null) armed = null;
+        else if (appFilter !== "") appFilter = "";
+        else closeOverview();
     }
 
     function handleEscape() {

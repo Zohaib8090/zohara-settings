@@ -21,17 +21,22 @@ pub struct Cube {
     pub tilt: f64,
     /// 4 fingers up opens the cube's overview instead of KWin's Overview.
     pub overview_gesture: bool,
+    /// The desktop bar and window tray glide in and out of the overview (off: they appear at once).
+    pub tray_animation: bool,
+    /// How long that glide takes, in milliseconds.
+    pub tray_time: u32,
 }
 
 impl Default for Cube {
     fn default() -> Self {
-        Cube { duration: 450, open_cube: true, pullback: 0.6, tilt: 0.0, overview_gesture: true }
+        Cube { duration: 450, open_cube: true, pullback: 0.6, tilt: 0.0, overview_gesture: true, tray_animation: true, tray_time: 350 }
     }
 }
 
 pub const DURATION: (u32, u32) = (150, 1500);
 pub const PULLBACK: (f64, f64) = (0.0, 1.5);
 pub const TILT: (f64, f64) = (0.0, 30.0);
+pub const TRAY_TIME: (u32, u32) = (100, 1200);
 
 /// Whether the effect's files are on this computer.
 pub fn installed() -> bool {
@@ -48,6 +53,8 @@ pub fn read() -> Cube {
         pullback: get("Pullback").and_then(|v| v.parse().ok()).map(|v: f64| v.clamp(PULLBACK.0, PULLBACK.1)).unwrap_or(d.pullback),
         tilt: get("Tilt").and_then(|v| v.parse().ok()).map(|v: f64| v.clamp(TILT.0, TILT.1)).unwrap_or(d.tilt),
         overview_gesture: get("OverviewGesture").map(|v| v != "false").unwrap_or(d.overview_gesture),
+        tray_animation: get("TrayAnimation").map(|v| v != "false").unwrap_or(d.tray_animation),
+        tray_time: get("TrayTime").and_then(|v| v.parse().ok()).map(|v: u32| v.clamp(TRAY_TIME.0, TRAY_TIME.1)).unwrap_or(d.tray_time),
     }
 }
 
@@ -59,6 +66,8 @@ pub fn write(c: Cube) {
     w("Pullback", format!("{:.2}", c.pullback.clamp(PULLBACK.0, PULLBACK.1)));
     w("Tilt", format!("{:.1}", c.tilt.clamp(TILT.0, TILT.1)));
     w("OverviewGesture", c.overview_gesture.to_string());
+    w("TrayAnimation", c.tray_animation.to_string());
+    w("TrayTime", c.tray_time.clamp(TRAY_TIME.0, TRAY_TIME.1).to_string());
     let _ = std::process::Command::new("qdbus6").args(["org.kde.KWin", "/Effects", "org.kde.kwin.Effects.reconfigureEffect", ID]).status();
 }
 
@@ -124,14 +133,14 @@ mod tests {
 
     #[test]
     fn defaults_match_the_effects_own_defaults() {
-        // main.xml of the effect: Duration 450, OpenCube true, Pullback 0.6, Tilt 0, OverviewGesture true
-        assert_eq!(Cube::default(), Cube { duration: 450, open_cube: true, pullback: 0.6, tilt: 0.0, overview_gesture: true });
+        // main.xml of the effect: Duration 450, OpenCube true, Pullback 0.6, Tilt 0, OverviewGesture true, TrayAnimation true, TrayTime 350
+        assert_eq!(Cube::default(), Cube { duration: 450, open_cube: true, pullback: 0.6, tilt: 0.0, overview_gesture: true, tray_animation: true, tray_time: 350 });
     }
 
     #[test]
     fn the_effect_package_in_this_repo_declares_every_option_used_here() {
         let xml = include_str!("../../data/cube-effect/contents/config/main.xml");
-        for key in ["Duration", "OpenCube", "Pullback", "Tilt", "OverviewGesture"] {
+        for key in ["Duration", "OpenCube", "Pullback", "Tilt", "OverviewGesture", "TrayAnimation", "TrayTime"] {
             assert!(xml.contains(&format!("name=\"{key}\"")), "main.xml lacks {key}");
         }
     }
@@ -147,13 +156,13 @@ mod live {
     #[ignore]
     fn live_cube_options_round_trip_through_kwinrc() {
         let before = read();
-        let want = Cube { duration: 700, open_cube: false, pullback: 0.9, tilt: 12.0, overview_gesture: false };
+        let want = Cube { duration: 700, open_cube: false, pullback: 0.9, tilt: 12.0, overview_gesture: false, tray_animation: false, tray_time: 800 };
         write(want);
         let got = read();
         println!("wrote {want:?}, read {got:?}");
         assert_eq!(got, want);
         // put everything back: delete the keys we may have created
-        for k in ["Duration", "OpenCube", "Pullback", "Tilt", "OverviewGesture"] {
+        for k in ["Duration", "OpenCube", "Pullback", "Tilt", "OverviewGesture", "TrayAnimation", "TrayTime"] {
             kconfig::delete_notify("kwinrc", &GROUP, k);
         }
         assert_eq!(read(), Cube::default());

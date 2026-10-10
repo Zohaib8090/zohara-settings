@@ -980,6 +980,12 @@ fn cube_rows() -> Vec<gtk4::Widget> {
     let gesture = adw::SwitchRow::new();
     gesture.set_title("4 fingers up opens the cube");
     gesture.set_subtitle("Off: leave that swipe to KWin's own Overview (windows and desktops). Meta+C always opens the cube");
+    let tray_anim = adw::SwitchRow::new();
+    tray_anim.set_title("Slide the desktop bar and window tray");
+    tray_anim.set_subtitle("In the cube overview the desktop bar glides down and the window tray glides up. Off: they appear at once");
+    let tray_time = adw::SpinRow::with_range(cube::TRAY_TIME.0 as f64, cube::TRAY_TIME.1 as f64, 50.0);
+    tray_time.set_title("Slide time");
+    tray_time.set_subtitle("How long that glide takes, in milliseconds");
     let note = adw::ActionRow::new();
     note.set_title("Changes apply right away");
     note.set_subtitle("After a Zohara update, log out and in once to get the newest cube.");
@@ -987,6 +993,7 @@ fn cube_rows() -> Vec<gtk4::Widget> {
 
     let options: Vec<gtk4::Widget> = vec![
         turn.clone().upcast(), gap.clone().upcast(), pull.clone().upcast(), tilt.clone().upcast(), gesture.clone().upcast(),
+        tray_anim.clone().upcast(), tray_time.clone().upcast(),
     ];
     for o in &options {
         o.set_sensitive(false);
@@ -1030,6 +1037,18 @@ fn cube_rows() -> Vec<gtk4::Widget> {
         tilt.connect_value_notify(move |r| { state.borrow_mut().tilt = r.value(); save(); });
     }
     {
+        let (state, save, tray_time) = (state.clone(), save.clone(), tray_time.clone());
+        tray_anim.connect_active_notify(move |r| {
+            state.borrow_mut().tray_animation = r.is_active();
+            tray_time.set_sensitive(r.is_active());
+            save();
+        });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        tray_time.connect_value_notify(move |r| { state.borrow_mut().tray_time = r.value() as u32; save(); });
+    }
+    {
         let (state, ready, on) = (state.clone(), ready.clone(), on.clone());
         gesture.connect_active_notify(move |r| {
             if !ready.get() {
@@ -1041,11 +1060,12 @@ fn cube_rows() -> Vec<gtk4::Widget> {
         });
     }
     {
-        let (state, ready, options, note) = (state.clone(), ready.clone(), options.clone(), note.clone());
+        let (state, ready, options, note, tray_anim, tray_time) = (state.clone(), ready.clone(), options.clone(), note.clone(), tray_anim.clone(), tray_time.clone());
         on.connect_active_notify(move |r| {
             for o in &options {
                 o.set_sensitive(r.is_active());
             }
+            tray_time.set_sensitive(r.is_active() && tray_anim.is_active());
             if !ready.get() {
                 return;
             }
@@ -1061,6 +1081,7 @@ fn cube_rows() -> Vec<gtk4::Widget> {
     if installed {
         let (state, ready) = (state.clone(), ready.clone());
         let (on, turn, gap, pull, tilt, gesture) = (on.clone(), turn.clone(), gap.clone(), pull.clone(), tilt.clone(), gesture.clone());
+        let (tray_anim, tray_time) = (tray_anim.clone(), tray_time.clone());
         crate::backend::worker::in_background(
             || (cube::read(), cube::is_on()),
             move |(c, is_on)| {
@@ -1070,7 +1091,10 @@ fn cube_rows() -> Vec<gtk4::Widget> {
                 pull.set_value(c.pullback);
                 tilt.set_value(c.tilt);
                 gesture.set_active(c.overview_gesture);
+                tray_time.set_value(c.tray_time as f64);
+                tray_anim.set_active(c.tray_animation);
                 on.set_active(is_on);
+                tray_time.set_sensitive(is_on && c.tray_animation);
                 ready.set(true);
             },
         );

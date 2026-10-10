@@ -14,7 +14,14 @@ Item {
     required property QtObject targetScreen
     // The layer follows the cube's own zoom-out (effect.amount, 0 closed .. 1 open, which also follows your fingers on a 4 finger
     // swipe): the desktop bar glides down from the top and the tray up from the bottom, fading in a little after the cube starts.
-    readonly property real p: Math.max(0, Math.min(1, (effect.amount - 0.08) / 0.92))
+    // Settings: "Slide the window tray" (TrayAnimation) and its time (TrayTime, milliseconds). Off: the bar and tray just appear.
+    readonly property bool animateTray: effect.configuration.TrayAnimation !== false
+    readonly property int trayTime: Math.max(100, effect.configuration.TrayTime || 350)
+    property real p: effect.overview ? 1 : 0
+    Behavior on p {
+        enabled: windowLayer.animateTray
+        NumberAnimation { duration: windowLayer.trayTime; easing.type: Easing.OutCubic }
+    }
     readonly property bool trayShown: effect.amount > 0.02
 
     // an application window: not a panel, the wallpaper, a popup or a dialog

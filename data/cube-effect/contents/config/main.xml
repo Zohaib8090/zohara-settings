@@ -29,5 +29,13 @@
         <entry name="OverviewGesture" type="Bool">
             <default>true</default>
         </entry>
+        <!-- true: the desktop bar and window tray glide in and out of the overview; false: they appear at once -->
+        <entry name="TrayAnimation" type="Bool">
+            <default>true</default>
+        </entry>
+        <!-- how long that glide takes (milliseconds) -->
+        <entry name="TrayTime" type="Int">
+            <default>350</default>
+        </entry>
     </group>
 </kcfg>

@@ -36,6 +36,8 @@ KWinComponents.SceneEffect {
     // extra tilt in degrees from dragging up and down with the mouse
     property real userTilt: 0
     readonly property real maxTilt: 50
+    property QtObject selected: null
+    property string appFilter: ""
 
     // the desktop whose face is number `i`
     function desktopAt(i) {
@@ -117,6 +119,7 @@ KWinComponents.SceneEffect {
 
     function closeOverview() {
         if (!overview && amount === 0) return;
+        clearSelection();
         overview = false;
         // the whole cube was turned round: bring the turn back into one lap so it ends on a real desktop
         const n = desktopCount;
@@ -130,6 +133,92 @@ KWinComponents.SceneEffect {
 
     function toggleOverview() {
         if (overview) closeOverview(); else openOverview();
+    }
+
+    // ── the overview's window layer ──
+    function nearestEquivalent(index) {
+        // the overview cube is a whole prism: the same face comes round every lap, take the nearest one
+        const n = desktopCount;
+        return index + n * Math.round((pos - index) / n);
+    }
+
+    function selectDesktop(d) {
+        selected = d;
+        appFilter = "";
+        glide.stop();
+        glide.from = pos;
+        glide.to = nearestEquivalent(indexOf(d));
+        glide.duration = Math.max(150, Math.min(effect.duration, effect.duration * Math.max(0.35, Math.abs(glide.to - glide.from))));
+        glide.restart();
+    }
+
+    function clearSelection() {
+        selected = null;
+        appFilter = "";
+    }
+
+    function toggleAppFilter(app) {
+        appFilter = appFilter === app ? "" : app;
+    }
+
+    // a click on a face: first click picks the desktop (its windows show), the same face again goes there
+    function faceClicked(d) {
+        if (selected !== null && selected.id === d.id) {
+            pick(d);
+        } else {
+            selectDesktop(d);
+        }
+    }
+
+    // a click on nothing: close what is open, one layer at a time
+    function emptyClicked() {
+        if (appFilter !== "" || selected !== null) clearSelection(); else closeOverview();
+    }
+
+    function handleEscape() {
+        emptyClicked();
+    }
+
+    function handleEnter() {
+        pick(selected !== null ? selected : desktopAt(Math.round(pos)));
+    }
+
+    // an application window the tray may move: never a panel, the wallpaper, a popup or a dialog
+    function movable(w) {
+        return w && w.normalWindow && !w.dock && !w.desktopWindow && !w.dialog && !w.transient && !w.skipTaskbar;
+    }
+
+    function moveWindowTo(w, d) {
+        if (!movable(w) || !d) return;
+        w.desktops = [d];
+        // the tray follows by itself: it lists what is on the picked desktop
+    }
+
+    // an empty new desktop (the "+ New desktop" button), picked at once so you can drop windows on it
+    function newDesktop() {
+        const ws = KWinComponents.Workspace;
+        if (ws.desktops.length >= 20) return;
+        ws.createDesktop(ws.desktops.length, "Desktop " + (ws.desktops.length + 1));
+        const d = ws.desktops[ws.desktops.length - 1];
+        if (d) selectDesktop(d);
+    }
+
+    function moveWindowToNew(w) {
+        if (!movable(w)) return;
+        const ws = KWinComponents.Workspace;
+        if (ws.desktops.length >= 20) return;
+        ws.createDesktop(ws.desktops.length, "Desktop " + (ws.desktops.length + 1));
+        const d = ws.desktops[ws.desktops.length - 1];
+        if (d) w.desktops = [d];
+    }
+
+    // go straight to a window: its desktop, and focus it
+    function goToWindow(w) {
+        if (!movable(w)) return;
+        if (w.desktops.length > 0) KWinComponents.Workspace.currentDesktop = w.desktops[0];
+        KWinComponents.Workspace.activeWindow = w;
+        clearSelection();
+        closeOverview();
     }
 
     // choose a desktop in the overview and leave

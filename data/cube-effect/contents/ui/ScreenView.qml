@@ -147,17 +147,22 @@ Item {
             } else {
                 const hit = view.pick(m.x, m.y);
                 if (hit.objectHit && hit.objectHit.desktop) {
-                    effect.pick(hit.objectHit.desktop);
+                    effect.faceClicked(hit.objectHit.desktop);
                 } else {
-                    effect.closeOverview();
+                    effect.emptyClicked();
                 }
             }
         }
     }
 
-    Keys.onEscapePressed: effect.closeOverview()
+    WindowTray {
+        anchors.fill: parent
+        targetScreen: root.targetScreen
+    }
+
+    Keys.onEscapePressed: effect.handleEscape()
     Keys.onLeftPressed: effect.snapNearest(-1)
     Keys.onRightPressed: effect.snapNearest(1)
-    Keys.onReturnPressed: effect.pick(effect.desktopAt(Math.round(effect.pos)))
-    Keys.onEnterPressed: effect.pick(effect.desktopAt(Math.round(effect.pos)))
+    Keys.onReturnPressed: effect.handleEnter()
+    Keys.onEnterPressed: effect.handleEnter()
 }

@@ -114,8 +114,9 @@ var found = 0;
 panels().forEach(function (p) {{
   p.widgets().forEach(function (w) {{
     if (w.type != "org.kde.plasma.systemtray") return;
-    var c = desktopById(w.readConfig("SystrayContainmentId"));
-    if (!c) return;
+    // Older Plasma keeps the tray's lists in a containment named by SystrayContainmentId; Plasma 6.7 keeps them in the
+    // tray applet's own [General] group.
+    var c = desktopById(w.readConfig("SystrayContainmentId")) || w;
     c.currentConfigGroup = ["General"];
     var cur = String(c.readConfig("hiddenItems") || "").split(",").filter(function (s) {{ return s.length > 0; }});
     var next = cur.filter(function (s) {{ return want.indexOf(s) < 0; }});
@@ -136,7 +137,8 @@ pub fn set_plasma_indicators_hidden(hide: bool) -> bool {
         .arg(format!("string:{}", plasma_script(hide)))
         .output();
     match out {
-        Ok(o) if o.status.success() => true,
+        // the script's last value is the number of system trays it changed: none means it found nothing to hide
+        Ok(o) if o.status.success() => tray_found(&String::from_utf8_lossy(&o.stdout)),
         Ok(o) => {
             log::warn!("privacy indicator: plasmashell refused the script: {}", String::from_utf8_lossy(&o.stderr).trim());
             false
@@ -145,6 +147,15 @@ pub fn set_plasma_indicators_hidden(hide: bool) -> bool {
             log::warn!("privacy indicator: couldn't reach plasmashell: {e}");
             false
         }
+    }
+}
+
+/// `method return ... variant int32 1` -> at least one tray was found. An answer without a number counts as found
+/// (older Plasma printed nothing).
+pub fn tray_found(reply: &str) -> bool {
+    match reply.split_whitespace().rev().find_map(|w| w.parse::<i64>().ok()) {
+        Some(n) => n > 0,
+        None => true,
     }
 }
 
@@ -614,6 +625,13 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn a_reply_that_found_no_tray_is_not_success() {
+        assert!(tray_found("method return time=1 sender=:1.2 -> destination=:1.3 serial=4 reply_serial=2\n   variant       int32 1\n"));
+        assert!(!tray_found("method return time=1\n   variant       int32 0\n"));
+        assert!(tray_found("method return time=1\n"));
+    }
+
+    #[test]
     fn config_defaults_and_overrides() {
         assert_eq!(parse_config(""), Config::default());
         let c = parse_config("[Other]\nCamera=false\n[Indicators]\nMicrophone=false\nEnabled=true\n");
@@ -678,5 +696,26 @@ mod tests {
     fn tooltips() {
         assert_eq!(tooltip_text("camera", &["Zoom".into(), "OBS".into()]), "Using your camera: Zoom, OBS");
         assert_eq!(tooltip_text("location", &[]), "Something is using your location");
+    }
+}
+
+#[cfg(test)]
+mod live_hide {
+    use super::*;
+
+    /// Hides Plasma's own camera and microphone tray icons on the real desktop (the product default) and reads the tray's
+    /// list back from the running shell.
+    #[test]
+    #[ignore]
+    fn live_plasma_indicators_are_hidden_in_the_real_tray() {
+        assert!(set_plasma_indicators_hidden(true), "the tray was not found or the change was refused");
+        let out = Command::new("qdbus6")
+            .args(["org.kde.plasmashell", "/PlasmaShell", "org.kde.PlasmaShell.evaluateScript"])
+            .arg(r#"var o = []; panels().forEach(function (p) { p.widgets().forEach(function (w) { if (w.type != "org.kde.plasma.systemtray") return; w.currentConfigGroup = ["General"]; o.push(w.readConfig("hiddenItems")); }); }); print(o.join("|"))"#)
+            .output()
+            .unwrap();
+        let hidden = String::from_utf8_lossy(&out.stdout).to_string();
+        println!("hiddenItems now: {hidden}");
+        assert!(hidden.contains("microphone") && hidden.contains("org.kde.plasma.cameraindicator"));
     }
 }

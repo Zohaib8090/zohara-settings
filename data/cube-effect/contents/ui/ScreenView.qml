@@ -162,16 +162,19 @@ Item {
         enabled: effect.overview
         acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
         onWheel: ev => {
-            const touch = ev.pixelDelta.x !== 0 || ev.pixelDelta.y !== 0;
-            if (touch) {
-                const d = Math.abs(ev.pixelDelta.x) > Math.abs(ev.pixelDelta.y) ? ev.pixelDelta.x : ev.pixelDelta.y;
-                glide.stop();
-                effect.pos = effect.pos - d / (root.faceW * 0.55);
-                settleTimer.restart();
-            } else {
-                const d = Math.abs(ev.angleDelta.x) > Math.abs(ev.angleDelta.y) ? ev.angleDelta.x : ev.angleDelta.y;
-                if (d !== 0) effect.snapNearest(d > 0 ? -1 : 1);
+            // a wheel notch is 120 units; a touchpad sends many small steps (and some drivers fill pixelDelta instead)
+            const px = Math.abs(ev.pixelDelta.x) > Math.abs(ev.pixelDelta.y) ? ev.pixelDelta.x : ev.pixelDelta.y;
+            const an = Math.abs(ev.angleDelta.x) > Math.abs(ev.angleDelta.y) ? ev.angleDelta.x : ev.angleDelta.y;
+            if (px === 0 && Math.abs(an) >= 120) {
+                effect.snapNearest(an > 0 ? -1 : 1);
+                return;
             }
+            // smooth: your fingers turn the cube (about 240 units for one desktop), it settles when they stop
+            const step = px !== 0 ? -px / (root.faceW * 0.55) : -an / 240;
+            if (step === 0) return;
+            glide.stop();
+            effect.pos = effect.pos + step;
+            settleTimer.restart();
         }
     }
     Timer {

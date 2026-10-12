@@ -754,9 +754,9 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
     let accounts = load_accounts();
     let session_row = adw::ComboRow::new();
     session_row.set_title("Sign in with");
-    let mut session_labels = vec!["Only this app (separate)".to_string()];
+    let mut session_labels = vec!["Separate".to_string()];
     session_labels.extend(accounts.iter().map(|a| a.name.clone()));
-    session_labels.push("Ask every time".to_string());
+    session_labels.push("Ask each time".to_string());
     let session_refs: Vec<&str> = session_labels.iter().map(String::as_str).collect();
     session_row.set_model(Some(&gtk4::StringList::new(&session_refs)));
     session_row.set_selected(match parse_session(&app.borrow().session) {
@@ -808,11 +808,11 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
             let sel = session_row.selected();
             let own = sel == 0;
             session_row.set_subtitle(if own {
-                "This app keeps its own sign-ins, separate from every other app"
+                "This app keeps its own sign-ins"
             } else if sel == n_accounts + 1 {
-                "Asks who is using it each time it opens: an account, or a guest whose sign-ins are not kept"
+                "Asks who is using it, or a guest, each time it opens"
             } else {
-                "Apps using the same account are signed in together. Add accounts from the list behind this window"
+                "Apps on the same account are signed in together"
             });
             if !own {
                 minimized.set_active(false);
@@ -822,7 +822,7 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
             perms.set_description(Some(if own {
                 "What this site may use. Close the app before changing these."
             } else {
-                "Permissions can only be set for an app with its own sign-ins. Pick \"Only this app\" above to change them."
+                "Permissions can only be set for an app with its own sign-ins. Pick \"Separate\" above to change them."
             }));
         }
     };
@@ -944,6 +944,13 @@ pub fn chooser(app_id: &str) -> i32 {
     let gtk_app = adw::Application::builder().application_id("os.zohara.WebAppChooser").build();
     let guest_for_ui = guest_dir.clone();
     gtk_app.connect_activate(move |gtk_app| {
+        // The same look as the Settings window (its font, colours and the person's accent choice).
+        let css = gtk4::CssProvider::new();
+        css.load_from_string(crate::WIN11_CSS);
+        if let Some(display) = gtk4::gdk::Display::default() {
+            gtk4::style_context_add_provider_for_display(&display, &css, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
+            crate::theme::apply(&display);
+        }
         let win = adw::ApplicationWindow::builder().application(gtk_app).default_width(420).title(&webapp.name).build();
         let header = adw::HeaderBar::new();
         let page = adw::PreferencesPage::new();

@@ -106,6 +106,32 @@ pub fn profile_path(data_home: &Path, home: &Path, browser: &str, flatpak: bool,
     }
 }
 
+/// Moves a web app's own profile (its sign-ins) to where an account keeps it, so an app that already had sign-ins can
+/// become an account other apps can use. Refuses to overwrite a profile that is already there.
+pub fn adopt_profile(from: &Path, to: &Path) -> Result<(), String> {
+    if to.exists() && std::fs::read_dir(to).map(|mut d| d.next().is_some()).unwrap_or(false) {
+        return Err("That account already has sign-ins for this browser.".into());
+    }
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    if !from.exists() {
+        // The app was never opened: nothing to move, the account starts empty.
+        return std::fs::create_dir_all(to).map_err(|e| e.to_string());
+    }
+    let _ = std::fs::remove_dir(to);
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    // A different disk: copy, then remove the original only if the copy worked.
+    let ok = std::process::Command::new("cp").arg("-a").arg(from).arg(to).status().map(|s| s.success()).unwrap_or(false);
+    if !ok {
+        let _ = std::fs::remove_dir_all(to);
+        return Err("Could not move the sign-ins.".into());
+    }
+    std::fs::remove_dir_all(from).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +195,29 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(a, PathBuf::from("/d/zohara-webapps/.accounts/work/brave/profile"));
         assert_eq!(profile_path(d, h, "com.google.Chrome", true, "work"), PathBuf::from("/h/.var/app/com.google.Chrome/data/zohara-webapps/accounts/work/profile"));
+    }
+
+    #[test]
+    fn an_apps_sign_ins_move_into_an_account_and_nothing_is_overwritten() {
+        let root = std::env::temp_dir().join(format!("zohara-adopt-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let from = root.join("app/profile");
+        std::fs::create_dir_all(from.join("Default")).unwrap();
+        std::fs::write(from.join("Default/Cookies"), "login").unwrap();
+        let to = root.join(".accounts/work/brave/profile");
+        adopt_profile(&from, &to).unwrap();
+        assert!(!from.exists());
+        assert_eq!(std::fs::read_to_string(to.join("Default/Cookies")).unwrap(), "login");
+        // Another move into the same place is refused and keeps what is there.
+        let again = root.join("other/profile");
+        std::fs::create_dir_all(&again).unwrap();
+        assert!(adopt_profile(&again, &to).is_err());
+        assert!(again.exists());
+        assert_eq!(std::fs::read_to_string(to.join("Default/Cookies")).unwrap(), "login");
+        // An app that was never opened gives an empty account.
+        let fresh = root.join(".accounts/home/brave/profile");
+        adopt_profile(&root.join("never/profile"), &fresh).unwrap();
+        assert!(fresh.is_dir());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

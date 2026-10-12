@@ -779,6 +779,40 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
     minimized.set_sensitive(app.borrow().startup);
     behaviour.add(&browser_row);
     behaviour.add(&session_row);
+    // An app that already has its own sign-ins can hand them over to a new account, so other apps can share them.
+    let keep_row = adw::ActionRow::new();
+    keep_row.set_title("Keep these sign-ins as an account");
+    keep_row.set_subtitle("Moves what this app is already signed in to into an account that other apps can use too");
+    let keep_btn = gtk4::Button::with_label("Create account");
+    keep_btn.set_valign(gtk4::Align::Center);
+    keep_row.add_suffix(&keep_btn);
+    let can_adopt = !is_new && parse_session(&app.borrow().session) == Session::Own;
+    keep_row.set_visible(can_adopt);
+    behaviour.add(&keep_row);
+    {
+        let (app, win, on_saved) = (app.clone(), win.clone(), on_saved.clone());
+        keep_btn.connect_clicked(move |_| {
+            let (app, win2, on_saved) = (app.borrow().clone(), win.clone(), on_saved.clone());
+            if is_running(&app) {
+                message(&win, "Close the app first", &format!("{} is open. Close it, then try again.", app.name));
+                return;
+            }
+            let start_name = app.name.clone();
+            ask_name(win.upcast_ref(), "New account", "The sign-ins this app already has move into it.", &start_name, "Create", move |name| {
+                let (app, win3, on_saved) = (app.clone(), win2.clone(), on_saved.clone());
+                in_background(
+                    move || adopt_into_account(&app, &name),
+                    move |res| match res {
+                        Ok(()) => {
+                            on_saved();
+                            win3.close();
+                        }
+                        Err(e) => message(&win3, "Could not create the account", &e),
+                    },
+                );
+            });
+        });
+    }
     behaviour.add(&mode);
     behaviour.add(&startup);
     behaviour.add(&minimized);
@@ -804,6 +838,7 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
     // Only a separate profile has its own permissions and can start in the background; say so instead of hiding them.
     let sync_session = {
         let (session_row, minimized, startup, perms) = (session_row.clone(), minimized.clone(), startup.clone(), perms.clone());
+        let keep_row_sync = keep_row.clone();
         move || {
             let sel = session_row.selected();
             let own = sel == 0;
@@ -817,6 +852,7 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
             if !own {
                 minimized.set_active(false);
             }
+            keep_row_sync.set_visible(can_adopt && own);
             minimized.set_sensitive(own && startup.is_active());
             perms.set_sensitive(own);
             perms.set_description(Some(if own {
@@ -909,6 +945,25 @@ fn delete_account(id: &str) {
     }
     let rest: Vec<Account> = load_accounts().into_iter().filter(|a| a.id != id).collect();
     let _ = web_accounts::save(&accounts_file(), &rest);
+}
+
+/// Turns the sign-ins an app already has into a new account, and moves the app onto it. The app must be closed.
+fn adopt_into_account(app: &WebApp, name: &str) -> Result<(), String> {
+    if parse_session(&app.session) != Session::Own {
+        return Err("This app already uses an account.".into());
+    }
+    if is_running(app) {
+        return Err(format!("{} is open. Close it first, then try again.", app.name));
+    }
+    let bin = browser_for(&app.browser)?;
+    let mut all = load_accounts();
+    let id = web_accounts::new_id(name, &all);
+    web_accounts::adopt_profile(&own_profile_dir(app), &account_profile(bin, &id))?;
+    all.push(Account { id: id.clone(), name: name.to_string() });
+    web_accounts::save(&accounts_file(), &all)?;
+    let mut moved = app.clone();
+    moved.session = session_string(&Session::Account(id));
+    save(&moved)
 }
 
 /// Asks for a name, then calls `done` with it.
@@ -1077,7 +1132,7 @@ pub fn open(parent: &gtk4::Widget) {
             if accounts.is_empty() {
                 let r = adw::ActionRow::new();
                 r.set_title("No accounts yet");
-                r.set_subtitle("Select Add account, then pick it in a web app's settings under Sign in with");
+                r.set_subtitle("Your existing apps keep their own sign-ins. Add an account here, or open an app's settings and choose Keep these sign-ins as an account");
                 accounts_group.add(&r);
                 account_rows.borrow_mut().push(r.upcast());
             }

@@ -7,6 +7,7 @@
 //! permissions written into that profile's Preferences.
 
 use crate::backend::kconfig;
+use crate::backend::web_accounts::{self, parse_session, session_string, Account, Session};
 use crate::backend::worker::in_background;
 use adw::prelude::*;
 use gtk4::prelude::*;
@@ -53,9 +54,25 @@ fn command_for(id: &str) -> String {
     }
 }
 
+/// The browser profile this app signs in with: its own, or the shared account's.
+fn profile_dir(app: &WebApp) -> PathBuf {
+    if let Session::Account(id) = parse_session(&app.session) {
+        if let Ok(b) = browser_for(&app.browser) {
+            return account_profile(b, &id);
+        }
+    }
+    own_profile_dir(app)
+}
+
+/// Where a shared account keeps this browser's profile.
+fn account_profile(browser_id: &str, account_id: &str) -> PathBuf {
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    web_accounts::profile_path(&data_home(), &home, browser_id, is_flatpak(browser_id), account_id)
+}
+
 /// The browser's own profile folder for this app. A Flatpak browser can only write inside its own folder under
 /// `~/.var/app`, so its profile lives there; the others keep it with the app.
-fn profile_dir(app: &WebApp) -> PathBuf {
+fn own_profile_dir(app: &WebApp) -> PathBuf {
     match browser_for(&app.browser) {
         Ok(id) if is_flatpak(id) => {
             PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".var/app").join(id).join("data/zohara-webapps").join(&app.id).join("profile")
@@ -87,6 +104,9 @@ struct WebApp {
     /// command of the browser this app opens in ("" = automatic: the first installed one)
     #[serde(default)]
     browser: String,
+    /// "" = this app's own sign-ins, "account:<id>" = a shared account, "ask" = ask who is using it every time
+    #[serde(default)]
+    session: String,
 }
 
 fn data_home() -> PathBuf {
@@ -107,6 +127,18 @@ fn apps_dir() -> PathBuf {
 
 fn app_dir(id: &str) -> PathBuf {
     apps_dir().join(id)
+}
+
+fn accounts_file() -> PathBuf {
+    apps_dir().join(".accounts/accounts.json")
+}
+
+fn load_accounts() -> Vec<Account> {
+    web_accounts::load(&accounts_file())
+}
+
+fn account_name(id: &str) -> String {
+    load_accounts().into_iter().find(|a| a.id == id).map(|a| a.name).unwrap_or_else(|| "a removed account".into())
 }
 
 fn desktop_file(id: &str) -> PathBuf {
@@ -207,16 +239,23 @@ fn exec_quote(s: &str) -> String {
 }
 
 fn exec_line(app: &WebApp, bin: &str, background: bool) -> String {
+    let session = parse_session(&app.session);
+    if session == Session::Ask {
+        // The chooser asks who is using it, then starts the browser with that account.
+        return format!("zohara-settings --webapp {}", app.id);
+    }
     let profile = profile_dir(app);
-    let class = if background { format!("zohara-webapp-{}-bg", app.id) } else { format!("zohara-webapp-{}", app.id) };
     let mut parts = vec![
         bin.to_string(),
         format!("--app={}", exec_quote(&app.url)),
         format!("--user-data-dir={}", exec_quote(&profile.to_string_lossy())),
-        format!("--class={class}"),
-        "--no-first-run".into(),
-        "--no-default-browser-check".into(),
     ];
+    // Apps sharing an account share one browser process, which names each window from its address, so only a separate
+    // profile can have its own window class (the sign-in launch needs it for the start-in-the-background rule).
+    if session == Session::Own {
+        parts.push(format!("--class={}", if background { format!("zohara-webapp-{}-bg", app.id) } else { format!("zohara-webapp-{}", app.id) }));
+    }
+    parts.extend(["--no-first-run".to_string(), "--no-default-browser-check".to_string()]);
     match app.mode {
         1 => parts.push("--start-maximized".into()),
         2 => parts.push("--start-fullscreen".into()),
@@ -229,12 +268,12 @@ fn desktop_entry(app: &WebApp, bin: &str, background: bool) -> String {
     let icon = if app.icon.is_empty() { "applications-internet".to_string() } else { app.icon.clone() };
     let clean = |s: &str| s.replace(['\n', '\r'], " ");
     format!(
-        "[Desktop Entry]\nType=Application\nName={}\nComment=Web app for {}\nExec={}\nIcon={}\nTerminal=false\nCategories=Network;\nStartupWMClass=zohara-webapp-{}\nX-Zohara-WebApp={}\n",
+        "[Desktop Entry]\nType=Application\nName={}\nComment=Web app for {}\nExec={}\nIcon={}\nTerminal=false\nCategories=Network;\nStartupWMClass={}\nX-Zohara-WebApp={}\n",
         clean(&app.name),
         clean(&app.url),
         exec_line(app, bin, background),
         clean(&icon),
-        app.id,
+        if parse_session(&app.session) == Session::Own { format!("zohara-webapp-{}", app.id) } else { web_accounts::app_window_class(&app.url) },
         app.id
     )
 }
@@ -299,9 +338,16 @@ fn save(app: &WebApp) -> Result<(), String> {
             app.icon = dest.to_string_lossy().to_string();
         }
     }
+    // Only a separate profile can have its own window class (needed to start in the background) and its own permissions.
+    let own = parse_session(&app.session) == Session::Own;
+    if !own {
+        app.start_minimized = false;
+    }
     let app = &app;
     std::fs::write(dir.join("app.json"), serde_json::to_string_pretty(app).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    write_permissions(app).map_err(|e| e.to_string())?;
+    if own {
+        write_permissions(app).map_err(|e| e.to_string())?;
+    }
     let df = desktop_file(&app.id);
     std::fs::create_dir_all(df.parent().unwrap()).map_err(|e| e.to_string())?;
     std::fs::write(&df, desktop_entry(app, &command_for(bin), false)).map_err(|e| e.to_string())?;
@@ -321,12 +367,31 @@ fn remove(app: &WebApp) {
     set_background_rule(app, false);
     let _ = std::fs::remove_file(desktop_file(&app.id));
     let _ = std::fs::remove_file(autostart_file(&app.id));
-    let _ = std::fs::remove_dir_all(profile_dir(app));
+    // A shared account keeps its sign-ins when one app using it goes away; only this app's own profile is deleted.
+    let _ = std::fs::remove_dir_all(own_profile_dir(app));
     let _ = std::fs::remove_dir_all(app_dir(&app.id));
 }
 
 fn launch(app: &WebApp) {
     let _ = Command::new("gtk-launch").arg(format!("zohara-webapp-{}", app.id)).spawn();
+}
+
+/// Starts the browser for this app with the given profile (used after the chooser, which cannot go through the launcher).
+fn start_with_profile(app: &WebApp, profile: &std::path::Path) -> Result<std::process::Child, String> {
+    let bin = browser_for(&app.browser)?;
+    let mut args = vec![
+        format!("--app={}", app.url),
+        format!("--user-data-dir={}", profile.to_string_lossy()),
+        "--no-first-run".to_string(),
+        "--no-default-browser-check".to_string(),
+    ];
+    match app.mode {
+        1 => args.push("--start-maximized".into()),
+        2 => args.push("--start-fullscreen".into()),
+        _ => {}
+    }
+    std::fs::create_dir_all(profile).map_err(|e| e.to_string())?;
+    Command::new(command_for(bin)).args(args).spawn().map_err(|e| format!("Could not start the browser: {e}"))
 }
 
 fn is_running(app: &WebApp) -> bool {
@@ -685,6 +750,21 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
     if browsers.len() < 2 {
         browser_row.set_subtitle("Install another Chromium-based browser from Zohara Store to choose between them");
     }
+    // Which sign-ins this app uses: its own, a shared account, or ask every time.
+    let accounts = load_accounts();
+    let session_row = adw::ComboRow::new();
+    session_row.set_title("Sign in with");
+    let mut session_labels = vec!["Only this app (separate)".to_string()];
+    session_labels.extend(accounts.iter().map(|a| a.name.clone()));
+    session_labels.push("Ask every time".to_string());
+    let session_refs: Vec<&str> = session_labels.iter().map(String::as_str).collect();
+    session_row.set_model(Some(&gtk4::StringList::new(&session_refs)));
+    session_row.set_selected(match parse_session(&app.borrow().session) {
+        Session::Own => 0,
+        Session::Account(id) => accounts.iter().position(|a| a.id == id).map(|i| i as u32 + 1).unwrap_or(0),
+        Session::Ask => accounts.len() as u32 + 1,
+    });
+    let n_accounts = accounts.len() as u32;
     let mode = adw::ComboRow::new();
     mode.set_title("Open as");
     mode.set_model(Some(&gtk4::StringList::new(&MODES)));
@@ -697,11 +777,8 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
     minimized.set_subtitle("Opens minimized at sign-in, so notifications keep working without a window in your way");
     minimized.set_active(app.borrow().start_minimized);
     minimized.set_sensitive(app.borrow().startup);
-    {
-        let minimized = minimized.clone();
-        startup.connect_active_notify(move |s| minimized.set_sensitive(s.is_active()));
-    }
     behaviour.add(&browser_row);
+    behaviour.add(&session_row);
     behaviour.add(&mode);
     behaviour.add(&startup);
     behaviour.add(&minimized);
@@ -724,6 +801,41 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
         .collect();
     page.add(&perms);
 
+    // Only a separate profile has its own permissions and can start in the background; say so instead of hiding them.
+    let sync_session = {
+        let (session_row, minimized, startup, perms) = (session_row.clone(), minimized.clone(), startup.clone(), perms.clone());
+        move || {
+            let sel = session_row.selected();
+            let own = sel == 0;
+            session_row.set_subtitle(if own {
+                "This app keeps its own sign-ins, separate from every other app"
+            } else if sel == n_accounts + 1 {
+                "Asks who is using it each time it opens: an account, or a guest whose sign-ins are not kept"
+            } else {
+                "Apps using the same account are signed in together. Add accounts from the list behind this window"
+            });
+            if !own {
+                minimized.set_active(false);
+            }
+            minimized.set_sensitive(own && startup.is_active());
+            perms.set_sensitive(own);
+            perms.set_description(Some(if own {
+                "What this site may use. Close the app before changing these."
+            } else {
+                "Permissions can only be set for an app with its own sign-ins. Pick \"Only this app\" above to change them."
+            }));
+        }
+    };
+    sync_session();
+    {
+        let sync = sync_session.clone();
+        session_row.connect_selected_notify(move |_| sync());
+    }
+    {
+        let (minimized, session_row) = (minimized.clone(), session_row.clone());
+        startup.connect_active_notify(move |s| minimized.set_sensitive(s.is_active() && session_row.selected() == 0));
+    }
+
     let view = adw::ToolbarView::new();
     view.add_top_bar(&header);
     view.set_content(Some(&page));
@@ -741,7 +853,7 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
             let mut a = app.borrow().clone();
             if is_new {
                 a.id = slug(if name_text.is_empty() { &url_text } else { &name_text });
-            } else if is_running(&a) {
+            } else if parse_session(&a.session) == Session::Own && is_running(&a) {
                 message(&win2, "Close the app first", &format!("{} is open. Close it, then save your changes.", a.name));
                 return;
             }
@@ -752,6 +864,11 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
                 0 => String::new(),
                 n => installed_browsers().get(n as usize - 1).map(|b| b.0.to_string()).unwrap_or_default(),
             };
+            a.session = session_string(&match session_row.selected() {
+                0 => Session::Own,
+                n if n == n_accounts + 1 => Session::Ask,
+                n => accounts.get(n as usize - 1).map(|a| Session::Account(a.id.clone())).unwrap_or(Session::Own),
+            });
             a.startup = startup.is_active();
             a.start_minimized = minimized.is_active();
             a.perms = perm_rows.iter().map(|r| r.selected()).collect();
@@ -775,6 +892,135 @@ fn editor(parent: &gtk4::Window, existing: Option<WebApp>, on_saved: std::rc::Rc
     win.present();
 }
 
+// ── Accounts ───────────────────────────────────────────────────────────────
+
+/// Deletes an account and its saved sign-ins. Apps that used it go back to their own separate sign-ins.
+fn delete_account(id: &str) {
+    for mut app in load_all() {
+        if parse_session(&app.session) == Session::Account(id.to_string()) {
+            app.session = String::new();
+            let _ = save(&app);
+        }
+    }
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let _ = std::fs::remove_dir_all(apps_dir().join(".accounts").join(id));
+    for (b, _) in BROWSERS.iter().filter(|(b, _)| is_flatpak(b)) {
+        let _ = std::fs::remove_dir_all(home.join(".var/app").join(b).join("data/zohara-webapps/accounts").join(id));
+    }
+    let rest: Vec<Account> = load_accounts().into_iter().filter(|a| a.id != id).collect();
+    let _ = web_accounts::save(&accounts_file(), &rest);
+}
+
+/// Asks for a name, then calls `done` with it.
+fn ask_name(parent: &gtk4::Window, heading: &str, body: &str, start: &str, action: &str, done: impl Fn(String) + 'static) {
+    let d = adw::AlertDialog::new(Some(heading), Some(body));
+    let entry = gtk4::Entry::builder().text(start).activates_default(true).build();
+    d.set_extra_child(Some(&entry));
+    d.add_responses(&[("cancel", "Cancel"), ("ok", action)]);
+    d.set_response_appearance("ok", adw::ResponseAppearance::Suggested);
+    d.set_default_response(Some("ok"));
+    d.set_close_response("cancel");
+    d.connect_response(None, move |_, r| {
+        let name = entry.text().trim().to_string();
+        if r == "ok" && !name.is_empty() {
+            done(name);
+        }
+    });
+    d.present(Some(parent));
+}
+
+fn account_avatar(name: &str, size: i32) -> adw::Avatar {
+    adw::Avatar::new(size, Some(name), true)
+}
+
+/// A small window that asks who is using a web app set to "Ask every time", then opens it with that account.
+/// Returns the exit code; a guest's temporary profile is deleted once its window is closed.
+pub fn chooser(app_id: &str) -> i32 {
+    let Some(webapp) = load_all().into_iter().find(|a| a.id == app_id) else {
+        eprintln!("No web app named {app_id}");
+        return 1;
+    };
+    let guest_dir: std::rc::Rc<std::cell::RefCell<Option<(std::process::Child, PathBuf)>>> = Default::default();
+    let gtk_app = adw::Application::builder().application_id("os.zohara.WebAppChooser").build();
+    let guest_for_ui = guest_dir.clone();
+    gtk_app.connect_activate(move |gtk_app| {
+        let win = adw::ApplicationWindow::builder().application(gtk_app).default_width(420).title(&webapp.name).build();
+        let header = adw::HeaderBar::new();
+        let page = adw::PreferencesPage::new();
+        let group = adw::PreferencesGroup::new();
+        group.set_title(&format!("Who is using {}?", glib::markup_escape_text(&webapp.name)));
+        group.set_description(Some("Each account keeps its own sign-ins."));
+        let bin = browser_for(&webapp.browser);
+        let go = {
+            let (webapp, win, guest) = (webapp.clone(), win.clone(), guest_for_ui.clone());
+            move |account: Option<String>| match &bin {
+                Err(e) => {
+                    message(&win, "Could not open the app", e);
+                }
+                Ok(b) => {
+                    let result = match &account {
+                        Some(id) => start_with_profile(&webapp, &account_profile(b, id)).map(|c| (c, None)),
+                        None => {
+                            let dir = PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache/zohara-webapps").join(format!("guest-{}", webapp.id));
+                            let _ = std::fs::remove_dir_all(&dir);
+                            start_with_profile(&webapp, &dir).map(|c| (c, Some(dir)))
+                        }
+                    };
+                    match result {
+                        Ok((child, Some(dir))) => {
+                            // A guest leaves nothing behind: this process waits for the window to close, then deletes the profile.
+                            *guest.borrow_mut() = Some((child, dir));
+                            win.close();
+                        }
+                        Ok((_, None)) => win.close(),
+                        Err(e) => message(&win, "Could not open the app", &e),
+                    }
+                }
+            }
+        };
+        let accounts = load_accounts();
+        for a in &accounts {
+            let row = adw::ActionRow::new();
+            row.set_title(&glib::markup_escape_text(&a.name));
+            row.add_prefix(&account_avatar(&a.name, 40));
+            row.add_suffix(&gtk4::Image::from_icon_name("go-next-symbolic"));
+            row.set_activatable(true);
+            let (go, id) = (go.clone(), a.id.clone());
+            row.connect_activated(move |_| go(Some(id.clone())));
+            group.add(&row);
+        }
+        let guest = adw::ActionRow::new();
+        guest.set_title("Guest");
+        guest.set_subtitle("Nothing is saved: sign-ins are deleted when the app is closed");
+        guest.add_prefix(&gtk4::Image::from_icon_name("avatar-default-symbolic"));
+        guest.add_suffix(&gtk4::Image::from_icon_name("go-next-symbolic"));
+        guest.set_activatable(true);
+        let go2 = go.clone();
+        guest.connect_activated(move |_| go2(None));
+        group.add(&guest);
+        if accounts.is_empty() {
+            group.set_description(Some("No accounts yet. Add them in Settings > Apps > Apps for websites."));
+        }
+        page.add(&group);
+        let view = adw::ToolbarView::new();
+        view.add_top_bar(&header);
+        view.set_content(Some(&page));
+        win.set_content(Some(&view));
+        win.present();
+    });
+    let code = gtk_app.run_with_args::<&str>(&[]);
+    // The window is closed: a guest's browser may still be open. Wait for it, then delete the temporary profile.
+    if let Some((mut child, dir)) = guest_dir.borrow_mut().take() {
+        let _ = child.wait();
+        // The browser can hand the window to a helper and exit at once; give that process time to finish too.
+        while Command::new("pgrep").args(["-f", &format!("user-data-dir={}", dir.to_string_lossy())]).status().map(|s| s.success()).unwrap_or(false) {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    code.into()
+}
+
 pub fn open(parent: &gtk4::Widget) {
     let win = adw::Window::builder().default_width(640).default_height(560).title("Apps for websites").build();
     if let Some(p) = parent.root().and_downcast::<gtk4::Window>() {
@@ -787,22 +1033,102 @@ pub fn open(parent: &gtk4::Widget) {
     header.pack_start(&add);
 
     let page = adw::PreferencesPage::new();
+    let accounts_group = adw::PreferencesGroup::new();
+    accounts_group.set_title("Accounts");
+    accounts_group.set_description(Some(
+        "Sign in once and every web app using the account is signed in, so you can keep several Google accounts apart, or choose who is using an app each time it opens. Accounts stay on this computer.",
+    ));
+    let add_account = gtk4::Button::with_label("Add account");
+    add_account.set_valign(gtk4::Align::Center);
+    accounts_group.set_header_suffix(Some(&add_account));
+    page.add(&accounts_group);
     let group = adw::PreferencesGroup::new();
+    group.set_title("Web apps");
     group.set_description(Some(
         "Web apps open in their own window with their own icon, sign-ins and permissions, separate from your browser.",
     ));
     page.add(&group);
+    let account_rows: std::rc::Rc<std::cell::RefCell<Vec<gtk4::Widget>>> = Default::default();
 
     let rows: std::rc::Rc<std::cell::RefCell<Vec<gtk4::Widget>>> = Default::default();
     let refill: std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<dyn Fn()>>>> = Default::default();
     let fill: std::rc::Rc<dyn Fn()> = {
         let (group, rows, win, refill) = (group.clone(), rows.clone(), win.clone(), refill.clone());
+        let (accounts_group, account_rows) = (accounts_group.clone(), account_rows.clone());
         std::rc::Rc::new(move || {
             for r in rows.borrow_mut().drain(..) {
                 group.remove(&r);
             }
+            for r in account_rows.borrow_mut().drain(..) {
+                accounts_group.remove(&r);
+            }
             let again = refill.borrow().clone().expect("set");
             let apps = load_all();
+
+            // The accounts, and which apps use each.
+            let accounts = load_accounts();
+            if accounts.is_empty() {
+                let r = adw::ActionRow::new();
+                r.set_title("No accounts yet");
+                r.set_subtitle("Select Add account, then pick it in a web app's settings under Sign in with");
+                accounts_group.add(&r);
+                account_rows.borrow_mut().push(r.upcast());
+            }
+            for acct in accounts {
+                let users: Vec<String> = apps.iter().filter(|a| parse_session(&a.session) == Session::Account(acct.id.clone())).map(|a| a.name.clone()).collect();
+                let r = adw::ActionRow::new();
+                r.set_title(&glib::markup_escape_text(&acct.name));
+                r.set_subtitle(&glib::markup_escape_text(&if users.is_empty() { "No apps use it yet".to_string() } else { format!("Used by {}", users.join(", ")) }));
+                r.add_prefix(&account_avatar(&acct.name, 36));
+
+                let rename = gtk4::Button::from_icon_name("document-edit-symbolic");
+                rename.add_css_class("flat");
+                rename.set_valign(gtk4::Align::Center);
+                rename.set_tooltip_text(Some("Rename"));
+                let (a2, win2, again2) = (acct.clone(), win.clone(), again.clone());
+                rename.connect_clicked(move |_| {
+                    let (id, again3) = (a2.id.clone(), again2.clone());
+                    ask_name(win2.upcast_ref(), "Rename account", "", &a2.name, "Rename", move |name| {
+                        let mut all = load_accounts();
+                        if let Some(x) = all.iter_mut().find(|x| x.id == id) {
+                            x.name = name;
+                        }
+                        let _ = web_accounts::save(&accounts_file(), &all);
+                        again3();
+                    });
+                });
+                r.add_suffix(&rename);
+
+                let del = gtk4::Button::from_icon_name("user-trash-symbolic");
+                del.add_css_class("flat");
+                del.set_valign(gtk4::Align::Center);
+                del.set_tooltip_text(Some("Delete account"));
+                let (a2, win2, again2, n_users) = (acct.clone(), win.clone(), again.clone(), users.len());
+                del.connect_clicked(move |_| {
+                    let d = adw::AlertDialog::new(
+                        Some(&format!("Delete {}?", a2.name)),
+                        Some(&if n_users == 0 {
+                            "Everything signed in with this account is deleted.".to_string()
+                        } else {
+                            format!("Everything signed in with this account is deleted. The {n_users} app{} using it will go back to their own separate sign-ins.", if n_users == 1 { "" } else { "s" })
+                        }),
+                    );
+                    d.add_responses(&[("cancel", "Cancel"), ("delete", "Delete")]);
+                    d.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+                    let (id, again3) = (a2.id.clone(), again2.clone());
+                    d.connect_response(None, move |_, r| {
+                        if r == "delete" {
+                            let (id, again4) = (id.clone(), again3.clone());
+                            in_background(move || delete_account(&id), move |_| again4());
+                        }
+                    });
+                    d.present(Some(&win2));
+                });
+                r.add_suffix(&del);
+                accounts_group.add(&r);
+                account_rows.borrow_mut().push(r.upcast());
+            }
+
             if apps.is_empty() {
                 let r = adw::ActionRow::new();
                 r.set_title("No web apps yet");
@@ -814,7 +1140,12 @@ pub fn open(parent: &gtk4::Widget) {
                 let r = adw::ActionRow::new();
                 r.set_title(&glib::markup_escape_text(&a.name));
                 let via = BROWSERS.iter().find(|(b, _)| *b == a.browser).map(|(_, n)| format!(" · {n}")).unwrap_or_default();
-                r.set_subtitle(&glib::markup_escape_text(&format!("{}{via}", a.url)));
+                let who = match parse_session(&a.session) {
+                    Session::Own => String::new(),
+                    Session::Ask => " · Asks who is using it".to_string(),
+                    Session::Account(id) => format!(" · {}", account_name(&id)),
+                };
+                r.set_subtitle(&glib::markup_escape_text(&format!("{}{via}{who}", a.url)));
                 r.add_prefix(&icon_image(&a.icon, 32));
 
                 let open_btn = gtk4::Button::with_label("Open");
@@ -870,6 +1201,19 @@ pub fn open(parent: &gtk4::Widget) {
         let (win2, fill) = (win.clone(), fill.clone());
         add.connect_clicked(move |_| editor(win2.upcast_ref(), None, fill.clone()));
     }
+    {
+        let (win2, fill) = (win.clone(), fill.clone());
+        add_account.connect_clicked(move |_| {
+            let fill = fill.clone();
+            ask_name(win2.upcast_ref(), "New account", "For example Work, Home or a person's name.", "", "Add", move |name| {
+                let mut all = load_accounts();
+                let id = web_accounts::new_id(&name, &all);
+                all.push(Account { id, name });
+                let _ = web_accounts::save(&accounts_file(), &all);
+                fill();
+            });
+        });
+    }
 
     let view = adw::ToolbarView::new();
     view.add_top_bar(&header);
@@ -918,5 +1262,26 @@ mod tests {
     fn old_apps_without_a_browser_still_load() {
         let a: WebApp = serde_json::from_str(r#"{"id":"a","name":"A","url":"https://a.b","icon":"","mode":0,"startup":false,"start_minimized":false,"perms":[]}"#).unwrap();
         assert_eq!(a.browser, "");
+        // ...and keep their own separate sign-ins.
+        assert_eq!(parse_session(&a.session), Session::Own);
+    }
+
+    fn app_with(session: &str) -> WebApp {
+        WebApp { id: "mail".into(), name: "Mail".into(), url: "https://mail.google.com/mail/u/0/".into(), session: session.into(), perms: vec![0; PERMS.len()], ..Default::default() }
+    }
+
+    #[test]
+    fn an_app_that_asks_starts_the_chooser_not_the_browser() {
+        assert_eq!(exec_line(&app_with("ask"), "brave", false), "zohara-settings --webapp mail");
+    }
+
+    #[test]
+    fn a_separate_app_keeps_its_own_window_class_and_a_shared_one_does_not_force_one() {
+        let own = exec_line(&app_with(""), "brave", false);
+        assert!(own.contains("--class=zohara-webapp-mail"));
+        assert!(desktop_entry(&app_with(""), "brave", false).contains("StartupWMClass=zohara-webapp-mail\n"));
+        let shared = exec_line(&app_with("account:work"), "brave", false);
+        assert!(!shared.contains("--class"));
+        assert!(desktop_entry(&app_with("account:work"), "brave", false).contains("StartupWMClass=chrome-mail.google.com__mail_u_0_-Default\n"));
     }
 }

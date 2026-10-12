@@ -69,6 +69,16 @@ fn main() -> glib::ExitCode {
     if args.iter().any(|a| a == "--touch-setup") {
         std::process::exit(backend::touch_keyboard::touch_setup());
     }
+    // A web app set to "Ask every time": ask which account is using it, then open it.
+    if let Some(i) = args.iter().position(|a| a == "--webapp") {
+        match args.get(i + 1) {
+            Some(id) => std::process::exit(pages::web_apps::chooser(id)),
+            None => {
+                eprintln!("usage: zohara-settings --webapp ID");
+                std::process::exit(2);
+            }
+        }
+    }
     // KDE Wallet starts off (autostart, once).
     if args.iter().any(|a| a == "--wallet-default") {
         std::process::exit(backend::wallet::apply_default());

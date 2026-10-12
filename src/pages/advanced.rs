@@ -78,6 +78,19 @@ fn settings_version() -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
 }
 
+fn docker_on() -> bool {
+    Command::new("systemctl").args(["is-enabled", "docker.service"]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim() == "enabled").unwrap_or(false)
+}
+
+fn set_docker(on: bool) -> bool {
+    let script = if on {
+        "systemctl enable --now docker.service"
+    } else {
+        "systemctl disable --now docker.service && { systemctl disable --now docker.socket; systemctl stop containerd.service; true; }"
+    };
+    Command::new("pkexec").args(["sh", "-c", script]).status().map(|s| s.success()).unwrap_or(false)
+}
+
 pub fn build() -> gtk4::Widget {
     let scroll = gtk4::ScrolledWindow::builder()
         .hscrollbar_policy(gtk4::PolicyType::Never)
@@ -149,6 +162,22 @@ pub fn build() -> gtk4::Widget {
         add_info_row(&hw_group, "Memory", &format!("{total_mb} MB"));
     }
     rows.append(&hw_group);
+
+    // Background services that are not needed by the desktop itself.
+    if std::path::Path::new("/usr/lib/systemd/system/docker.service").exists() {
+        let svc = adw::PreferencesGroup::builder()
+            .title("Background services")
+            .description("Programs that start with the computer and use memory while they run.")
+            .build();
+        svc.add(&super::privacy::guarded_switch(
+            "Docker containers",
+            "Starts at boot and uses about 200 MiB. Turning it off stops running containers. Needs the administrator password",
+            "application-x-executable-symbolic",
+            docker_on,
+            set_docker,
+        ));
+        rows.append(&svc);
+    }
 
     // 3. Power-user escape hatch: open KDE/Plasma full settings
     let more = adw::PreferencesGroup::builder()

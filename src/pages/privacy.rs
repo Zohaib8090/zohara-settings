@@ -21,7 +21,7 @@ fn run_ok(cmd: &str, args: &[&str]) -> bool {
 
 /// A switch whose change runs `apply(on)` off the UI thread; if that fails
 /// (e.g. the admin prompt was cancelled) the switch is reset from `read()`.
-fn guarded_switch(
+pub(crate) fn guarded_switch(
     title: &str,
     subtitle: &str,
     icon: &str,

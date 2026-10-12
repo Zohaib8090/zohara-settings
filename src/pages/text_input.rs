@@ -195,6 +195,26 @@ pub fn open(parent_row: &adw::ActionRow) {
     *taskbar_switch.borrow_mut() = Some(tb.clone());
     tools.add(&tb);
 
+    // KWin starts the keyboard at login and restarts it if it is killed, so this only takes effect at the next sign-in.
+    let keep = adw::SwitchRow::new();
+    keep.set_title("Keep the on-screen keyboard ready");
+    keep.set_subtitle("Uses about 190 MiB of memory while on. Turn it off if you have no touch screen. Takes effect the next time you sign in; turn it back on to use the keyboard again");
+    if crate::backend::touch_keyboard::installed() {
+        keep.set_active(crate::backend::touch_keyboard::loaded());
+        let status = status.clone();
+        keep.connect_active_notify(move |r| {
+            let on = r.is_active();
+            let status = status.clone();
+            in_background(
+                move || crate::backend::touch_keyboard::set_loaded(on),
+                move |_| status.set_text(if on { "Saved: the keyboard loads at your next sign-in" } else { "Saved: the keyboard will not load at your next sign-in, which frees its memory" }),
+            );
+        });
+    } else {
+        keep.set_sensitive(false);
+    }
+    tools.add(&keep);
+
     let login = adw::ActionRow::new();
     login.set_title("Keyboard on the sign-in screen");
     if login_keyboard_ready() {

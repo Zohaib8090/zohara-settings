@@ -76,6 +76,17 @@ pub fn enable_input_method() {
     crate::backend::kconfig::kwin_reconfigure();
 }
 
+/// Whether KWin is set to keep the touch keyboard loaded (the `plasma-keyboard` process then stays in memory, about 190 MiB).
+pub fn loaded() -> bool {
+    crate::backend::kconfig::read("kwinrc", &["Wayland"], "InputMethod").map(|v| v == INPUT_METHOD).unwrap_or(false)
+}
+
+/// Keep the keyboard loaded, or leave it out to free its memory. KWin reads this at login (it restarts the process if it is killed), so a change applies at the next sign-in.
+pub fn set_loaded(on: bool) {
+    crate::backend::kconfig::write("kwinrc", &["Wayland"], "InputMethod", if on { INPUT_METHOD } else { "" });
+    crate::backend::kconfig::kwin_reconfigure();
+}
+
 /// True when udev says the computer has a touch screen (not a touchpad).
 pub fn has_touchscreen() -> bool {
     Command::new("udevadm")

@@ -5,6 +5,7 @@ pub mod dbus;
 pub mod cube;
 pub mod desktop_style;
 pub mod desktops;
+pub mod drives;
 pub mod diag;
 pub mod dictation;
 pub mod effects;

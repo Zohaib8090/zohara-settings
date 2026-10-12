@@ -239,8 +239,10 @@ fn classify(v: &Value, include_images: bool) -> Option<Kind> {
         "disk" => {
             if name.starts_with("mmcblk") && (removable || hotplug) {
                 Some(Kind::SdCard)
-            } else if tran == "usb" || hotplug || removable {
+            } else if tran == "usb" || removable {
                 // A flash stick reports itself as removable; an external hard disk or SSD does not.
+                // "Hot-pluggable" alone is NOT enough: some computers report an internal SATA disk that way, and
+                // an internal disk must never be offered for erasing.
                 if removable { Some(Kind::UsbStick) } else { Some(Kind::ExternalDisk) }
             } else {
                 Some(Kind::Internal)
@@ -374,7 +376,7 @@ pub fn normalize_label(fs: &str, input: &str) -> Result<String, String> {
     let label = if f.id == "vfat" { label.to_uppercase() } else { label };
     let len = if f.id == "ext4" || f.id == "btrfs" { label.len() } else { label.chars().count() };
     if len > f.max_label {
-        return Err(format!("A {} name can have at most {} characters.", f.title, f.max_label));
+        return Err(format!("The name can have at most {} characters on {}.", f.max_label, f.title));
     }
     Ok(label)
 }
@@ -409,7 +411,8 @@ pub fn what_will_be_lost(d: &Drive) -> Vec<String> {
         .map(|p| {
             let name = if p.label.is_empty() { "Unnamed".to_string() } else { p.label.clone() };
             let used = p.used.map(|u| format!(", {} used", human(u))).unwrap_or_default();
-            format!("{name} ({}{used})", if p.fstype.is_empty() { "unknown" } else { &p.fstype })
+            let fs = fs_by_id(&p.fstype).map(|f| f.title.to_string()).unwrap_or_else(|| if p.fstype.is_empty() { "unknown".into() } else { p.fstype.clone() });
+            format!("{name} ({fs}{used})")
         })
         .collect()
 }
@@ -907,6 +910,15 @@ mod tests {
     }
 
     #[test]
+    fn a_hot_pluggable_internal_disk_is_not_offered() {
+        // Some boards report internal SATA disks as hot-pluggable. Only USB, removable media and SD cards count as outside.
+        let json = r#"{"blockdevices":[{"name":"sdx","path":"/dev/sdx","type":"disk","size":2000000000000,"fstype":null,"mountpoints":[null],"rm":false,"hotplug":true,"ro":false,"rota":true,"tran":"sata","model":"Data HDD"}]}"#;
+        let d = parse_lsblk(json, false);
+        assert_eq!(d[0].kind, Kind::Internal);
+        assert!(!d[0].can_modify());
+    }
+
+    #[test]
     fn a_write_protected_stick_says_so() {
         let json = r#"{"blockdevices":[{"name":"sde","path":"/dev/sde","type":"disk","size":4000000000,"fstype":null,"mountpoints":[null],"rm":true,"hotplug":true,"ro":true,"tran":"usb"}]}"#;
         let d = parse_lsblk(json, false);
@@ -996,8 +1008,8 @@ mod tests {
     #[test]
     fn what_is_lost_is_listed_in_words() {
         let d = parse_lsblk(&sample(), false);
-        assert_eq!(what_will_be_lost(find(&d, "/dev/sda")), vec!["PHOTOS (exfat, 11.2 GB used)"]);
-        assert_eq!(what_will_be_lost(find(&d, "/dev/sdb")), vec!["Backup (ntfs)"]);
+        assert_eq!(what_will_be_lost(find(&d, "/dev/sda")), vec!["PHOTOS (exFAT, 11.2 GB used)"]);
+        assert_eq!(what_will_be_lost(find(&d, "/dev/sdb")), vec!["Backup (NTFS)"]);
     }
 
     #[test]

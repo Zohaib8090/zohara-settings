@@ -82,7 +82,7 @@ fn drive_row(d: &Drive) -> adw::ActionRow {
 /// The "USB & storage devices" group. It follows plugging and unplugging while the page is open.
 pub fn group(page: &gtk4::Box) -> adw::PreferencesGroup {
     let g = adw::PreferencesGroup::new();
-    g.set_title("USB & storage devices");
+    g.set_title("USB &amp; storage devices");
     g.set_description(Some("USB drives, SD cards and external disks. Plug one in and it shows up here."));
 
     let rows: Rc<RefCell<Vec<gtk4::Widget>>> = Default::default();
@@ -426,7 +426,8 @@ fn fill_detail(holder: &gtk4::Box, dialog: &adw::Dialog, d: &Drive, reload: Rc<d
 // ── Rename ───────────────────────────────────────────────────────────────────
 
 fn rename_dialog(from: &impl IsA<gtk4::Widget>, dev: &str, fs: &str, current: &str, reload: Rc<dyn Fn()>) {
-    let d = adw::AlertDialog::new(Some("Rename the drive"), Some("The name shows up in Files and on other computers."));
+    const HINT: &str = "The name shows up in Files and on other computers.";
+    let d = adw::AlertDialog::new(Some("Rename the drive"), Some(HINT));
     let entry = adw::EntryRow::new();
     entry.set_title("Name");
     entry.set_text(current);
@@ -436,13 +437,23 @@ fn rename_dialog(from: &impl IsA<gtk4::Widget>, dev: &str, fs: &str, current: &s
     d.add_responses(&[("cancel", "Cancel"), ("rename", "Rename")]);
     d.set_response_appearance("rename", adw::ResponseAppearance::Suggested);
     d.set_default_response(Some("rename"));
+    d.set_close_response("cancel");
     let fs = fs.to_string();
     {
         let (d2, fs2) = (d.clone(), fs.clone());
         entry.connect_changed(move |e| {
-            let ok = dr::normalize_label(&fs2, &e.text()).is_ok();
-            d2.set_response_enabled("rename", ok);
-            if ok { e.remove_css_class("error") } else { e.add_css_class("error") }
+            let r = dr::normalize_label(&fs2, &e.text());
+            d2.set_response_enabled("rename", r.is_ok());
+            match r {
+                Ok(_) => {
+                    d2.set_body(HINT);
+                    e.remove_css_class("error");
+                }
+                Err(msg) => {
+                    d2.set_body(&msg);
+                    e.add_css_class("error");
+                }
+            }
         });
     }
     let (dev, from2) = (dev.to_string(), from.as_ref().clone());
@@ -463,6 +474,31 @@ fn rename_dialog(from: &impl IsA<gtk4::Widget>, dev: &str, fs: &str, current: &s
         );
     });
     d.present(Some(from));
+    // the cursor goes into the name, with the old name selected, so typing replaces it
+    let focus = entry_focus_target(&group);
+    glib::idle_add_local_once(move || {
+        if let Some(w) = focus {
+            w.grab_focus();
+        }
+    });
+}
+
+/// The text field inside an entry row (the row itself does not take the keyboard).
+fn entry_focus_target(group: &adw::PreferencesGroup) -> Option<gtk4::Widget> {
+    fn find(w: &gtk4::Widget) -> Option<gtk4::Widget> {
+        if w.is::<gtk4::Text>() {
+            return Some(w.clone());
+        }
+        let mut c = w.first_child();
+        while let Some(child) = c {
+            if let Some(f) = find(&child) {
+                return Some(f);
+            }
+            c = child.next_sibling();
+        }
+        None
+    }
+    find(group.upcast_ref())
 }
 
 // ── Check and repair ─────────────────────────────────────────────────────────
@@ -572,9 +608,9 @@ fn erase_dialog(from: &impl IsA<gtk4::Widget>, d: &Drive, target: Option<String>
         Rc::new(move || {
             let f = fss.get(fs_row.selected() as usize).copied();
             let Some(f) = f else { return };
-            let table = if whole { format!(" A {} partition table is used.", if dr::table_for(f.id, d.size) == "dos" { "MBR" } else { "GPT" }) } else { String::new() };
+            let table = if whole { format!(" {} partition table is used.", if dr::table_for(f.id, d.size) == "dos" { "An MBR" } else { "A GPT" }) } else { String::new() };
             let label = dr::normalize_label(f.id, &name_row.text());
-            let typed = confirm.text().trim() == CONFIRM_WORD;
+            let typed = confirm.text().trim().eq_ignore_ascii_case(CONFIRM_WORD);
             match &label {
                 Ok(_) => {
                     note.set_text(&format!("{}{table}", f.note));
@@ -713,7 +749,7 @@ fn bootable_dialog(from: &impl IsA<gtk4::Widget>, preselect: Option<String>) {
                     note.set_text("");
                 }
             }
-            let ready = image.borrow().is_some() && chosen.is_some() && problem.is_none() && confirm.text().trim() == CONFIRM_WORD;
+            let ready = image.borrow().is_some() && chosen.is_some() && problem.is_none() && confirm.text().trim().eq_ignore_ascii_case(CONFIRM_WORD);
             go.set_sensitive(ready);
         })
     };

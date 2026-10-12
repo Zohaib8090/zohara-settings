@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0
+      http://www.kde.org/standards/kcfg/1.0/kcfg.xsd" >
+  <kcfgfile name=""/>
+
+  <group name="General">
+    <entry name="VideoPath" type="String">
+      <label>Video file</label>
+      <default></default>
+    </entry>
+    <!-- 0 = fill the screen (crop the edges), 1 = fit inside (black bars), 2 = stretch -->
+    <entry name="FillMode" type="Int">
+      <default>0</default>
+    </entry>
+    <entry name="Muted" type="Bool">
+      <default>true</default>
+    </entry>
+    <!-- playback speed, 0.25 to 2 -->
+    <entry name="Speed" type="Double">
+      <default>1</default>
+    </entry>
+  </group>
+
+</kcfg>

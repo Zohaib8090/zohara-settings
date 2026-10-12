@@ -23,6 +23,9 @@ depends=(
   'dbus'
   'zohara-keyring' # Zohara's package-signing key; a new package only reaches existing machines if an installed one needs it
   'polkit'         # the administrator prompt for system updates
+  'qt6-quick3d'    # the 3D scene of the desktop cube
+  'qt6-multimedia'         # the video player of the live wallpaper
+  'qt6-multimedia-ffmpeg'  # ...and the codecs it plays with
   'curl'           # downloads the signed update approval list
   'fakeroot'       # lets the update check use a private copy of the package lists
   'libinput-tools' # the Mouse page's "Which one am I using?" listens to input devices with `libinput debug-events`
@@ -49,6 +52,7 @@ conflicts=('zohara-settings-git')
 # Source: the workflow has already cloned this repo at $srcdir. The binary
 # is prebuilt at ../target/release/zohara-settings so we don't re-cargo here
 # (the workflow does that with proper caching).
+backup=('etc/pam.d/kde')
 source=()
 sha256sums=()
 
@@ -90,10 +94,31 @@ package() {
   install -Dm644 "$startdir/data/icons/scalable/apps/zohara-start.svg" \
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/zohara-start.svg"
   install -Dm644 "$startdir/data/zohara-branding.desktop" "$pkgdir/etc/xdg/autostart/zohara-branding.desktop"
+  # Zohara Cube: the 3D desktop cube, a QML-only KWin effect (no compiling). KDE's own layout: metadata.json at the root.
+  # The same files live in ~/Documents/zohara-cube (the development home); this is the copy that ships.
+  (cd "$startdir/data/cube-effect" && find . -type f -print0) | while IFS= read -r -d '' f; do
+    install -Dm644 "$startdir/data/cube-effect/$f" "$pkgdir/usr/share/kwin/effects/zoharacube/${f#./}"
+  done
+  # Dynamic desktops: a KWin script (JavaScript, nothing to compile). Settings > Personalization > Desktops.
+  (cd "$startdir/data/dynamic-desktops" && find . -type f -print0) | while IFS= read -r -d '' f; do
+    install -Dm644 "$startdir/data/dynamic-desktops/$f" "$pkgdir/usr/share/kwin/scripts/zoharadynamicdesktops/${f#./}"
+  done
+  # Live wallpaper: a small Plasma wallpaper plugin that loops a video (QML only). Settings > Personalization > Background.
+  (cd "$startdir/data/live-wallpaper" && find . -type f -print0) | while IFS= read -r -d '' f; do
+    install -Dm644 "$startdir/data/live-wallpaper/$f" "$pkgdir/usr/share/plasma/wallpapers/org.zohara.livewallpaper/${f#./}"
+  done
+  # The lock screen must not lock the account out when it wakes from sleep (see the comments inside the file).
+  install -Dm644 "$startdir/data/pam-kde" "$pkgdir/etc/pam.d/kde"
   install -Dm644 "$startdir/data/zohara-wallet-default.desktop" "$pkgdir/etc/xdg/autostart/zohara-wallet-default.desktop"
 
   # The terminal banner logo (copied over the ISO's old one by the install hook on machines installed earlier).
   install -Dm644 "$startdir/data/zohara-logo.txt" "$pkgdir/usr/share/zohara/zohara-logo.txt"
+
+  # The equalizer's service (started and enabled per user by Settings > Sound > Equalizer, not by default).
+  install -Dm644 "$startdir/data/zohara-equalizer.service" "$pkgdir/usr/lib/systemd/user/zohara-equalizer.service"
+
+  # High contrast colour scheme for Accessibility > High contrast (this Plasma ships none).
+  install -Dm644 "$startdir/data/color-schemes/ZoharaHighContrast.colors" "$pkgdir/usr/share/color-schemes/ZoharaHighContrast.colors"
 
   # The programs Zohara recommends after a computer was set up (Zohara Update offers the missing ones).
   install -Dm644 "$startdir/data/recommended.json" "$pkgdir/usr/share/zohara/recommended.json"

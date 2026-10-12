@@ -1,0 +1,20 @@
+#%PAM-1.0
+# Zohara OS: the lock screen's own login rules (Plasma's screen locker asks PAM for the "kde" service).
+#
+# Why this file exists: the stock file runs pam_faillock, which counts every failed try and locks the account for
+# ten minutes after three. Plasma's lock screen makes a few tries of its own the moment the computer wakes from sleep
+# ("conversation failed"), before anyone has typed a thing. Those counted as failures, the account was marked locked,
+# and the correct password was then refused. A screen that is already locked behind your own session does not need
+# that protection, so the password is checked with pam_unix only. The sign-in screen (SDDM), sudo and ssh still use
+# faillock.
+auth       requisite   pam_nologin.so
+auth       required    pam_shells.so
+auth       required    pam_unix.so          try_first_pass nullok
+auth       optional    pam_permit.so
+auth       required    pam_env.so
+
+account    include     system-local-login
+
+password   include     system-local-login
+
+session    include     system-local-login

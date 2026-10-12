@@ -2,6 +2,12 @@ use gtk4::prelude::*;
 use gtk4::gio;
 use libadwaita as adw;
 use crate::backend::kconfig;
+use crate::backend::desktop_style;
+use crate::backend::cube;
+use crate::backend::desktops;
+use crate::backend::effects;
+use crate::backend::live_wallpaper;
+use crate::backend::looks;
 use adw::prelude::*;
 use std::process::Command;
 
@@ -110,7 +116,7 @@ pub fn build() -> gtk4::Widget {
     // 1. Background (with In-App Wallpapers)
     let bg_exp = adw::ExpanderRow::new();
     bg_exp.set_title("Background");
-    bg_exp.set_subtitle("Background image, color, slideshow");
+    bg_exp.set_subtitle("Background image, live video wallpaper, color, slideshow");
     bg_exp.add_prefix(&gtk4::Image::from_icon_name("preferences-desktop-wallpaper-symbolic"));
     bg_exp.set_css_classes(&["win11-expander-row"]);
 
@@ -138,6 +144,9 @@ pub fn build() -> gtk4::Widget {
     });
     choose_file_row.add_suffix(&browse_btn);
     bg_exp.add_row(&choose_file_row);
+    for r in live_wallpaper_rows() {
+        bg_exp.add_row(&r);
+    }
     rows_box.append(&bg_exp);
 
     // 2. Colors (with In-App Accent Colors)
@@ -279,8 +288,90 @@ pub fn build() -> gtk4::Widget {
     taskbar_exp.add_row(&pos_row);
     taskbar_exp.add_row(&align_row);
     taskbar_exp.add_row(&status);
+    for r in bar_style_rows() {
+        taskbar_exp.add_row(&r);
+    }
 
     rows_box.append(&taskbar_exp);
+
+    // 8a. Quick looks: a whole feel in one click
+    let looks_exp = adw::ExpanderRow::new();
+    looks_exp.set_title("Quick looks");
+    looks_exp.set_subtitle("Window buttons, taskbar and effects set together");
+    looks_exp.add_prefix(&gtk4::Image::from_icon_name("preferences-desktop-theme-symbolic"));
+    looks_exp.set_css_classes(&["win11-expander-row"]);
+    let looks_status = adw::ActionRow::new();
+    looks_status.set_title("Pick one to try it");
+    looks_status.set_subtitle("Your colors, icons and wallpaper stay as they are. You can still change every part below.");
+    looks_status.set_activatable(false);
+    for (i, preset) in looks::PRESETS.iter().enumerate() {
+        let row = adw::ActionRow::new();
+        row.set_title(preset.name);
+        row.set_subtitle(preset.about);
+        let btn = gtk4::Button::with_label("Use");
+        btn.set_valign(gtk4::Align::Center);
+        let status = looks_status.clone();
+        btn.connect_clicked(move |b| {
+            b.set_sensitive(false);
+            status.set_title("Applying…");
+            let (b, status) = (b.clone(), status.clone());
+            crate::backend::worker::in_background(move || looks::apply(&(looks::PRESETS[i].look)()), move |ok| {
+                b.set_sensitive(true);
+                status.set_title(if ok { "Done" } else { "Some parts were not accepted" });
+                status.set_subtitle("Open Personalization again to see every switch below in its new place.");
+            });
+        });
+        row.add_suffix(&btn);
+        looks_exp.add_row(&row);
+    }
+    looks_exp.add_row(&looks_status);
+    rows_box.append(&looks_exp);
+
+    // 8b. Window buttons (close / minimize / maximize on the left like a Mac, or on the right)
+    let buttons_row = adw::ComboRow::new();
+    buttons_row.set_title("Window buttons");
+    buttons_row.set_subtitle("Which side of a window the close, minimize and maximize buttons are on");
+    buttons_row.add_prefix(&gtk4::Image::from_icon_name("window-close-symbolic"));
+    buttons_row.set_model(Some(&gtk4::StringList::new(&["Right (like Windows)", "Left (like a Mac)"])));
+    buttons_row.set_selected(match desktop_style::button_side() {
+        desktop_style::ButtonSide::Right => 0,
+        desktop_style::ButtonSide::Left => 1,
+    });
+    {
+        let ready = std::rc::Rc::new(std::cell::Cell::new(false));
+        let r2 = ready.clone();
+        buttons_row.connect_selected_notify(move |r| {
+            if !r2.get() {
+                return;
+            }
+            let side = if r.selected() == 1 { desktop_style::ButtonSide::Left } else { desktop_style::ButtonSide::Right };
+            crate::backend::worker::in_background(move || desktop_style::set_button_side(side), |_| {});
+        });
+        ready.set(true);
+    }
+    rows_box.append(&super::in_list(&buttons_row));
+
+    // 8b2. Desktops: how many, and the dynamic mode where every new app gets its own
+    let desk_exp = adw::ExpanderRow::new();
+    desk_exp.set_title("Desktops");
+    desk_exp.set_subtitle("More desktops, or a new desktop for every app you open");
+    desk_exp.add_prefix(&gtk4::Image::from_icon_name("view-grid-symbolic"));
+    desk_exp.set_css_classes(&["win11-expander-row"]);
+    for r in desktop_rows() {
+        desk_exp.add_row(&r);
+    }
+    rows_box.append(&desk_exp);
+
+    // 8c. Desktop effects (jelly windows, minimize style, open/close style, dimming, mouse finders)
+    let fx_exp = adw::ExpanderRow::new();
+    fx_exp.set_title("Desktop effects");
+    fx_exp.set_subtitle("Jelly windows, minimize and open animations, blur, dimming");
+    fx_exp.add_prefix(&gtk4::Image::from_icon_name("preferences-desktop-effects-symbolic"));
+    fx_exp.set_css_classes(&["win11-expander-row"]);
+    for r in effect_rows() {
+        fx_exp.add_row(&r);
+    }
+    rows_box.append(&fx_exp);
 
     // 9. Fonts
     let fonts_exp = adw::ExpanderRow::new();
@@ -688,4 +779,657 @@ mod tests {
         assert_eq!(v, ["Segoe UI", "DejaVu Sans", "Inter", "Noto Sans"]);
         assert_eq!(parse_families("Inter\n", "inter"), ["Inter"]);
     }
+}
+
+/// Taskbar look: when it hides, floating, see-through, thickness. Each change is sent to the running shell at once.
+fn bar_style_rows() -> Vec<gtk4::Widget> {
+    use std::{cell::{Cell, RefCell}, rc::Rc};
+    let start = desktop_style::bar();
+    let state = Rc::new(RefCell::new(start));
+    let ready = Rc::new(Cell::new(false));
+    let push = {
+        let (state, ready) = (state.clone(), ready.clone());
+        Rc::new(move || {
+            if !ready.get() {
+                return;
+            }
+            let bar = *state.borrow();
+            crate::backend::worker::in_background(move || desktop_style::apply_bar(bar), |_| {});
+        })
+    };
+
+    let hide = adw::ComboRow::new();
+    hide.set_title("Hide the taskbar");
+    hide.set_subtitle("Slides away and comes back when the pointer reaches the screen edge");
+    hide.set_model(Some(&gtk4::StringList::new(&desktop_style::HIDING.map(|h| h.0))));
+    hide.set_selected(desktop_style::HIDING.iter().position(|h| h.1 == start.hiding).unwrap_or(0) as u32);
+    {
+        let (state, push) = (state.clone(), push.clone());
+        hide.connect_selected_notify(move |r| {
+            state.borrow_mut().hiding = desktop_style::HIDING[(r.selected() as usize).min(2)].1;
+            push();
+        });
+    }
+
+    let floating = adw::SwitchRow::new();
+    floating.set_title("Floating taskbar");
+    floating.set_subtitle("A gap around the taskbar, like a dock");
+    floating.set_active(start.floating);
+    {
+        let (state, push) = (state.clone(), push.clone());
+        floating.connect_active_notify(move |r| {
+            state.borrow_mut().floating = r.is_active();
+            push();
+        });
+    }
+
+    let look = adw::ComboRow::new();
+    look.set_title("Taskbar background");
+    look.set_subtitle("Solid, see-through, or decided by Plasma");
+    look.set_model(Some(&gtk4::StringList::new(&desktop_style::OPACITY.map(|o| o.0))));
+    look.set_selected(desktop_style::OPACITY.iter().position(|o| o.1 == start.opacity).unwrap_or(0) as u32);
+    {
+        let (state, push) = (state.clone(), push.clone());
+        look.connect_selected_notify(move |r| {
+            state.borrow_mut().opacity = desktop_style::OPACITY[(r.selected() as usize).min(2)].1;
+            push();
+        });
+    }
+
+    let size = adw::SpinRow::with_range(desktop_style::MIN_THICKNESS as f64, desktop_style::MAX_THICKNESS as f64, 2.0);
+    size.set_title("Taskbar size");
+    size.set_subtitle("Height in pixels (width on a side bar)");
+    size.set_value(start.thickness as f64);
+    {
+        // A spin row fires on every step: wait until the typing stops before touching the shell.
+        let (state, push) = (state.clone(), push.clone());
+        let pending: Rc<RefCell<Option<gtk4::glib::SourceId>>> = Rc::new(RefCell::new(None));
+        size.connect_value_notify(move |r| {
+            state.borrow_mut().thickness = r.value() as u32;
+            if let Some(id) = pending.borrow_mut().take() {
+                id.remove();
+            }
+            let (push, pending2) = (push.clone(), pending.clone());
+            let id = gtk4::glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+                pending2.borrow_mut().take();
+                push();
+            });
+            *pending.borrow_mut() = Some(id);
+        });
+    }
+
+    ready.set(true);
+    vec![hide.upcast(), floating.upcast(), look.upcast(), size.upcast()]
+}
+
+/// One row per effect or choice. The running state is read from KWin when the page is built (off the UI thread), and a
+/// change is sent at once. A row that cannot reach KWin says so instead of pretending.
+fn effect_rows() -> Vec<gtk4::Widget> {
+    use std::{cell::Cell, rc::Rc};
+    let mut rows: Vec<gtk4::Widget> = Vec::new();
+    let note = adw::ActionRow::new();
+    note.set_title("Changes apply right away");
+    note.set_activatable(false);
+
+    let mut switches: Vec<(&'static str, adw::SwitchRow)> = Vec::new();
+    for t in &effects::TOGGLES {
+        let row = adw::SwitchRow::new();
+        row.set_title(t.title);
+        row.set_subtitle(t.subtitle);
+        if !effects::available(t) {
+            // not installed: say where to get it instead of a switch that does nothing
+            row.set_sensitive(false);
+            row.set_subtitle("Not installed on this computer.");
+            switches.push((t.id, row.clone()));
+            rows.push(row.upcast());
+            continue;
+        }
+        let (id, row2, note2) = (t.id, row.clone(), note.clone());
+        let ready = Rc::new(Cell::new(false));
+        let r = ready.clone();
+        row.connect_active_notify(move |sw| {
+            if !r.get() {
+                return;
+            }
+            let (on, note3) = (sw.is_active(), note2.clone());
+            crate::backend::worker::in_background(move || effects::set(id, on), move |ok| {
+                note3.set_title(if ok { "Saved" } else { "KWin did not accept the change" });
+            });
+        });
+        // the real state comes from KWin
+        let ready2 = ready.clone();
+        crate::backend::worker::in_background(move || effects::is_on(id), move |on| {
+            row2.set_active(on);
+            ready2.set(true);
+        });
+        switches.push((t.id, row.clone()));
+        rows.push(row.upcast());
+    }
+
+    // jelly strength follows the jelly switch
+    let strength = adw::ComboRow::new();
+    strength.set_title("Jelly strength");
+    strength.set_subtitle("How much windows wobble");
+    strength.set_model(Some(&gtk4::StringList::new(&effects::JELLY.map(|j| j.0))));
+    strength.set_selected(effects::jelly_index());
+    if let Some((_, jelly)) = switches.iter().find(|(id, _)| *id == "wobblywindows") {
+        jelly.bind_property("active", &strength, "sensitive").sync_create().build();
+    }
+    strength.connect_selected_notify(|r| {
+        let i = r.selected();
+        crate::backend::worker::in_background(move || effects::set_jelly(i), |_| {});
+    });
+    rows.insert(1, strength.upcast());
+
+    rows.extend(cube_rows());
+
+    for (n, g) in effects::GROUPS.iter().enumerate() {
+        let row = adw::ComboRow::new();
+        row.set_title(g.title);
+        row.set_subtitle(g.subtitle);
+        row.set_model(Some(&gtk4::StringList::new(&g.options.iter().map(|o| o.0).collect::<Vec<_>>())));
+        let ready = Rc::new(Cell::new(false));
+        let (r, row2, ready2) = (ready.clone(), row.clone(), ready.clone());
+        row.connect_selected_notify(move |c| {
+            if !r.get() {
+                return;
+            }
+            let id = effects::GROUPS[n].options[(c.selected() as usize).min(effects::GROUPS[n].options.len() - 1)].1;
+            crate::backend::worker::in_background(move || effects::choose(&effects::GROUPS[n], id), |_| {});
+        });
+        crate::backend::worker::in_background(move || effects::chosen_index(&effects::GROUPS[n], effects::is_on), move |i| {
+            row2.set_selected(i);
+            ready2.set(true);
+        });
+        rows.push(row.upcast());
+    }
+    rows.push(note.upcast());
+    rows
+}
+
+/// Zohara Cube: the on/off switch and its options. The options are only usable while the cube is on; every change is
+/// saved to kwinrc at once and the running effect is told to read it again.
+fn cube_rows() -> Vec<gtk4::Widget> {
+    use std::{cell::{Cell, RefCell}, rc::Rc};
+    let installed = cube::installed();
+    let state = Rc::new(RefCell::new(cube::Cube::default()));
+    let ready = Rc::new(Cell::new(false));
+
+    let on = adw::SwitchRow::new();
+    on.set_title("Desktop cube");
+    on.set_subtitle(if installed {
+        "Desktops turn as a 3D cube and follow 3 and 4 finger swipes. 4 fingers up (or Meta+C) shows the whole cube."
+    } else {
+        "Not installed on this computer."
+    });
+    on.set_sensitive(installed);
+
+    let turn = adw::SpinRow::with_range(cube::DURATION.0 as f64, cube::DURATION.1 as f64, 50.0);
+    turn.set_title("Turning time");
+    turn.set_subtitle("How long the cube takes to settle after you let go, in milliseconds");
+    let gap = adw::SwitchRow::new();
+    gap.set_title("Gap between the first and last desktop");
+    gap.set_subtitle("On: the desktops sit on half a circle. Off: a closed cube you can turn all the way round");
+    let pull = adw::SpinRow::with_range(cube::PULLBACK.0, cube::PULLBACK.1, 0.1);
+    pull.set_digits(1);
+    pull.set_title("Pull back while turning");
+    pull.set_subtitle("How far the cube moves away from you while it turns");
+    let tilt = adw::SpinRow::with_range(cube::TILT.0, cube::TILT.1, 1.0);
+    tilt.set_title("Tilt while turning");
+    tilt.set_subtitle("Degrees; 0 keeps the cube level");
+    let gesture = adw::SwitchRow::new();
+    gesture.set_title("4 fingers up opens the cube");
+    gesture.set_subtitle("Off: leave that swipe to KWin's own Overview (windows and desktops). Meta+C always opens the cube");
+    let scroll_mode = adw::ComboRow::new();
+    scroll_mode.set_title("Scroll in the overview");
+    scroll_mode.set_subtitle("Which scrolling turns the cube: the mouse wheel and two-finger touchpad scrolling");
+    scroll_mode.set_model(Some(&gtk4::StringList::new(&cube::SCROLL_MODES)));
+    let scroll_rev = adw::SwitchRow::new();
+    scroll_rev.set_title("Reverse the scroll direction");
+    scroll_rev.set_subtitle("Scroll the other way round to turn the cube");
+    let tray_anim = adw::SwitchRow::new();
+    tray_anim.set_title("Slide the desktop bar and window tray");
+    tray_anim.set_subtitle("In the cube overview the desktop bar glides down and the window tray glides up. Off: they appear at once");
+    let tray_time = adw::SpinRow::with_range(cube::TRAY_TIME.0 as f64, cube::TRAY_TIME.1 as f64, 50.0);
+    tray_time.set_title("Slide time");
+    tray_time.set_subtitle("How long that glide takes, in milliseconds");
+    let note = adw::ActionRow::new();
+    note.set_title("Changes apply right away");
+    note.set_subtitle("After a Zohara update, log out and in once to get the newest cube.");
+    note.set_activatable(false);
+
+    let options: Vec<gtk4::Widget> = vec![
+        turn.clone().upcast(), gap.clone().upcast(), pull.clone().upcast(), tilt.clone().upcast(), gesture.clone().upcast(),
+        scroll_mode.clone().upcast(), scroll_rev.clone().upcast(), tray_anim.clone().upcast(), tray_time.clone().upcast(),
+    ];
+    for o in &options {
+        o.set_sensitive(false);
+    }
+
+    // Saves the options after typing stops (a spin row fires at every step).
+    let pending: Rc<RefCell<Option<gtk4::glib::SourceId>>> = Rc::new(RefCell::new(None));
+    let save = {
+        let (state, ready, pending) = (state.clone(), ready.clone(), pending.clone());
+        Rc::new(move || {
+            if !ready.get() {
+                return;
+            }
+            if let Some(id) = pending.borrow_mut().take() {
+                id.remove();
+            }
+            let (state, pending2) = (state.clone(), pending.clone());
+            let id = gtk4::glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+                pending2.borrow_mut().take();
+                let c = *state.borrow();
+                crate::backend::worker::in_background(move || cube::write(c), |_| {});
+            });
+            *pending.borrow_mut() = Some(id);
+        })
+    };
+
+    {
+        let (state, save) = (state.clone(), save.clone());
+        turn.connect_value_notify(move |r| { state.borrow_mut().duration = r.value() as u32; save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        gap.connect_active_notify(move |r| { state.borrow_mut().open_cube = r.is_active(); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        pull.connect_value_notify(move |r| { state.borrow_mut().pullback = r.value(); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        tilt.connect_value_notify(move |r| { state.borrow_mut().tilt = r.value(); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        scroll_mode.connect_selected_notify(move |r| { state.borrow_mut().scroll_mode = r.selected().min(2); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        scroll_rev.connect_active_notify(move |r| { state.borrow_mut().scroll_reverse = r.is_active(); save(); });
+    }
+    {
+        let (state, save, tray_time) = (state.clone(), save.clone(), tray_time.clone());
+        tray_anim.connect_active_notify(move |r| {
+            state.borrow_mut().tray_animation = r.is_active();
+            tray_time.set_sensitive(r.is_active());
+            save();
+        });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        tray_time.connect_value_notify(move |r| { state.borrow_mut().tray_time = r.value() as u32; save(); });
+    }
+    {
+        let (state, ready, on) = (state.clone(), ready.clone(), on.clone());
+        gesture.connect_active_notify(move |r| {
+            if !ready.get() {
+                return;
+            }
+            state.borrow_mut().overview_gesture = r.is_active();
+            let (c, cube_on) = (*state.borrow(), on.is_active());
+            crate::backend::worker::in_background(move || cube::set_overview_gesture(c, cube_on), |_| {});
+        });
+    }
+    {
+        let (state, ready, options, note, tray_anim, tray_time) = (state.clone(), ready.clone(), options.clone(), note.clone(), tray_anim.clone(), tray_time.clone());
+        on.connect_active_notify(move |r| {
+            for o in &options {
+                o.set_sensitive(r.is_active());
+            }
+            tray_time.set_sensitive(r.is_active() && tray_anim.is_active());
+            if !ready.get() {
+                return;
+            }
+            let (want, gesture) = (r.is_active(), state.borrow().overview_gesture);
+            let note = note.clone();
+            crate::backend::worker::in_background(move || cube::set_on(want, gesture), move |ok| {
+                note.set_title(if ok { "Saved" } else { "KWin did not accept the change" });
+            });
+        });
+    }
+
+    // the real state comes from the system; nothing is sent while it is being filled in
+    if installed {
+        let (state, ready) = (state.clone(), ready.clone());
+        let (on, turn, gap, pull, tilt, gesture) = (on.clone(), turn.clone(), gap.clone(), pull.clone(), tilt.clone(), gesture.clone());
+        let (tray_anim, tray_time, scroll_mode, scroll_rev) = (tray_anim.clone(), tray_time.clone(), scroll_mode.clone(), scroll_rev.clone());
+        crate::backend::worker::in_background(
+            || (cube::read(), cube::is_on()),
+            move |(c, is_on)| {
+                *state.borrow_mut() = c;
+                turn.set_value(c.duration as f64);
+                gap.set_active(c.open_cube);
+                pull.set_value(c.pullback);
+                tilt.set_value(c.tilt);
+                gesture.set_active(c.overview_gesture);
+                scroll_mode.set_selected(c.scroll_mode);
+                scroll_rev.set_active(c.scroll_reverse);
+                tray_time.set_value(c.tray_time as f64);
+                tray_anim.set_active(c.tray_animation);
+                on.set_active(is_on);
+                tray_time.set_sensitive(is_on && c.tray_animation);
+                ready.set(true);
+            },
+        );
+    }
+
+    let mut rows: Vec<gtk4::Widget> = vec![on.upcast()];
+    rows.extend(options);
+    rows.push(note.upcast());
+    rows
+}
+
+/// Live wallpaper: pick a video; it loops as the desktop background. The options show while a video is playing.
+fn live_wallpaper_rows() -> Vec<gtk4::Widget> {
+    use std::{cell::{Cell, RefCell}, rc::Rc};
+    let installed = live_wallpaper::installed();
+    let state = Rc::new(RefCell::new(live_wallpaper::Live::default()));
+    let ready = Rc::new(Cell::new(false));
+
+    let row = adw::ActionRow::new();
+    row.set_title("Live wallpaper");
+    row.set_subtitle(if installed {
+        "A video that plays on a loop. It uses some battery, so a short looping clip works best."
+    } else {
+        "Not installed on this computer."
+    });
+    let choose = gtk4::Button::builder().label("Choose a video").valign(gtk4::Align::Center).css_classes(vec!["win11-secondary-btn".to_string()]).build();
+    choose.set_sensitive(installed);
+    row.add_suffix(&choose);
+
+    let fill = adw::ComboRow::new();
+    fill.set_title("How the video fits");
+    fill.set_model(Some(&gtk4::StringList::new(&live_wallpaper::FILL.map(|f| f.0))));
+    let sound = adw::SwitchRow::new();
+    sound.set_title("Play the sound");
+    sound.set_subtitle("Off by default: the wallpaper stays quiet");
+    let speed = adw::SpinRow::with_range(live_wallpaper::SPEED.0, live_wallpaper::SPEED.1, 0.25);
+    speed.set_digits(2);
+    speed.set_title("Speed");
+    speed.set_subtitle("1 is normal speed");
+    let stop = adw::ActionRow::new();
+    stop.set_title("Go back to a picture");
+    stop.set_subtitle("Stops the video and shows your picture wallpaper again");
+    let stop_btn = gtk4::Button::builder().label("Stop").valign(gtk4::Align::Center).css_classes(vec!["win11-secondary-btn".to_string()]).build();
+    stop.add_suffix(&stop_btn);
+
+    let options: Vec<gtk4::Widget> = vec![fill.clone().upcast(), sound.clone().upcast(), speed.clone().upcast(), stop.clone().upcast()];
+    for o in &options {
+        o.set_visible(false);
+    }
+
+    // Changes are sent after typing stops (a spin row fires at every step) and only while a video is chosen.
+    let pending: Rc<RefCell<Option<gtk4::glib::SourceId>>> = Rc::new(RefCell::new(None));
+    let send = {
+        let (state, ready, pending) = (state.clone(), ready.clone(), pending.clone());
+        Rc::new(move || {
+            if !ready.get() || state.borrow().path.is_empty() {
+                return;
+            }
+            if let Some(id) = pending.borrow_mut().take() {
+                id.remove();
+            }
+            let (state, pending2) = (state.clone(), pending.clone());
+            let id = gtk4::glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+                pending2.borrow_mut().take();
+                let l = state.borrow().clone();
+                crate::backend::worker::in_background(move || live_wallpaper::apply(&l), |_| {});
+            });
+            *pending.borrow_mut() = Some(id);
+        })
+    };
+    {
+        let (state, send) = (state.clone(), send.clone());
+        fill.connect_selected_notify(move |r| {
+            state.borrow_mut().fill = live_wallpaper::FILL[(r.selected() as usize).min(2)].1;
+            send();
+        });
+    }
+    {
+        let (state, send) = (state.clone(), send.clone());
+        sound.connect_active_notify(move |r| { state.borrow_mut().muted = !r.is_active(); send(); });
+    }
+    {
+        let (state, send) = (state.clone(), send.clone());
+        speed.connect_value_notify(move |r| { state.borrow_mut().speed = r.value(); send(); });
+    }
+
+    // the video that plays now, if any, comes from the running desktop; nothing is sent while it is filled in
+    let show = {
+        let (state, ready, row, options) = (state.clone(), ready.clone(), row.clone(), options.clone());
+        let (fill, sound, speed) = (fill.clone(), sound.clone(), speed.clone());
+        Rc::new(move |now: Option<live_wallpaper::Live>| {
+            ready.set(false);
+            match now {
+                Some(l) => {
+                    fill.set_selected(live_wallpaper::FILL.iter().position(|f| f.1 == l.fill).unwrap_or(0) as u32);
+                    sound.set_active(!l.muted);
+                    speed.set_value(l.speed);
+                    let name = std::path::Path::new(&l.path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    row.set_subtitle(&format!("Playing: {name}"));
+                    *state.borrow_mut() = l;
+                    for o in &options {
+                        o.set_visible(true);
+                    }
+                }
+                None => {
+                    *state.borrow_mut() = live_wallpaper::Live::default();
+                    for o in &options {
+                        o.set_visible(false);
+                    }
+                }
+            }
+            ready.set(true);
+        })
+    };
+    if installed {
+        let show = show.clone();
+        crate::backend::worker::in_background(live_wallpaper::current, move |now| show(now));
+    }
+
+    {
+        let (state, show, row) = (state.clone(), show.clone(), row.clone());
+        choose.connect_clicked(move |btn| {
+            let dialog = gtk4::FileDialog::new();
+            dialog.set_title("Choose a video for your wallpaper");
+            let filter = gtk4::FileFilter::new();
+            filter.set_name(Some("Videos"));
+            for e in live_wallpaper::EXTENSIONS {
+                filter.add_suffix(e);
+            }
+            let filters = gio::ListStore::new::<gtk4::FileFilter>();
+            filters.append(&filter);
+            dialog.set_filters(Some(&filters));
+            let (state, show, row) = (state.clone(), show.clone(), row.clone());
+            dialog.open(btn.root().and_downcast::<gtk4::Window>().as_ref(), None::<&gio::Cancellable>, move |res| {
+                let Some(path) = res.ok().and_then(|f| f.path()) else { return };
+                let path = path.to_string_lossy().to_string();
+                if !live_wallpaper::is_video(&path) {
+                    row.set_subtitle("That file is not a video the player can show.");
+                    return;
+                }
+                let mut l = state.borrow().clone();
+                l.path = path;
+                row.set_subtitle("Starting…");
+                let show = show.clone();
+                crate::backend::worker::in_background(move || { live_wallpaper::apply(&l); live_wallpaper::current() }, move |now| show(now));
+            });
+        });
+    }
+    {
+        let (show, row) = (show.clone(), row.clone());
+        stop_btn.connect_clicked(move |_| {
+            row.set_subtitle("Stopping…");
+            let (show, row) = (show.clone(), row.clone());
+            crate::backend::worker::in_background(live_wallpaper::stop, move |_| {
+                show(None);
+                row.set_subtitle("A video that plays on a loop. It uses some battery, so a short looping clip works best.");
+            });
+        });
+    }
+
+    let mut rows: Vec<gtk4::Widget> = vec![row.upcast()];
+    rows.extend(options);
+    rows
+}
+
+/// Desktops: the number of them, and Dynamic desktops (a new app opens on a desktop of its own and the desktop goes away
+/// with the app). Changes apply at once; options of the dynamic mode are saved after typing stops.
+fn desktop_rows() -> Vec<gtk4::Widget> {
+    use std::{cell::{Cell, RefCell}, rc::Rc};
+    let installed = desktops::installed();
+    let state = Rc::new(RefCell::new(desktops::Dynamic::default()));
+    let ready = Rc::new(Cell::new(false));
+    let pending: Rc<RefCell<Option<gtk4::glib::SourceId>>> = Rc::new(RefCell::new(None));
+    let debounce = |pending: &Rc<RefCell<Option<gtk4::glib::SourceId>>>, f: Box<dyn Fn() + 'static>| {
+        if let Some(id) = pending.borrow_mut().take() {
+            id.remove();
+        }
+        let pending2 = pending.clone();
+        let id = gtk4::glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+            pending2.borrow_mut().take();
+            f();
+        });
+        *pending.borrow_mut() = Some(id);
+    };
+
+    // ── How many desktops ──
+    let count = adw::SpinRow::with_range(desktops::MIN as f64, desktops::MAX as f64, 1.0);
+    count.set_title("Number of desktops");
+    count.set_subtitle("Each desktop is its own workspace. Removing one moves its windows to another; nothing is closed");
+    count.set_value(3.0);
+    let count_ready = Rc::new(Cell::new(false));
+    {
+        let (count, count_ready) = (count.clone(), count_ready.clone());
+        crate::backend::worker::in_background(desktops::count, move |n| {
+            count.set_value(n.max(1) as f64);
+            count_ready.set(true);
+        });
+    }
+    {
+        let count_ready = count_ready.clone();
+        let pending_count: Rc<RefCell<Option<gtk4::glib::SourceId>>> = Rc::new(RefCell::new(None));
+        count.connect_value_notify(move |r| {
+            if !count_ready.get() {
+                return;
+            }
+            let want = r.value() as u32;
+            debounce(&pending_count, Box::new(move || {
+                crate::backend::worker::in_background(move || desktops::set_count(want), |_| {});
+            }));
+        });
+    }
+
+    // ── Dynamic desktops ──
+    let on = adw::SwitchRow::new();
+    on.set_title("Dynamic desktops");
+    on.set_subtitle(if installed {
+        "Send windows to new desktops, by hand or automatically. A desktop made this way goes away when its last window closes"
+    } else {
+        "Not installed on this computer."
+    });
+    on.set_sensitive(installed);
+    let mode = adw::ComboRow::new();
+    mode.set_title("New apps");
+    mode.set_subtitle("Manual: apps open where you are, you send one to a new desktop yourself (right-click its title bar > Move to a new desktop, or Meta+Shift+N)");
+    mode.set_model(Some(&gtk4::StringList::new(&["Manual: I send apps to new desktops myself", "Automatic: each new app gets its own desktop"])));
+    let group = adw::SwitchRow::new();
+    group.set_title("Keep windows of the same app together");
+    group.set_subtitle("Automatic mode: a second window of an app opens on the desktop that app already has");
+    let switch = adw::SwitchRow::new();
+    switch.set_title("Go to the new desktop");
+    switch.set_subtitle("Off: the app moves to its new desktop but you stay where you are");
+    let close = adw::SwitchRow::new();
+    close.set_title("Remove the desktop when the app closes");
+    close.set_subtitle("Only desktops made this way are removed, never ones you made yourself");
+    let max = adw::SpinRow::with_range(2.0, desktops::MAX as f64, 1.0);
+    max.set_title("Most desktops");
+    max.set_subtitle("Past this number new apps open on the desktop you are on");
+    let ignore = adw::EntryRow::new();
+    ignore.set_title("Apps that stay on the current desktop (names, comma separated)");
+    let note = adw::ActionRow::new();
+    note.set_title("Apps that are already open stay where they are");
+    note.set_subtitle("Dialogs, password prompts and the panel never get a desktop. Windows that come back when you log in are left alone.");
+    note.set_activatable(false);
+
+    let options: Vec<gtk4::Widget> = vec![mode.clone().upcast(), group.clone().upcast(), switch.clone().upcast(), close.clone().upcast(), max.clone().upcast(), ignore.clone().upcast(), note.clone().upcast()];
+    for o in &options {
+        o.set_visible(false);
+    }
+
+    let save: Rc<dyn Fn()> = {
+        let (state, ready, pending) = (state.clone(), ready.clone(), pending.clone());
+        Rc::new(move || {
+            if !ready.get() {
+                return;
+            }
+            let state = state.clone();
+            debounce(&pending, Box::new(move || {
+                let d = state.borrow().clone();
+                crate::backend::worker::in_background(move || desktops::write(&d), |_| {});
+            }));
+        })
+    };
+    {
+        let (state, save) = (state.clone(), save.clone());
+        mode.connect_selected_notify(move |r| { state.borrow_mut().automatic = r.selected() == 1; save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        group.connect_active_notify(move |r| { state.borrow_mut().group_by_app = r.is_active(); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        switch.connect_active_notify(move |r| { state.borrow_mut().switch_to_new = r.is_active(); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        close.connect_active_notify(move |r| { state.borrow_mut().close_empty = r.is_active(); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        max.connect_value_notify(move |r| { state.borrow_mut().max_desktops = r.value() as u32; save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        ignore.connect_changed(move |r| { state.borrow_mut().ignore = r.text().to_string(); save(); });
+    }
+    {
+        let (state, ready, options) = (state.clone(), ready.clone(), options.clone());
+        on.connect_active_notify(move |r| {
+            for o in &options {
+                o.set_visible(r.is_active());
+            }
+            if !ready.get() {
+                return;
+            }
+            state.borrow_mut().enabled = r.is_active();
+            let d = state.borrow().clone();
+            crate::backend::worker::in_background(move || desktops::write(&d), |_| {});
+        });
+    }
+
+    if installed {
+        let (state, ready) = (state.clone(), ready.clone());
+        let (on, mode, group, switch, close, max, ignore) = (on.clone(), mode.clone(), group.clone(), switch.clone(), close.clone(), max.clone(), ignore.clone());
+        crate::backend::worker::in_background(desktops::read, move |d| {
+            mode.set_selected(if d.automatic { 1 } else { 0 });
+            group.set_active(d.group_by_app);
+            switch.set_active(d.switch_to_new);
+            close.set_active(d.close_empty);
+            max.set_value(d.max_desktops as f64);
+            ignore.set_text(&d.ignore);
+            on.set_active(d.enabled);
+            *state.borrow_mut() = d;
+            ready.set(true);
+        });
+    }
+
+    let mut rows: Vec<gtk4::Widget> = vec![count.upcast(), on.upcast()];
+    rows.extend(options);
+    rows
 }

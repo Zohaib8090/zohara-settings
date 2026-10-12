@@ -272,40 +272,55 @@ fn power_group() -> Option<adw::PreferencesGroup> {
 fn graphics_group() -> adw::PreferencesGroup {
     let g = adw::PreferencesGroup::new();
     g.set_title("Graphics");
-    let lspci = output("lspci", &[]).unwrap_or_default();
-    let gpus: Vec<String> = lspci
-        .lines()
-        .filter(|l| l.contains("VGA compatible controller") || l.contains("3D controller") || l.contains("Display controller"))
-        .map(|l| l.splitn(2, ": ").nth(1).unwrap_or(l).to_string())
-        .collect();
-    let icds: Vec<String> = std::fs::read_dir("/usr/share/vulkan/icd.d")
-        .map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_lowercase()).collect())
-        .unwrap_or_default();
-    if gpus.is_empty() {
-        let r = adw::ActionRow::new();
-        r.set_title("No graphics card detected");
-        g.add(&r);
-    }
-    for gpu in gpus {
-        let lower = gpu.to_lowercase();
-        let driver = if lower.contains("nvidia") {
-            icds.iter().any(|i| i.contains("nvidia")).then_some("NVIDIA")
-        } else if lower.contains("amd") || lower.contains("ati ") || lower.contains("radeon") {
-            icds.iter().any(|i| i.contains("radeon")).then_some("RADV (Mesa)")
-        } else if lower.contains("intel") {
-            icds.iter().any(|i| i.contains("intel")).then_some("ANV (Mesa)")
-        } else {
-            None
-        };
-        let r = adw::ActionRow::new();
-        r.set_title(&glib::markup_escape_text(&gpu));
-        r.add_prefix(&gtk4::Image::from_icon_name("video-display-symbolic"));
-        r.set_subtitle(&match driver {
-            Some(d) => format!("Vulkan ready · {d} driver"),
-            None => "No Vulkan driver found: most modern games won't start".into(),
-        });
-        g.add(&r);
-    }
+    // `lspci` can take a couple of seconds (it wakes a sleeping NVIDIA chip), so it runs in the background and the
+    // page opens straight away.
+    let loading = adw::ActionRow::new();
+    loading.set_title("Checking your graphics…");
+    g.add(&loading);
+
+    let g2 = g.clone();
+    in_background(
+        || {
+            let lspci = output("lspci", &[]).unwrap_or_default();
+            let gpus: Vec<String> = lspci
+                .lines()
+                .filter(|l| l.contains("VGA compatible controller") || l.contains("3D controller") || l.contains("Display controller"))
+                .map(|l| l.splitn(2, ": ").nth(1).unwrap_or(l).to_string())
+                .collect();
+            let icds: Vec<String> = std::fs::read_dir("/usr/share/vulkan/icd.d")
+                .map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().to_lowercase()).collect())
+                .unwrap_or_default();
+            (gpus, icds)
+        },
+        move |(gpus, icds)| {
+            g2.remove(&loading);
+            if gpus.is_empty() {
+                let r = adw::ActionRow::new();
+                r.set_title("No graphics card detected");
+                g2.add(&r);
+            }
+            for gpu in gpus {
+                let lower = gpu.to_lowercase();
+                let driver = if lower.contains("nvidia") {
+                    icds.iter().any(|i| i.contains("nvidia")).then_some("NVIDIA")
+                } else if lower.contains("amd") || lower.contains("ati ") || lower.contains("radeon") {
+                    icds.iter().any(|i| i.contains("radeon")).then_some("RADV (Mesa)")
+                } else if lower.contains("intel") {
+                    icds.iter().any(|i| i.contains("intel")).then_some("ANV (Mesa)")
+                } else {
+                    None
+                };
+                let r = adw::ActionRow::new();
+                r.set_title(&glib::markup_escape_text(&gpu));
+                r.add_prefix(&gtk4::Image::from_icon_name("video-display-symbolic"));
+                r.set_subtitle(&match driver {
+                    Some(d) => format!("Vulkan ready · {d} driver"),
+                    None => "No Vulkan driver found: most modern games won't start".into(),
+                });
+                g2.add(&r);
+            }
+        },
+    );
     g
 }
 

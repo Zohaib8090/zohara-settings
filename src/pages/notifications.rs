@@ -8,19 +8,32 @@ use gtk4::prelude::*;
 use libadwaita as adw;
 
 const RC: &str = "plasmanotifyrc";
-// "Until" far in the future is how Plasma itself represents open-ended DND.
-const DND_FOREVER: &str = "2100-01-01T00:00:00";
+// "Until" far in the future is how Plasma itself represents open-ended DND. KConfig stores a date and time as
+// `year,month,day,hour,minute,second.millisecond` (local time), not as an ISO date: Plasma ignores any other spelling,
+// which is why this switch once did nothing.
+const DND_FOREVER: &str = "2100,1,1,0,0,0";
+
+/// (year, month, day, hour, minute, second) from KConfig's `2027,10,9,3,8,49.962`. None for anything else.
+fn parse_until(v: &str) -> Option<[i64; 6]> {
+    let mut out = [0i64; 6];
+    let mut parts = v.trim().split(',');
+    for slot in out.iter_mut() {
+        let part = parts.next()?.trim();
+        *slot = part.split('.').next()?.parse().ok()?; // seconds may carry milliseconds
+    }
+    parts.next().is_none().then_some(out)
+}
+
+/// Whether a stored `Until` is still in the future at `now` (same field order, local time).
+fn dnd_until_active(value: &str, now: [i64; 6]) -> bool {
+    parse_until(value).is_some_and(|until| until > now)
+}
 
 fn dnd_active() -> bool {
-    // Any timestamp in the future means DND is on; Plasma clears or lets it lapse when it ends.
-    kconfig::read(RC, &["DoNotDisturb"], "Until")
-        .map(|v| {
-            let year: i32 = v.trim_start_matches(|c: char| !c.is_ascii_digit()).split(|c: char| !c.is_ascii_digit()).next()
-                .and_then(|y| y.parse().ok())
-                .unwrap_or(0);
-            year >= 2100
-        })
-        .unwrap_or(false)
+    let Some(v) = kconfig::read(RC, &["DoNotDisturb"], "Until") else { return false };
+    let Ok(t) = glib::DateTime::now_local() else { return false };
+    let now = [t.year() as i64, t.month() as i64, t.day_of_month() as i64, t.hour() as i64, t.minute() as i64, t.second() as i64];
+    dnd_until_active(&v, now)
 }
 
 fn bool_key(groups: &[&str], key: &str, default: bool) -> bool {
@@ -44,9 +57,9 @@ fn general_group() -> adw::PreferencesGroup {
         let on = r.is_active();
         kconfig::spawn(move || {
             if on {
-                kconfig::write_typed(RC, &["DoNotDisturb"], "Until", "datetime", DND_FOREVER);
+                kconfig::write_notify(RC, &["DoNotDisturb"], "Until", DND_FOREVER);
             } else {
-                kconfig::delete(RC, &["DoNotDisturb"], "Until");
+                kconfig::delete_notify(RC, &["DoNotDisturb"], "Until");
             }
         });
     });
@@ -188,4 +201,63 @@ pub fn build() -> gtk4::Widget {
 
     scroll.set_child(Some(&root));
     scroll.upcast()
+}
+
+#[cfg(test)]
+mod dnd_tests {
+    use super::*;
+
+    const NOW: [i64; 6] = [2026, 10, 9, 3, 30, 0];
+
+    #[test]
+    fn plasmas_own_value_is_read_back() {
+        assert_eq!(parse_until("2027,10,9,3,8,49.962"), Some([2027, 10, 9, 3, 8, 49]));
+        assert!(dnd_until_active("2027,10,9,3,8,49.962", NOW));
+        assert!(dnd_until_active(DND_FOREVER, NOW));
+    }
+
+    #[test]
+    fn a_time_in_the_past_is_not_active() {
+        assert!(!dnd_until_active("2026,10,9,3,29,59.5", NOW));
+        assert!(!dnd_until_active("2025,12,31,23,59,59", NOW));
+        assert!(dnd_until_active("2026,10,9,3,30,1", NOW));
+    }
+
+    #[test]
+    fn other_spellings_are_not_active() {
+        // What an older Settings wrote: Plasma never understood it.
+        assert!(!dnd_until_active("2100-01-01T00:00:00", NOW));
+        assert!(!dnd_until_active("", NOW));
+        assert!(!dnd_until_active("2100,1,1", NOW));
+        assert!(!dnd_until_active("2100,1,1,0,0,0,9", NOW));
+    }
+
+    fn plasma_inhibited() -> bool {
+        let o = std::process::Command::new("busctl")
+            .args(["--user", "get-property", "org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications", "Inhibited"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&o.stdout).contains("true")
+    }
+
+    /// Needs a running Plasma session. `cargo test live_dnd -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_dnd_switch_really_turns_plasma_do_not_disturb_on_and_off() {
+        kconfig::delete_notify(RC, &["DoNotDisturb"], "Until");
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        assert!(!plasma_inhibited(), "starts off");
+        assert!(!dnd_active());
+
+        kconfig::write_notify(RC, &["DoNotDisturb"], "Until", DND_FOREVER);
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let (plasma_on, page_on) = (plasma_inhibited(), dnd_active());
+
+        kconfig::delete_notify(RC, &["DoNotDisturb"], "Until");
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let (plasma_off, page_off) = (plasma_inhibited(), dnd_active());
+
+        assert!(plasma_on && page_on, "turned on: plasma={plasma_on} page={page_on}");
+        assert!(!plasma_off && !page_off, "turned off: plasma={plasma_off} page={page_off}");
+    }
 }

@@ -1,0 +1,19 @@
+[Unit]
+Description=Zohara equalizer (PipeWire filter chain)
+Documentation=Settings > Sound > Equalizer
+After=pipewire.service wireplumber.service pipewire-pulse.service
+Wants=pipewire.service
+# Only once the equalizer has been turned on in Settings (which writes this file).
+ConditionPathExists=%h/.config/zohara/equalizer/filter-chain.conf
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/pipewire -c %h/.config/zohara/equalizer/filter-chain.conf
+# Make the equalizer the default output once it exists, and give the real device back when it stops.
+ExecStartPost=/usr/bin/zohara-settings --eq-activate
+ExecStopPost=/usr/bin/zohara-settings --eq-deactivate
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

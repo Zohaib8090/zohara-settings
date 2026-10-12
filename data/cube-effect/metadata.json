@@ -1,0 +1,22 @@
+{
+    "KPackageStructure": "KWin/Effect",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "Zohara OS",
+                "Email": "zohaibbaig144@gmail.com"
+            }
+        ],
+        "Category": "Virtual Desktop Switching Animation",
+        "Description": "Switch virtual desktops by turning a 3D cube that follows your fingers on the touchpad",
+        "EnabledByDefault": false,
+        "Id": "zoharacube",
+        "License": "GPL",
+        "Name": "Zohara Cube"
+    },
+    "X-KDE-Ordering": 61,
+    "X-Plasma-API": "declarativescript",
+    "org.kde.kwin.effect": {
+        "exclusiveGroup": "desktop-animations"
+    }
+}

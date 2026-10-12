@@ -1,3 +1,4 @@
+pub mod live;
 pub mod home;
 pub mod system;
 pub mod bluetooth;
@@ -22,11 +23,13 @@ pub mod gaming;
 pub mod game_libraries;
 pub mod my_games;
 pub mod accessibility;
+pub mod app_details;
 pub mod printers;
 pub mod privacy;
 pub mod updates;
 pub mod display;
 pub mod display_layout;
+pub mod equalizer;
 pub mod sound;
 pub mod notifications;
 pub mod power;

@@ -8,7 +8,7 @@ that share no code and can be used one without the other. This page describes Se
 | Program | Updates | Engine |
 |---|---|---|
 | **Settings > Zohara Update** | everything that comes from pacman: the system, the kernel, Zohara's own programs (Settings, the Store, ...) and apps installed from the Arch repositories (Firefox, VLC ...) | `src/sysupdate/` |
-| **Zohara Store > Updates** | apps installed from Flathub (Flatpak), and going back to an earlier version of one | `zohara-store-rs/src/updates.rs` (in the `zohara` repo) |
+| **Zohara Store > Updates** | apps installed from Flathub (Flatpak), and going back to an earlier version of one; also *checks* (and updates on request) packages built from the AUR and AppImages installed through the Store | `zohara-store-rs/src/updates.rs`, `community_updates.rs` (in the `zohara` repo) |
 
 Why pacman apps go with the system: on Arch, updating one package without the rest can break programs, so every pacman
 update is a full, pinned system update.

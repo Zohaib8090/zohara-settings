@@ -87,7 +87,7 @@ pub fn build() -> gtk4::Widget {
         .css_classes(vec!["win11-device-sub".to_string()])
         .build();
     let rename_btn = gtk4::Button::builder()
-        .label("Rename")
+        .label("Rename device")
         .css_classes(vec!["win11-link-btn".to_string()])
         .halign(gtk4::Align::Start)
         .build();
@@ -101,32 +101,11 @@ pub fn build() -> gtk4::Widget {
     let rows_box = gtk4::Box::new(gtk4::Orientation::Vertical, 16);
     rows_box.set_margin_top(8);
 
-    // 1) About card
-    let about_card = adw::PreferencesGroup::builder()
-        .title("About this device")
-        .build();
-    about_card.add(&make_row("Device name", &info.hostname));
-    about_card.add(&make_row("OS", &info.os_pretty));
-    let os_version = std::fs::read_to_string("/etc/os-release")
-        .ok()
-        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("VERSION=").map(|v| v.trim_matches('"').to_string())))
-        .unwrap_or_else(|| "unknown".to_string());
-    about_card.add(&make_row("Zohara OS version", &os_version));
-    about_card.add(&make_row(
-        "Kernel",
-        &format!("linux-zen {}", info.kernel),
-    ));
-    about_card.add(&make_row(
-        "Processor",
-        &format!("{} ({} logical cores)", info.cpu_model, info.cpu_cores),
-    ));
+    // The device's details live on the Advanced page ("About this device"); here the name can be changed from the card above.
     let host_for_rename = host_lbl.clone();
-    about_card.add(&make_row_with_action(
-        "Rename device",
-        "Change the hostname shown on the network",
-        "Rename",
-        move |_| {
-            let parent = rename_btn.root().and_downcast::<gtk4::Window>();
+    let rename_btn_for_parent = rename_btn.clone();
+    rename_btn.connect_clicked(move |_| {
+            let parent = rename_btn_for_parent.root().and_downcast::<gtk4::Window>();
             let dialog = adw::MessageDialog::builder()
                 .heading("Rename your PC")
                 .body("Enter a new name for this device:")
@@ -156,9 +135,7 @@ pub fn build() -> gtk4::Widget {
                 d.close();
             });
             dialog.present();
-        },
-    ));
-    rows_box.append(&about_card);
+    });
     rows_box.append(&system_links_group(&root_box));
 
     // 2) Hardware specs

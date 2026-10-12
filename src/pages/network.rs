@@ -138,6 +138,9 @@ pub fn build() -> gtk4::Widget {
     // keeps the GTK layout from ballooning on a dense apartment block.
     const MAX_ROWS: usize = 8;
 
+    // The rows added by the last populate, so a rescan replaces them instead of adding a second copy of the list.
+    let ap_rows: std::rc::Rc<std::cell::RefCell<Vec<adw::ActionRow>>> = Default::default();
+    let ap_rows_for_populate = ap_rows.clone();
     let wifi_exp_for_populate = wifi_exp.clone();
     let ap_list_row_for_populate = ap_list_row.clone();
     let rescan_btn_for_repopulate = rescan_btn.clone();
@@ -149,6 +152,7 @@ pub fn build() -> gtk4::Widget {
         let ap_list_row = ap_list_row_for_populate.clone();
         let wifi_exp = wifi_exp_for_populate.clone();
         let rescan_btn = rescan_btn_for_repopulate.clone();
+        let ap_rows = ap_rows_for_populate.clone();
 
         // Mark the list as "loading". We don't remove the row here -- the
         // post-rescan callback uses this same state string to know when to
@@ -171,7 +175,12 @@ pub fn build() -> gtk4::Widget {
                     // mutate the existing row to be per-AP because GtkListBox
                     // rows are positionally stable and the placeholder already
                     // has the wrong subtitle.
-                    wifi_exp.remove(&ap_list_row);
+                    for old in ap_rows.borrow_mut().drain(..) {
+                        wifi_exp.remove(&old);
+                    }
+                    if ap_list_row.parent().is_some() {
+                        wifi_exp.remove(&ap_list_row);
+                    }
 
                     if total == 0 {
                         let empty = adw::ActionRow::new();
@@ -179,20 +188,30 @@ pub fn build() -> gtk4::Widget {
                         empty.set_subtitle("Make sure Wi-Fi is on and try scanning again");
                         empty.add_prefix(&gtk4::Image::from_icon_name("dialog-information-symbolic"));
                         wifi_exp.add_row(&empty);
+                        ap_rows.borrow_mut().push(empty);
                     } else {
                         for ap in shown {
-                            wifi_exp.add_row(&build_ap_row(ap));
+                            let row = build_ap_row(ap);
+                            wifi_exp.add_row(&row);
+                            ap_rows.borrow_mut().push(row);
                         }
                         if total > MAX_ROWS {
                             let more = adw::ActionRow::new();
                             more.set_title(&format!("…and {} more", total - MAX_ROWS));
                             more.set_subtitle("Use the Scan button to refresh");
                             wifi_exp.add_row(&more);
+                            ap_rows.borrow_mut().push(more);
                         }
                     }
                     rescan_btn.set_sensitive(true);
                 }
                 Ok(Err(e)) => {
+                    for old in ap_rows.borrow_mut().drain(..) {
+                        wifi_exp.remove(&old);
+                    }
+                    if ap_list_row.parent().is_none() {
+                        wifi_exp.add_row(&ap_list_row);
+                    }
                     ap_list_row.set_subtitle(&format!("Error: {}", e.user_message()));
                     rescan_btn.set_sensitive(true);
                 }

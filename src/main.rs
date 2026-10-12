@@ -288,6 +288,8 @@ fn current_groups() -> Vec<String> {
 }
 
 fn build_ui(app: &adw::Application) {
+    // Read the connection status now, off the UI thread, so the Network page shows it as soon as it opens.
+    pages::network_extra::prefetch_status();
     if let Some(settings) = gtk4::Settings::default() {
         settings.set_gtk_decoration_layout(Some("icon:minimize,maximize,close"));
         // Respect the system light/dark preference instead of forcing dark.

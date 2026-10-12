@@ -69,7 +69,7 @@ fn info_row(title: &str, value: &str) -> adw::ActionRow {
 
 // ── Status ─────────────────────────────────────────────────────────────────
 
-#[derive(Default)]
+#[derive(Default, Clone, PartialEq)]
 pub struct Active {
     pub name: String,
     pub kind: String,
@@ -130,22 +130,77 @@ fn kind_label(kind: &str) -> &'static str {
     }
 }
 
+/// The last connection status read, so the Network page can show it the moment it opens.
+static STATUS_CACHE: std::sync::Mutex<Option<Option<Active>>> = std::sync::Mutex::new(None);
+
+fn cached_status() -> Option<Option<Active>> {
+    STATUS_CACHE.lock().ok().and_then(|c| c.clone())
+}
+
+fn store_status(a: &Option<Active>) {
+    if let Ok(mut c) = STATUS_CACHE.lock() {
+        *c = Some(a.clone());
+    }
+}
+
+/// Reads the connection status in the background. Called when the app starts, so the page has it ready.
+pub fn prefetch_status() {
+    std::thread::spawn(|| store_status(&active_connection()));
+}
+
 pub fn status_group() -> adw::PreferencesGroup {
     let g = adw::PreferencesGroup::new();
     g.set_title("Status");
+    // The rows currently shown, so a refresh replaces them instead of stacking a second set.
+    let shown: std::rc::Rc<std::cell::RefCell<Vec<gtk4::Widget>>> = Default::default();
+    let last: std::rc::Rc<std::cell::RefCell<Option<Option<Active>>>> = Default::default();
+
     let loading = adw::ActionRow::new();
     loading.set_title("Checking your connection…");
-    g.add(&loading);
+    let had_cache = match cached_status() {
+        Some(a) => {
+            fill_status(&g, &shown, a.clone());
+            *last.borrow_mut() = Some(a);
+            true
+        }
+        None => {
+            g.add(&loading);
+            shown.borrow_mut().push(loading.clone().upcast());
+            false
+        }
+    };
 
-    let g2 = g.clone();
+    // Look again now (quietly when something is already shown) and redraw only if it changed.
+    let (g2, shown2, last2) = (g.clone(), shown.clone(), last.clone());
     in_background(active_connection, move |active| {
-        g2.remove(&loading);
+        store_status(&active);
+        if had_cache || last2.borrow().is_some() {
+            if last2.borrow().as_ref() == Some(&active) {
+                return;
+            }
+        }
+        *last2.borrow_mut() = Some(active.clone());
+        fill_status(&g2, &shown2, active);
+    });
+    g
+}
+
+/// Replaces whatever the Status group shows with the rows for `active`.
+fn fill_status(g2: &adw::PreferencesGroup, shown: &std::rc::Rc<std::cell::RefCell<Vec<gtk4::Widget>>>, active: Option<Active>) {
+    for old in shown.borrow_mut().drain(..) {
+        g2.remove(&old);
+    }
+    let add = |w: gtk4::Widget| {
+        g2.add(&w);
+        shown.borrow_mut().push(w);
+    };
+    {
         let Some(a) = active else {
             let r = adw::ActionRow::new();
             r.set_title("Not connected");
             r.set_subtitle("Connect to Wi-Fi or plug in an Ethernet cable");
             r.add_prefix(&gtk4::Image::from_icon_name("network-offline-symbolic"));
-            g2.add(&r);
+            add(r.clone().upcast());
             return;
         };
         let head = adw::ActionRow::new();
@@ -164,7 +219,7 @@ pub fn status_group() -> adw::PreferencesGroup {
         } else {
             "network-wireless-signal-excellent-symbolic"
         }));
-        g2.add(&head);
+        add(head.clone().upcast());
 
         let details = adw::ExpanderRow::new();
         details.set_title("Connection details");
@@ -172,7 +227,7 @@ pub fn status_group() -> adw::PreferencesGroup {
         details.add_row(&info_row("Gateway", if a.gateway.is_empty() { "—" } else { &a.gateway }));
         details.add_row(&info_row("DNS servers", if a.dns.is_empty() { "—" } else { &a.dns }));
         details.add_row(&info_row("Adapter", &a.device));
-        g2.add(&details);
+        add(details.clone().upcast());
 
         let metered = adw::ComboRow::new();
         metered.set_title("Metered connection");
@@ -194,7 +249,7 @@ pub fn status_group() -> adw::PreferencesGroup {
                 },
             );
         });
-        g2.add(&metered);
+        add(metered.clone().upcast());
 
         let ip = adw::ActionRow::new();
         ip.set_title("IP and DNS settings");
@@ -203,9 +258,8 @@ pub fn status_group() -> adw::PreferencesGroup {
         ip.set_activatable(true);
         let name = a.name.clone();
         ip.connect_activated(move |r| ip_dialog(r.upcast_ref(), &name));
-        g2.add(&ip);
-    });
-    g
+        add(ip.clone().upcast());
+    }
 }
 
 // ── IP settings dialog (shared by Wi-Fi and Ethernet) ──────────────────────

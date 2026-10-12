@@ -433,6 +433,7 @@ pub fn build() -> gtk4::Widget {
             cams_slot.append(&cameras_group(names));
         }
     });
+    root.append(&super::drives::group(&root));
     root.append(&other_devices_group(&root));
 
     scroll.set_child(Some(&root));

@@ -2,6 +2,7 @@ pub mod live;
 pub mod home;
 pub mod system;
 pub mod bluetooth;
+pub mod drives;
 pub mod network;
 pub mod network_extra;
 pub mod wifi_check;

@@ -337,7 +337,7 @@ pub struct Fs {
 }
 
 pub const FILESYSTEMS: [Fs; 5] = [
-    Fs { id: "exfat", title: "exFAT", note: "Windows, macOS and Linux. The usual choice for USB drives and SD cards.", max_label: 15, tool: "mkfs.exfat", windows_style: true },
+    Fs { id: "exfat", title: "exFAT", note: "Windows, macOS and Linux. The usual choice for USB drives and SD cards.", max_label: 11, tool: "mkfs.exfat", windows_style: true },
     Fs { id: "vfat", title: "FAT32", note: "Works almost everywhere, even TVs and car stereos. A single file can't be over 4 GB.", max_label: 11, tool: "mkfs.vfat", windows_style: true },
     Fs { id: "ntfs", title: "NTFS", note: "Windows. Linux can read and write it too.", max_label: 32, tool: "mkfs.ntfs", windows_style: true },
     Fs { id: "ext4", title: "ext4", note: "Linux only. Fast and reliable for a Linux drive.", max_label: 16, tool: "mkfs.ext4", windows_style: false },
@@ -968,8 +968,9 @@ mod tests {
         assert_eq!(normalize_label("vfat", " my files ").unwrap(), "MY FILES");
         assert!(normalize_label("vfat", "a:b").is_err());
         assert!(normalize_label("vfat", "TWELVE_CHARS").is_err(), "FAT32 names stop at 11");
-        assert_eq!(normalize_label("exfat", "Holiday 2026").unwrap(), "Holiday 2026");
-        assert!(normalize_label("exfat", "0123456789abcdef").is_err(), "exFAT names stop at 15");
+        assert_eq!(normalize_label("exfat", "Holiday 26").unwrap(), "Holiday 26");
+        assert!(normalize_label("exfat", "0123456789a").is_ok());
+        assert!(normalize_label("exfat", "0123456789ab").is_err(), "exFAT names stop at 11 (UDisks refuses 14 characters: seen on a real run)");
         assert!(normalize_label("ext4", "0123456789abcdef").is_ok());
         assert!(normalize_label("ext4", "0123456789abcdefg").is_err(), "ext4 names stop at 16");
         assert!(normalize_label("ext4", "a/b").is_err());

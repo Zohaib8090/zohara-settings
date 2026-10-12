@@ -26,6 +26,7 @@ depends=(
   'qt6-quick3d'    # the 3D scene of the desktop cube
   'qt6-multimedia'         # the video player of the live wallpaper
   'qt6-multimedia-ffmpeg'  # ...and the codecs it plays with
+  'udisks2'        # USB drives, SD cards and external disks: list, format, rename, check, write an image
   'curl'           # downloads the signed update approval list
   'fakeroot'       # lets the update check use a private copy of the package lists
   'libinput-tools' # the Mouse page's "Which one am I using?" listens to input devices with `libinput debug-events`
@@ -36,6 +37,9 @@ makedepends=(
   'pkgconf'
 )
 optdepends=(
+  'ntfs-3g: format and repair NTFS drives'
+  'exfatprogs: format and repair exFAT drives'
+  'dosfstools: format and repair FAT32 drives'
   'libnotify: problem notifications from the background health check'
   'wl-clipboard: voice typing'
   'ydotool: voice typing types into apps instead of copying'

@@ -57,6 +57,70 @@ pub struct Identity {
     pub name: String,
     /// The short code (`ab12 cd34 ef56 7890`) the phone shows too, so the person can see they match.
     pub code: String,
+    /// The port the daemon listens on (the phone needs it together with the address when it cannot find the computer by itself).
+    pub port: u16,
+}
+
+/// One address of this computer on a real network: `192.168.1.20` on `wlan0`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub iface: String,
+    pub ip: String,
+}
+
+/// Network interfaces that only exist inside this computer (containers, virtual machines): their addresses are useless to a phone
+/// and only confuse the person, so they are not listed.
+fn is_virtual_iface(name: &str) -> bool {
+    ["lo", "docker", "br-", "virbr", "veth", "vmnet", "vboxnet", "lxc", "lxd", "podman", "cni", "flannel"]
+        .iter()
+        .any(|p| name == *p || (p.len() > 2 && name.starts_with(p)))
+}
+
+/// "Wi-Fi", "Ethernet" or "Network", from the interface name Linux gave it.
+pub fn iface_kind(name: &str) -> &'static str {
+    if name.starts_with("wl") {
+        "Wi-Fi"
+    } else if name.starts_with("en") || name.starts_with("eth") {
+        "Ethernet"
+    } else {
+        "Network"
+    }
+}
+
+/// The output of `ip -4 -o addr show scope global`, one line per address:
+/// `2: wlan0    inet 192.168.1.20/24 brd 192.168.1.255 scope global dynamic noprefixroute wlan0 ...`
+/// Wi-Fi first, then Ethernet, then the rest; interfaces that only exist inside the computer are left out.
+pub fn parse_addresses(out: &str) -> Vec<Address> {
+    let mut found: Vec<Address> = out
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            words.next()?; // "2:"
+            let iface = words.next()?.trim_end_matches(':').split('@').next()?.to_string();
+            let ip = words.skip_while(|w| *w != "inet").nth(1)?.split('/').next()?.to_string();
+            if is_virtual_iface(&iface) || ip.is_empty() {
+                return None;
+            }
+            Some(Address { iface, ip })
+        })
+        .collect();
+    found.sort_by_key(|a| match iface_kind(&a.iface) {
+        "Wi-Fi" => 0,
+        "Ethernet" => 1,
+        _ => 2,
+    });
+    found
+}
+
+/// This computer's addresses on real networks (asks `ip`, which every Arch system has).
+pub fn local_addresses() -> Vec<Address> {
+    Command::new("ip")
+        .args(["-4", "-o", "addr", "show", "scope", "global"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| parse_addresses(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_default()
 }
 
 fn text(v: &Value, key: &str) -> String {
@@ -99,7 +163,8 @@ pub fn parse_identity(v: &Value) -> Option<Identity> {
     if code.is_empty() {
         return None;
     }
-    Some(Identity { name: text(v, "name"), code })
+    let port = v.get("port").and_then(Value::as_u64).and_then(|p| u16::try_from(p).ok()).unwrap_or(42424);
+    Some(Identity { name: text(v, "name"), code, port })
 }
 
 /// `123456` as `123 456`, easier to read off a screen.
@@ -222,9 +287,52 @@ mod tests {
     fn identity_needs_a_code() {
         assert_eq!(
             parse_identity(&json!({"name": "laptop", "fingerprint_short": "ab12 cd34 ef56 7890"})),
-            Some(Identity { name: "laptop".into(), code: "ab12 cd34 ef56 7890".into() })
+            Some(Identity { name: "laptop".into(), code: "ab12 cd34 ef56 7890".into(), port: 42424 })
         );
         assert!(parse_identity(&json!({"name": "laptop"})).is_none());
+    }
+
+    #[test]
+    fn identity_port_comes_from_the_daemon() {
+        let id = parse_identity(&json!({"name": "pc", "fingerprint_short": "aaaa bbbb cccc dddd", "port": 5000})).unwrap();
+        assert_eq!(id.port, 5000);
+    }
+
+    const IP_OUT: &str = "\
+1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever
+2: enp3s0    inet 192.168.1.30/24 brd 192.168.1.255 scope global dynamic noprefixroute enp3s0\\       valid_lft 86000sec
+3: wlan0    inet 192.168.1.20/24 brd 192.168.1.255 scope global dynamic noprefixroute wlan0\\       valid_lft 85000sec
+4: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\\       valid_lft forever
+5: virbr0    inet 192.168.122.1/24 brd 192.168.122.255 scope global virbr0\\       valid_lft forever
+6: br-1a2b3c    inet 172.18.0.1/16 scope global br-1a2b3c\\       valid_lft forever
+7: tun0    inet 10.8.0.2/24 scope global tun0\\       valid_lft forever
+";
+
+    #[test]
+    fn addresses_skip_virtual_networks_and_put_wifi_first() {
+        let a = parse_addresses(IP_OUT);
+        assert_eq!(
+            a,
+            vec![
+                Address { iface: "wlan0".into(), ip: "192.168.1.20".into() },
+                Address { iface: "enp3s0".into(), ip: "192.168.1.30".into() },
+                Address { iface: "tun0".into(), ip: "10.8.0.2".into() },
+            ]
+        );
+    }
+
+    #[test]
+    fn addresses_from_nothing_or_junk_are_empty() {
+        assert!(parse_addresses("").is_empty());
+        assert!(parse_addresses("garbage\nmore garbage").is_empty());
+    }
+
+    #[test]
+    fn interface_kinds_are_named_for_people() {
+        assert_eq!(iface_kind("wlan0"), "Wi-Fi");
+        assert_eq!(iface_kind("wlp2s0"), "Wi-Fi");
+        assert_eq!(iface_kind("enp3s0"), "Ethernet");
+        assert_eq!(iface_kind("tun0"), "Network");
     }
 
     #[test]

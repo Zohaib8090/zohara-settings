@@ -34,6 +34,9 @@ struct Ui {
     action_btn: gtk4::Button,
     details: gtk4::Box,
     code_row: adw::ActionRow,
+    address_row: adw::ActionRow,
+    /// The first address, for the Copy button.
+    first_address: RefCell<String>,
     pair_row: adw::ActionRow,
     pair_btn: gtk4::Button,
     pin_row: adw::ActionRow,
@@ -69,16 +72,17 @@ fn refresh(ui: &Rc<Ui>) {
             let installed = zl::installed();
             let status = if installed { zl::status() } else { None };
             let identity = if status.is_some() { zl::identity() } else { None };
-            (installed, status, identity)
+            let addresses = if status.is_some() { zl::local_addresses() } else { Vec::new() };
+            (installed, status, identity, addresses)
         },
-        move |(installed, status, identity)| {
+        move |(installed, status, identity, addresses)| {
             ui2.refreshing.set(false);
-            render(&ui2, installed, status, identity);
+            render(&ui2, installed, status, identity, addresses);
         },
     );
 }
 
-fn render(ui: &Rc<Ui>, installed: bool, status: Option<zl::Status>, identity: Option<zl::Identity>) {
+fn render(ui: &Rc<Ui>, installed: bool, status: Option<zl::Status>, identity: Option<zl::Identity>, addresses: Vec<zl::Address>) {
     let mode = match (installed, &status) {
         (false, _) => Mode::NotInstalled,
         (true, None) => Mode::NotRunning,
@@ -112,8 +116,21 @@ fn render(ui: &Rc<Ui>, installed: bool, status: Option<zl::Status>, identity: Op
             });
             ui.status_icon.set_icon_name(Some("network-transmit-receive-symbolic"));
 
+            let port = identity.as_ref().map(|i| i.port).unwrap_or(42424);
             if let Some(id) = identity {
                 ui.code_row.set_subtitle(&id.code);
+            }
+            // The address the phone can type if it does not find this computer by itself, so nobody has to dig it out of the Wi-Fi page.
+            if addresses.is_empty() {
+                *ui.first_address.borrow_mut() = String::new();
+                ui.address_row.set_subtitle("No network connection found. Connect this computer to your Wi-Fi.");
+            } else {
+                *ui.first_address.borrow_mut() = addresses[0].ip.clone();
+                let lines: Vec<String> = addresses
+                    .iter()
+                    .map(|a| format!("{}  ({}) · port {}", a.ip, zl::iface_kind(&a.iface), port))
+                    .collect();
+                ui.address_row.set_subtitle(&format!("{}\nIf the phone does not find this computer, type this address in the app.", lines.join("\n")));
             }
 
             ui.pairing_open.set(status.pairing_open);
@@ -264,6 +281,16 @@ pub fn build() -> gtk4::Widget {
     code_row.set_subtitle_selectable(true);
     code_row.add_prefix(&gtk4::Image::from_icon_name("security-high-symbolic"));
     pair_group.add(&code_row);
+    let address_row = adw::ActionRow::new();
+    address_row.set_title("This computer's address");
+    address_row.set_subtitle("…");
+    address_row.set_subtitle_lines(0);
+    address_row.set_subtitle_selectable(true);
+    address_row.add_prefix(&gtk4::Image::from_icon_name("network-wired-symbolic"));
+    let copy_btn = gtk4::Button::with_label("Copy");
+    copy_btn.set_valign(gtk4::Align::Center);
+    address_row.add_suffix(&copy_btn);
+    pair_group.add(&address_row);
     let pair_row = adw::ActionRow::new();
     pair_row.set_title("Pair a phone");
     pair_row.set_subtitle_lines(0);
@@ -303,6 +330,8 @@ pub fn build() -> gtk4::Widget {
         action_btn: action_btn.clone(),
         details,
         code_row,
+        address_row,
+        first_address: RefCell::new(String::new()),
         pair_row,
         pair_btn: pair_btn.clone(),
         pin_row,
@@ -353,6 +382,18 @@ pub fn build() -> gtk4::Widget {
                     refresh(&ui3);
                 },
             );
+        });
+    }
+    {
+        let ui2 = ui.clone();
+        copy_btn.connect_clicked(move |_| {
+            let ip = ui2.first_address.borrow().clone();
+            if ip.is_empty() {
+                return;
+            }
+            if let Some(display) = gtk4::gdk::Display::default() {
+                display.clipboard().set_text(&ip);
+            }
         });
     }
     {

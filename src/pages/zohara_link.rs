@@ -37,6 +37,10 @@ struct Ui {
     address_row: adw::ActionRow,
     /// The first address, for the Copy button.
     first_address: RefCell<String>,
+    remote_row: adw::ActionRow,
+    remote_btn: gtk4::Button,
+    /// What the remote button does now: 0 nothing, 1 set up Tailscale, 2 sign in.
+    remote_action: Cell<u8>,
     pair_row: adw::ActionRow,
     pair_btn: gtk4::Button,
     pin_row: adw::ActionRow,
@@ -73,11 +77,13 @@ fn refresh(ui: &Rc<Ui>) {
             let status = if installed { zl::status() } else { None };
             let identity = if status.is_some() { zl::identity() } else { None };
             let addresses = if status.is_some() { zl::local_addresses() } else { Vec::new() };
-            (installed, status, identity, addresses)
+            let remote = if status.is_some() { zl::remote() } else { None };
+            (installed, status, identity, addresses, remote)
         },
-        move |(installed, status, identity, addresses)| {
+        move |(installed, status, identity, addresses, remote)| {
             ui2.refreshing.set(false);
             render(&ui2, installed, status, identity, addresses);
+            render_remote(&ui2, remote);
         },
     );
 }
@@ -161,6 +167,38 @@ fn render(ui: &Rc<Ui>, installed: bool, status: Option<zl::Status>, identity: Op
     }
 }
 
+/// "Away from home": shows the overlay addresses (Tailscale and the like) the phone can use outside the home Wi-Fi, or the one button
+/// that gets the person there.
+fn render_remote(ui: &Rc<Ui>, remote: Option<zl::Remote>) {
+    let Some(r) = remote else { return };
+    if !r.overlays.is_empty() {
+        let lines: Vec<String> = r
+            .overlays
+            .iter()
+            .map(|o| if o.dns_name.is_empty() { format!("{} · {}", o.address, o.provider) } else { format!("{} · {} ({})", o.address, o.provider, o.dns_name) })
+            .collect();
+        ui.remote_row.set_title("Away from home: ready");
+        ui.remote_row.set_subtitle(&format!(
+            "{}\nA phone you paired at home reaches this computer through this address when it is on the same {} account, with no extra steps.",
+            lines.join("\n"),
+            r.overlays[0].provider
+        ));
+        ui.remote_action.set(0);
+    } else if !r.tailscale_installed {
+        ui.remote_row.set_title("Away from home: not set up");
+        ui.remote_row.set_subtitle("Install Tailscale here, and the Tailscale app on the phone with the same account, and Zohara Link works from any network. ZeroTier, NetBird and WireGuard are found automatically if you already use them.");
+        ui.remote_btn.set_label("Set up Tailscale");
+        ui.remote_action.set(1);
+    } else {
+        ui.remote_row.set_title("Away from home: sign in");
+        ui.remote_row.set_subtitle("Tailscale is installed but not connected. Sign in with the same account the phone uses.");
+        ui.remote_btn.set_label("Sign in");
+        ui.remote_action.set(2);
+    }
+    ui.remote_btn.set_visible(ui.remote_action.get() != 0);
+    ui.remote_btn.set_sensitive(true);
+}
+
 fn rebuild_devices(ui: &Rc<Ui>, devices: &[zl::Device]) {
     for row in ui.device_rows.borrow_mut().drain(..) {
         ui.devices_group.remove(&row);
@@ -191,6 +229,21 @@ fn rebuild_devices(ui: &Rc<Ui>, devices: &[zl::Device]) {
             in_background(move || zl::command_ok(json!({"command": "SET_PERMISSION", "deviceId": id, "input": on})), |_| {});
             glib::Propagation::Proceed
         });
+        // Seeing the screen shows everything on it, so it has its own switch, off until chosen here.
+        let screen = gtk4::Switch::new();
+        screen.set_valign(gtk4::Align::Center);
+        screen.set_active(d.allow_screen);
+        screen.set_tooltip_text(Some("Let this phone see this computer's screen"));
+        let id = d.id.clone();
+        screen.connect_state_set(move |_, on| {
+            let id = id.clone();
+            in_background(move || zl::command_ok(json!({"command": "SET_PERMISSION", "deviceId": id, "screen": on})), |_| {});
+            glib::Propagation::Proceed
+        });
+        let screen_label = gtk4::Label::new(Some("Show the screen"));
+        screen_label.add_css_class("dim-label");
+        row.add_suffix(&screen_label);
+        row.add_suffix(&screen);
         let input_label = gtk4::Label::new(Some("Control the mouse"));
         input_label.add_css_class("dim-label");
         row.add_suffix(&input_label);
@@ -291,6 +344,19 @@ pub fn build() -> gtk4::Widget {
     copy_btn.set_valign(gtk4::Align::Center);
     address_row.add_suffix(&copy_btn);
     pair_group.add(&address_row);
+    let remote_row = adw::ActionRow::new();
+    remote_row.set_title("Away from home");
+    remote_row.set_subtitle("…");
+    remote_row.set_subtitle_lines(0);
+    remote_row.set_use_markup(false);
+    remote_row.set_subtitle_selectable(true);
+    remote_row.add_prefix(&gtk4::Image::from_icon_name("network-vpn-symbolic"));
+    let remote_btn = gtk4::Button::with_label("Set up Tailscale");
+    remote_btn.add_css_class("suggested-action");
+    remote_btn.set_valign(gtk4::Align::Center);
+    remote_btn.set_visible(false);
+    remote_row.add_suffix(&remote_btn);
+    pair_group.add(&remote_row);
     let pair_row = adw::ActionRow::new();
     pair_row.set_title("Pair a phone");
     pair_row.set_subtitle_lines(0);
@@ -332,6 +398,9 @@ pub fn build() -> gtk4::Widget {
         code_row,
         address_row,
         first_address: RefCell::new(String::new()),
+        remote_row,
+        remote_btn: remote_btn.clone(),
+        remote_action: Cell::new(0),
         pair_row,
         pair_btn: pair_btn.clone(),
         pin_row,
@@ -364,6 +433,36 @@ pub fn build() -> gtk4::Widget {
                     glib::timeout_add_local_once(Duration::from_millis(1200), move || refresh(&ui4));
                 },
             );
+        });
+    }
+    {
+        let ui2 = ui.clone();
+        remote_btn.connect_clicked(move |b| {
+            b.set_sensitive(false);
+            let ui3 = ui2.clone();
+            if ui2.remote_action.get() == 1 {
+                ui2.remote_row.set_subtitle("Installing Tailscale… you may be asked for your password.");
+                in_background(zl::install_tailscale, move |res| {
+                    if let Err(e) = res {
+                        tell(&ui3, "Tailscale could not be set up", if e.is_empty() { "Something went wrong. Try again." } else { &e });
+                    }
+                    ui3.remote_btn.set_sensitive(true);
+                    refresh(&ui3);
+                });
+            } else {
+                ui2.remote_row.set_subtitle("Asking Tailscale for the sign-in page…");
+                in_background(zl::remote_login, move |url| {
+                    match url {
+                        Some(u) => {
+                            let _ = gtk4::gio::AppInfo::launch_default_for_uri(&u, None::<&gtk4::gio::AppLaunchContext>);
+                            tell(&ui3, "Sign in to Tailscale", "The sign-in page opened in your browser. This page updates by itself once you are signed in.");
+                        }
+                        None => tell(&ui3, "No sign-in page", "Tailscale did not give a sign-in link. It may already be signed in; wait a moment, or try again."),
+                    }
+                    ui3.remote_btn.set_sensitive(true);
+                    refresh(&ui3);
+                });
+            }
         });
     }
     {

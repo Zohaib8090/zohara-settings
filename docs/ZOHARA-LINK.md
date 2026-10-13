@@ -23,6 +23,14 @@ page does nothing by itself: it asks the daemon over its local socket and shows 
 The page asks again every two seconds while it exists and rebuilds the phone list only when it changed, so a switch is never replaced
 under a finger.
 
+## Away from home and the screen (2026-10-13, alpha)
+
+* **Away from home** row (under the computer's address): lists this computer's Tailscale / ZeroTier / NetBird / WireGuard addresses
+  (`GET_REMOTE`). If Tailscale is missing the button **Set up Tailscale** installs it (password prompt), starts `tailscaled` and lets this
+  user control it; if it is installed but signed out the button **Sign in** (`REMOTE_LOGIN`) opens the sign-in page in the browser.
+  Paired phones learn the addresses by themselves. Not tested with a real Tailscale account.
+* **Show the screen** switch next to "Control the mouse" for every phone (`SET_PERMISSION` with `screen`). Off by default.
+
 ## The daemon's local socket (what this page uses)
 
 `/run/user/UID/zohara.sock` (mode 600; override with `ZOHARA_LINK_SOCKET`), one JSON line per command, one JSON line back; events

@@ -36,6 +36,7 @@ pub struct Device {
     pub last_ip: String,
     pub connected: bool,
     pub allow_input: bool,
+    pub allow_screen: bool,
 }
 
 /// A phone that asked to pair and is waiting for its PIN to be typed.
@@ -144,6 +145,7 @@ pub fn parse_status(v: &Value) -> Option<Status> {
                 name: if text(d, "device_name").is_empty() { "Unknown phone".into() } else { text(d, "device_name") },
                 last_ip: text(d, "last_ip"),
                 allow_input: d.get("allow_input").and_then(Value::as_bool).unwrap_or(false),
+                allow_screen: d.get("allow_screen").and_then(Value::as_bool).unwrap_or(false),
                 id,
             }
         })
@@ -179,8 +181,12 @@ pub fn pin_for_display(pin: &str) -> String {
 /// Sends one command and returns its answer, skipping the live event lines the daemon also sends on this connection.
 /// `None` when the daemon is not there or does not answer within a few seconds.
 pub fn request(cmd: &Value) -> Option<Value> {
+    request_within(cmd, 3)
+}
+
+fn request_within(cmd: &Value, secs: u64) -> Option<Value> {
     let mut stream = UnixStream::connect(socket_path()).ok()?;
-    stream.set_read_timeout(Some(Duration::from_secs(3))).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(secs))).ok()?;
     stream.set_write_timeout(Some(Duration::from_secs(3))).ok()?;
     let mut line = serde_json::to_string(cmd).ok()?;
     line.push('\n');
@@ -218,6 +224,64 @@ fn run(cmd: &mut Command) -> Result<(), String> {
         Some(126) | Some(127) => Err("Administrator approval was not given.".into()),
         _ => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
     }
+}
+
+/// An address of this computer on an overlay network (Tailscale, ZeroTier, NetBird, WireGuard): reachable from outside the home Wi-Fi.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Overlay {
+    pub provider: String,
+    pub address: String,
+    pub dns_name: String,
+}
+
+/// Where this computer can be reached from away from home.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Remote {
+    pub overlays: Vec<Overlay>,
+    pub tailscale_installed: bool,
+    /// Tailscale's own word: `Running`, `NeedsLogin`, `Stopped`, `NoState`... empty when not installed.
+    pub tailscale_state: String,
+}
+
+/// The answer to `GET_REMOTE`.
+pub fn parse_remote(v: &Value) -> Option<Remote> {
+    let overlays = v.get("overlays")?.as_array()?;
+    let ts = v.get("tailscale");
+    Some(Remote {
+        overlays: overlays
+            .iter()
+            .map(|o| Overlay { provider: text(o, "provider"), address: text(o, "address"), dns_name: text(o, "dnsName") })
+            .collect(),
+        tailscale_installed: ts.and_then(|t| t.get("installed")).and_then(Value::as_bool).unwrap_or(false),
+        tailscale_state: ts.map(|t| text(t, "state")).unwrap_or_default(),
+    })
+}
+
+pub fn remote() -> Option<Remote> {
+    parse_remote(&request_within(&json!({"command": "GET_REMOTE"}), 6)?)
+}
+
+/// Asks Tailscale for its sign-in link (it can take several seconds). `None` when it printed none.
+pub fn remote_login() -> Option<String> {
+    let v = request_within(&json!({"command": "REMOTE_LOGIN"}), 25)?;
+    let url = text(&v, "loginUrl");
+    if url.starts_with("https://") { Some(url) } else { None }
+}
+
+/// Installs Tailscale (administrator prompt), starts it, and lets this user control it so the sign-in button needs no password.
+pub fn install_tailscale() -> Result<(), String> {
+    run(Command::new("pkexec").args([
+        "sh",
+        "-c",
+        "pacman -S --needed --noconfirm tailscale && systemctl enable --now tailscaled && tailscale set --operator=\"$(id -nu \"$PKEXEC_UID\")\"",
+    ]))
+    .map_err(|e| {
+        if e.contains("target not found") {
+            "Tailscale is not in your update channel. Update the system first (Settings > Zohara Update).".to_string()
+        } else {
+            e
+        }
+    })
 }
 
 /// Turns the daemon on for this user, and on at every sign-in.
@@ -269,6 +333,25 @@ mod tests {
         assert_eq!(s.devices[1].name, "Unknown phone");
         assert!(s.pairing_open);
         assert_eq!(s.pending, vec![Pending { name: "New phone".into(), pin: "123456".into() }]);
+    }
+
+    #[test]
+    fn remote_answer_is_read() {
+        let r = parse_remote(&json!({
+            "overlays": [{"provider": "Tailscale", "address": "100.1.2.3", "dnsName": "laptop.tail1.ts.net"}],
+            "tailscale": {"installed": true, "state": "Running"}
+        }))
+        .unwrap();
+        assert_eq!(r.overlays, vec![Overlay { provider: "Tailscale".into(), address: "100.1.2.3".into(), dns_name: "laptop.tail1.ts.net".into() }]);
+        assert!(r.tailscale_installed && r.tailscale_state == "Running");
+        assert_eq!(parse_remote(&json!({"overlays": []})).unwrap(), Remote::default());
+        assert!(parse_remote(&json!({"status": "OK"})).is_none());
+    }
+
+    #[test]
+    fn screen_permission_defaults_to_off() {
+        let s = parse_status(&json!({"paired_devices": [{"device_id": "a", "device_name": "p", "allow_screen": true}, {"device_id": "b", "device_name": "q"}]})).unwrap();
+        assert!(s.devices[0].allow_screen && !s.devices[1].allow_screen);
     }
 
     #[test]

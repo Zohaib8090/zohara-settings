@@ -121,6 +121,7 @@ pub static ENTRIES: &[Entry] = &[
     e!("Gaming", "Gaming", "game games controller steam"),
     e!("Accessibility", "Accessibility", "ease of access vision hearing screen reader"),
     e!("Privacy & security", "Privacy & security", "firewall camera microphone location permissions history"),
+    e!("App permissions", "Privacy & security", "which apps camera microphone internet files usb bluetooth sandbox flatpak access allow block"),
     e!("Zohara Update", "Zohara Update", "update updates upgrade check for updates os system windows update restore snapshot channel history"),
     e!("Display", "Display", "monitor screen resolution brightness refresh rate night light scale"),
     e!("Sound", "Sound", "volume audio speakers microphone output input"),

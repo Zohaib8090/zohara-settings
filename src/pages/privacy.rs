@@ -663,6 +663,7 @@ pub fn build() -> gtk4::Widget {
     root.append(&security_group());
     root.append(&firewall_rules_group());
     root.append(&devices_group());
+    root.append(&super::app_overview::group());
     root.append(&indicators_group());
     root.append(&activity_group());
     root.append(&search_group());

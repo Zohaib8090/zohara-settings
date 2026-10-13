@@ -16,6 +16,10 @@ use std::rc::Rc;
 pub enum Kind {
     Flatpak(String),
     Pacman(String),
+    /// A package built from the AUR.
+    Aur(String),
+    /// An AppImage installed through the Store (its id).
+    AppImage(String),
     Other,
 }
 
@@ -27,6 +31,8 @@ pub struct Target {
     pub kind: Kind,
     /// The launcher's file name: Plasma knows the app's notifications by it.
     pub desktop_id: String,
+    /// Where the launcher is (the graphics choice is stored through it).
+    pub desktop_path: String,
 }
 
 impl Target {
@@ -83,9 +89,13 @@ fn load(kind: Kind, desktop_id: String) -> Loaded {
             l.notifications_portal = ad::portal_state(id, ad::Portal::Notifications);
             l.running = ad::flatpak_running(id);
         }
-        Kind::Pacman(pkg) => {
+        Kind::Pacman(pkg) | Kind::Aur(pkg) => {
             l.app_size = ad::pacman_app_size(pkg);
             fill_native(&mut l, ad::package_names(pkg, &desktop_id));
+        }
+        Kind::AppImage(slug) => {
+            let file = crate::backend::community_apps::data_home().join("zohara-store/appimages").join(format!("{slug}.AppImage"));
+            l.app_size = std::fs::metadata(file).ok().map(|m| ad::human_size(m.len()));
         }
         Kind::Other => fill_native(&mut l, ad::names_from_package_files("", "", &desktop_id)),
     }
@@ -143,6 +153,8 @@ pub fn open(parent: &impl IsA<gtk4::Widget>, target: Target, uninstall: Option<R
     let from = match &target.kind {
         Kind::Flatpak(id) => format!("Flatpak app · {id}"),
         Kind::Pacman(p) => format!("Installed from the system packages · {p}"),
+        Kind::Aur(p) => format!("Built from the AUR (community-made) · {p}"),
+        Kind::AppImage(_) => "AppImage · a single file kept in your own folder".to_string(),
         Kind::Other => "Installed manually".to_string(),
     };
     let sub = gtk4::Label::builder().label(format!("{from}{}", if target.version.is_empty() { String::new() } else { format!(" · {}", target.version) })).xalign(0.0).wrap(true).css_classes(vec!["dim-label".to_string()]).build();
@@ -203,6 +215,68 @@ pub fn open(parent: &impl IsA<gtk4::Widget>, target: Target, uninstall: Option<R
     notif.set_active(plasma_on);
     notes.add(&notif);
     body.append(&notes);
+
+    // Graphics: on a laptop with two chips, which one this app uses (the same choice as the small button on its row).
+    if crate::backend::gpu_pref::has_two_gpus() {
+        use crate::backend::gpu_pref as pref;
+        let gfx = adw::PreferencesGroup::new();
+        gfx.set_title("Graphics");
+        let dedicated = adw::SwitchRow::new();
+        dedicated.set_title("Always use the dedicated graphics card");
+        let gpu_path = std::path::PathBuf::from(&target.desktop_path);
+        let flatpak_id = target.flatpak_id().map(String::from);
+        let ready = flatpak_id.is_none() || pref::flatpak_gpu_ready();
+        dedicated.set_subtitle(if ready {
+            "Smoother games and heavy apps, but it uses more battery. Takes effect the next time the app is opened"
+        } else {
+            "This app can only use it once the NVIDIA part for Flatpak is installed: update your Flatpak apps and runtimes in the Store"
+        });
+        dedicated.set_active(match &flatpak_id {
+            Some(id) => pref::flatpak_is_set(id),
+            None => pref::is_set(&target.desktop_id, &gpu_path),
+        });
+        let try_now = adw::ActionRow::new();
+        try_now.set_title("Open it now on the dedicated card");
+        try_now.set_subtitle("Starts the app once with it, without changing the setting above");
+        let try_btn = gtk4::Button::with_label("Open");
+        try_btn.set_valign(gtk4::Align::Center);
+        try_now.add_suffix(&try_btn);
+        gfx.add(&dedicated);
+        gfx.add(&try_now);
+        body.append(&gfx);
+        {
+            let (flatpak_id, gpu_path, dialog) = (flatpak_id.clone(), gpu_path.clone(), dialog.clone());
+            try_btn.connect_clicked(move |_| {
+                let started = match &flatpak_id {
+                    Some(id) => pref::flatpak_launch_now(id),
+                    None => pref::launch_now(&gpu_path),
+                };
+                if let Err(e) = started {
+                    message(&dialog, "Couldn't start the app", &e);
+                }
+            });
+        }
+        {
+            let (desktop_id, dialog) = (target.desktop_id.clone(), dialog.clone());
+            let undoing = Rc::new(Cell::new(false));
+            dedicated.connect_active_notify(move |r| {
+                if undoing.get() {
+                    return;
+                }
+                let on = r.is_active();
+                let saved = match &flatpak_id {
+                    Some(app_id) => pref::flatpak_set(app_id, on),
+                    None => pref::set(&desktop_id, &gpu_path, on),
+                };
+                if let Err(e) = saved {
+                    undoing.set(true);
+                    r.set_active(!on);
+                    undoing.set(false);
+                    message(&dialog, "Couldn't change it", &e);
+                }
+            });
+        }
+    }
 
     // What a Flatpak app may do.
     let perms = adw::PreferencesGroup::new();

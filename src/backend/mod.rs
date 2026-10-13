@@ -25,6 +25,7 @@ pub mod system;
 pub mod branding;
 pub mod touch_keyboard;
 pub mod wallet;
+pub mod community_apps;
 pub mod web_accounts;
 pub mod wifi_diag;
 pub mod worker;

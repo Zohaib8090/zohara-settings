@@ -43,7 +43,11 @@ fn nav_row(title: &str, subtitle: &str, icon: &str) -> adw::ActionRow {
 #[derive(Clone)]
 enum Source {
     Pacman(String),
+    /// A package built from the AUR (no repository carries it).
+    Aur(String),
     Flatpak(String),
+    /// An AppImage installed through Zohara Store (its id).
+    AppImage(String),
     Other,
 }
 
@@ -66,6 +70,10 @@ struct RawApp {
     icon: String,
     desktop_path: String,
     flatpak: Option<String>,
+    /// An AppImage from the Store: its id.
+    appimage: Option<String>,
+    /// Its package is built from the AUR.
+    aur: bool,
 }
 
 fn raw_apps() -> Vec<RawApp> {
@@ -111,6 +119,8 @@ fn raw_apps() -> Vec<RawApp> {
                 icon: get("Icon=").unwrap_or_default(),
                 desktop_path: std::fs::canonicalize(&path).unwrap_or(path).to_string_lossy().to_string(),
                 flatpak,
+                appimage: None,
+                aur: false,
             });
         }
     }
@@ -155,14 +165,28 @@ fn flatpak_versions() -> HashMap<String, String> {
 type Loaded = Vec<(RawApp, Option<(String, String)>, Option<String>)>;
 
 fn load_apps() -> Loaded {
-    let raw = raw_apps();
-    let paths: Vec<String> = raw.iter().filter(|a| a.flatpak.is_none()).map(|a| a.desktop_path.clone()).collect();
+    let mut raw = raw_apps();
+    // AppImages installed through the Store keep their launchers in the person's own folder, which the system lists don't cover.
+    for a in crate::backend::community_apps::appimages() {
+        raw.push(RawApp {
+            id: a.launcher.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+            name: a.name,
+            icon: a.icon,
+            desktop_path: a.launcher.to_string_lossy().to_string(),
+            flatpak: None,
+            appimage: Some(a.slug),
+            aur: false,
+        });
+    }
+    let paths: Vec<String> = raw.iter().filter(|a| a.flatpak.is_none() && a.appimage.is_none()).map(|a| a.desktop_path.clone()).collect();
     let own = owners(&paths);
     let fv = flatpak_versions();
+    let foreign = crate::backend::community_apps::foreign_packages();
     let mut v: Loaded = raw
         .into_iter()
-        .map(|a| {
+        .map(|mut a| {
             let o = own.get(&a.desktop_path).cloned();
+            a.aur = o.as_ref().map(|(pkg, _)| crate::backend::community_apps::is_aur(pkg, &foreign)).unwrap_or(false);
             let f = a.flatpak.as_ref().and_then(|id| fv.get(id).cloned());
             (a, o, f)
         })
@@ -179,9 +203,11 @@ fn to_app((raw, owner, fver): (RawApp, Option<(String, String)>, Option<String>)
     } else {
         None
     };
-    let (source, version) = match (&raw.flatpak, owner) {
-        (Some(id), _) => (Source::Flatpak(id.clone()), fver.unwrap_or_default()),
-        (None, Some((pkg, ver))) => (Source::Pacman(pkg), ver),
+    let (source, version) = match (&raw.appimage, &raw.flatpak, owner) {
+        (Some(slug), _, _) => (Source::AppImage(slug.clone()), String::new()),
+        (None, Some(id), _) => (Source::Flatpak(id.clone()), fver.unwrap_or_default()),
+        (None, None, Some((pkg, ver))) if raw.aur => (Source::Aur(pkg), ver),
+        (None, None, Some((pkg, ver))) => (Source::Pacman(pkg), ver),
         _ => (Source::Other, String::new()),
     };
     App { name: raw.name, icon, source, version, desktop_id: raw.id, desktop_path: raw.desktop_path }
@@ -275,10 +301,21 @@ fn uninstall(app: &App, page: &gtk4::Box, row: &adw::ActionRow) {
             format!("This removes the “{pkg}” package and anything that was only installed for it."),
             vec!["pkexec".into(), "pacman".into(), "-Rns".into(), "--noconfirm".into(), pkg.clone()],
         ),
+        Source::Aur(pkg) => (
+            format!("Uninstall {}?", app.name),
+            format!("This removes the “{pkg}” package, which was built from the AUR, and anything that was only installed for it."),
+            vec!["pkexec".into(), "pacman".into(), "-Rns".into(), "--noconfirm".into(), pkg.clone()],
+        ),
         Source::Flatpak(id) => (
             format!("Uninstall {}?", app.name),
             "This removes the app. Its settings and data stay in your home folder.".into(),
             vec!["flatpak".into(), "uninstall".into(), "-y".into(), "--noninteractive".into(), id.clone()],
+        ),
+        // An AppImage is one file: removing it needs no command and no password.
+        Source::AppImage(slug) => (
+            format!("Remove {}?", app.name),
+            "This deletes the AppImage file and its menu entry. Its settings and data stay in your home folder.".into(),
+            vec!["appimage".into(), slug.clone()],
         ),
         Source::Other => return,
     };
@@ -298,6 +335,12 @@ fn uninstall(app: &App, page: &gtk4::Box, row: &adw::ActionRow) {
         row3.set_sensitive(false);
         in_background(
             move || {
+                if cmd[0] == "appimage" {
+                    return match crate::backend::community_apps::remove_appimage(&cmd[1]) {
+                        Ok(()) => (true, String::new()),
+                        Err(e) => (false, e),
+                    };
+                }
                 Command::new(&cmd[0])
                     .args(&cmd[1..])
                     .output()
@@ -354,7 +397,9 @@ fn installed_group(page: &gtk4::Box) -> adw::PreferencesGroup {
             row.set_title(&glib::markup_escape_text(&app.name));
             let where_from = match &app.source {
                 Source::Pacman(p) => format!("{p} {}", app.version),
+                Source::Aur(p) => format!("AUR · {p} {}", app.version),
                 Source::Flatpak(_) => format!("Flatpak {}", app.version),
+                Source::AppImage(_) => "AppImage".to_string(),
                 Source::Other => "Installed manually".into(),
             };
             row.set_subtitle(&glib::markup_escape_text(where_from.trim()));
@@ -369,8 +414,8 @@ fn installed_group(page: &gtk4::Box) -> adw::PreferencesGroup {
                 row.add_suffix(&gpu_button(&app, &page2));
             }
             let removable = match &app.source {
-                Source::Pacman(p) => !PROTECTED.contains(&p.as_str()) && !p.starts_with("plasma") && !p.starts_with("kf6"),
-                Source::Flatpak(_) => true,
+                Source::Pacman(p) | Source::Aur(p) => !PROTECTED.contains(&p.as_str()) && !p.starts_with("plasma") && !p.starts_with("kf6"),
+                Source::Flatpak(_) | Source::AppImage(_) => true,
                 Source::Other => false,
             };
             if removable {
@@ -388,9 +433,12 @@ fn installed_group(page: &gtk4::Box) -> adw::PreferencesGroup {
                 kind: match &app.source {
                     Source::Flatpak(id) => super::app_details::Kind::Flatpak(id.clone()),
                     Source::Pacman(p) => super::app_details::Kind::Pacman(p.clone()),
+                    Source::Aur(p) => super::app_details::Kind::Aur(p.clone()),
+                    Source::AppImage(s) => super::app_details::Kind::AppImage(s.clone()),
                     Source::Other => super::app_details::Kind::Other,
                 },
                 desktop_id: app.desktop_id.clone(),
+                desktop_path: app.desktop_path.clone(),
             };
             let remove_cb: Option<std::rc::Rc<dyn Fn()>> = if removable {
                 let (app3, page4, row3) = (app.clone(), page2.clone(), row.clone());

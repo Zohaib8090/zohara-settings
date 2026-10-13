@@ -7,12 +7,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 
-/// "Pause updates" state. There's no background auto-update daemon on
-/// Zohara OS yet -- this page's "Check for updates" is manual-only -- so
-/// today this only gates the hero banner (honest: it says you're paused,
-/// it doesn't yet stop anything from happening automatically, because
-/// nothing does that automatically). If a background checker is ever
-/// added, it needs to read this same file before firing.
+/// "Pause updates" state, kept in `~/.config/zohara/update-pause.json`. While it is in the future: this page shows a
+/// banner, Settings' own background check (`--check-updates`, every 6 hours) stays quiet, and so does the Store's
+/// (`zohara-store --check-updates`, which reads the same file). Updating by hand is never blocked: nothing installs by
+/// itself, so a pause only holds back the "updates are available" notifications.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct PauseState {
     /// Unix timestamp (seconds) the pause ends, if any.
@@ -52,6 +50,15 @@ fn unix_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// The dropdown entry for a pause with `remaining` seconds left: 0 is "Don't pause", 1 to 4 are the weeks (rounded up).
+pub fn weeks_selected(remaining: i64) -> u32 {
+    if remaining <= 0 {
+        0
+    } else {
+        ((remaining as f64 / (7.0 * 86400.0)).ceil() as u32).clamp(1, 4)
+    }
 }
 
 pub fn active_pause_message() -> Option<String> {
@@ -133,6 +140,9 @@ pub fn build() -> gtk4::Widget {
     if let Some(msg) = active_pause_message() {
         pause_row.set_subtitle(&msg);
     }
+    // Show the pause that is active. This must come before the change handler below, which would otherwise treat it as
+    // a new choice and restart the pause from now.
+    pause_combo.set_selected(weeks_selected(load_pause_state().paused_until.map(|u| u - unix_now()).unwrap_or(0)));
     {
         let pause_row_clone = pause_row.clone();
         pause_combo.connect_selected_notify(move |dd| {
@@ -445,4 +455,21 @@ fn open_help_cache_cleanup(row: &adw::ActionRow) {
          button that runs the safe command for you.",
     ));
     open_settings_window(row, "Cleaning Up the Package Cache", &content);
+}
+
+#[cfg(test)]
+mod pause_tests {
+    use super::*;
+
+    #[test]
+    fn the_dropdown_shows_the_pause_that_is_active() {
+        let day = 86400;
+        assert_eq!(weeks_selected(0), 0);
+        assert_eq!(weeks_selected(-5), 0, "an ended pause shows Don't pause");
+        assert_eq!(weeks_selected(3 * day), 1);
+        assert_eq!(weeks_selected(7 * day), 1);
+        assert_eq!(weeks_selected(8 * day), 2);
+        assert_eq!(weeks_selected(28 * day), 4);
+        assert_eq!(weeks_selected(400 * day), 4, "kept in range");
+    }
 }

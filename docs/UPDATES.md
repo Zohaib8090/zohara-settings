@@ -26,6 +26,11 @@ update is a full, pinned system update.
 * **Background check**: `zohara-settings --check-updates`, run by the user timer `zohara-settings-update-check.timer`
   (every 6 hours); one desktop notification per new set of updates; skipped while updates are paused.
 * Pause updates, update history and advanced options (cache cleanup) are separate rows lower on the page.
+* **Pause updates** (1 to 4 weeks) writes `paused_until` (Unix seconds) to `~/.config/zohara/update-pause.json`. While it is in the
+  future: the page shows a banner, and **both** background checks stay quiet, Settings' `--check-updates` and the Store's
+  `zohara-store --check-updates` (read from the same file; checked on 2026-10-14: 0.025 s and nothing done when paused, a real
+  check otherwise). Updating by hand is never blocked, since nothing installs by itself. The dropdown shows the active pause when the
+  page is reopened; "Don't pause" ends it.
 
 ## The signed approval list (why updates are "pinned")
 

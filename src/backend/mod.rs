@@ -18,6 +18,7 @@ pub mod kconfig;
 pub mod live_wallpaper;
 pub mod looks;
 pub mod memory;
+pub mod swap;
 pub mod network;
 pub mod privacy_indicator;
 pub mod process;

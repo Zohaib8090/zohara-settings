@@ -182,6 +182,8 @@ pub static ENTRIES: &[Entry] = &[
     e!("When the power button is pressed", "Power & battery", "shutdown button"),
     e!("When the power button is held", "Power & battery", "long press shutdown hold"),
     e!("When idle for that long", "Power & battery", "hibernate shut down idle action"),
+    e!("Swap file", "Power & battery", "swap memory ram out of memory zram compressed hibernate disk"),
+    e!("Compressed memory (zram)", "Power & battery", "zram swap ram compress memory small computer"),
     e!("Lock the screen after", "Power & battery", "lock automatically idle password"),
     e!("Lock after waking from sleep", "Power & battery", "resume password lock"),
     e!("Low battery warning at", "Power & battery", "battery level critical percent hibernate"),

@@ -28,6 +28,7 @@ pub mod app_details;
 pub mod app_overview;
 pub mod app_permissions;
 pub mod printers;
+pub mod swap_group;
 pub mod privacy;
 pub mod updates;
 pub mod display;

@@ -501,6 +501,7 @@ pub fn build() -> gtk4::Widget {
             }
             content.append(&lock_group());
             content.append(&memory_group());
+            content.append(&super::swap_group::group());
         },
     );
 

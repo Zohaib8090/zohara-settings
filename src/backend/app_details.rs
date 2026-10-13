@@ -422,6 +422,228 @@ pub fn effective_context(app: &str) -> Option<Context> {
     Some(parse_context(&meta).with_overrides(&parse_context(&over)))
 }
 
+// ── Flatpak: folder by folder, and every single permission ─────────────────
+
+/// How much of one folder an app may use.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Access {
+    None,
+    ReadOnly,
+    ReadWrite,
+}
+
+/// The ordinary folders a person thinks of: Flatpak's name for each, and what it is called here.
+pub const STANDARD_FOLDERS: [(&str, &str); 6] = [
+    ("xdg-download", "Downloads"),
+    ("xdg-documents", "Documents"),
+    ("xdg-pictures", "Pictures"),
+    ("xdg-music", "Music"),
+    ("xdg-videos", "Videos"),
+    ("xdg-desktop", "Desktop"),
+];
+
+fn access_of(entry: &str) -> Access {
+    match entry.split_once(':').map(|(_, m)| m) {
+        Some("ro") => Access::ReadOnly,
+        _ => Access::ReadWrite,
+    }
+}
+
+/// What the app may do in one folder (`xdg-download`, or a path), judging by its `filesystems` list.
+pub fn folder_access(ctx: &Context, token: &str) -> Access {
+    ctx.lists.get("filesystems").and_then(|l| l.iter().rev().find(|t| strip_mode(t) == token)).map(|t| access_of(t)).unwrap_or(Access::None)
+}
+
+/// A folder name Flatpak understands that is safe to pass on: a standard one, `xdg-data/Name` style, or an absolute path.
+pub fn safe_folder(token: &str) -> bool {
+    let ok_chars = !token.is_empty() && token.len() <= 400 && !token.contains([':', ';', '\n', '\r', '\0', '=']) && !token.starts_with('!') && !token.starts_with('-');
+    if !ok_chars {
+        return false;
+    }
+    if token.starts_with('/') {
+        return token != "/" && !token.split('/').any(|p| p == "..");
+    }
+    if token.starts_with("xdg-") {
+        return !token.split('/').any(|p| p == "..");
+    }
+    token.starts_with("~/") && !token.split('/').any(|p| p == "..")
+}
+
+/// `flatpak override` words that give the app this much of the folder.
+pub fn folder_override_args(token: &str, access: Access) -> Result<Vec<String>, String> {
+    if !safe_folder(token) {
+        return Err("That folder can't be used.".into());
+    }
+    Ok(vec![match access {
+        Access::None => format!("--nofilesystem={token}"),
+        Access::ReadOnly => format!("--filesystem={token}:ro"),
+        Access::ReadWrite => format!("--filesystem={token}:rw"),
+    }])
+}
+
+/// The folders the app can use that are not the six ordinary ones and not "the whole home folder or computer".
+pub fn custom_folders(ctx: &Context) -> Vec<(String, Access)> {
+    let Some(list) = ctx.lists.get("filesystems") else { return Vec::new() };
+    let mut out: Vec<(String, Access)> = Vec::new();
+    for t in list {
+        let name = strip_mode(t);
+        let special = matches!(name, "home" | "host" | "host-os" | "host-etc" | "host-root") || STANDARD_FOLDERS.iter().any(|(k, _)| *k == name) || name.starts_with("xdg-run") || name.starts_with("!");
+        if special || !safe_folder(name) || out.iter().any(|(n, _)| n == name) {
+            continue;
+        }
+        out.push((name.to_string(), access_of(t)));
+    }
+    out
+}
+
+/// What kind of thing a permission is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PermKind {
+    Shared,
+    Socket,
+    Device,
+    Feature,
+    TalkName,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Perm {
+    pub kind: PermKind,
+    pub token: String,
+    /// Plain words for it.
+    pub label: String,
+    /// Reaches far beyond one thing: shown with a warning.
+    pub broad: bool,
+    /// Whether the app has it now.
+    pub allowed: bool,
+}
+
+fn safe_token(t: &str) -> bool {
+    !t.is_empty() && t.len() <= 200 && t.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-+*".contains(&b)) && !t.starts_with('-')
+}
+
+/// (plain words, broad) for a permission, or the raw name when it is not one we know.
+pub fn describe(kind: PermKind, token: &str) -> (String, bool) {
+    let known: Option<(&str, bool)> = match (kind, token) {
+        (PermKind::Shared, "network") => Some(("Internet and your local network", false)),
+        (PermKind::Shared, "ipc") => Some(("Shared memory with other windows (old X11 apps need it)", false)),
+        (PermKind::Socket, "wayland") => Some(("Show its windows", false)),
+        (PermKind::Socket, "x11") => Some(("Show its windows through the older X11 system", false)),
+        (PermKind::Socket, "fallback-x11") => Some(("Use the older X11 system when it has to", false)),
+        (PermKind::Socket, "pulseaudio") => Some(("Play sound and record from the microphone", false)),
+        (PermKind::Socket, "session-bus") => Some(("Talk to everything on your desktop (very broad)", true)),
+        (PermKind::Socket, "system-bus") => Some(("Talk to system services (very broad)", true)),
+        (PermKind::Socket, "ssh-auth") => Some(("Use your SSH keys", true)),
+        (PermKind::Socket, "gpg-agent") => Some(("Use your GPG keys", true)),
+        (PermKind::Socket, "pcsc") => Some(("Smart card readers", false)),
+        (PermKind::Socket, "cups") => Some(("Print", false)),
+        (PermKind::Socket, "inherit-wayland-socket") => Some(("Show windows for programs it starts", false)),
+        (PermKind::Device, "dri") => Some(("Graphics acceleration", false)),
+        (PermKind::Device, "all") => Some(("All devices: USB, game controllers, cameras (very broad)", true)),
+        (PermKind::Device, "kvm") => Some(("Virtual machine acceleration", false)),
+        (PermKind::Device, "shm") => Some(("Shared memory devices", false)),
+        (PermKind::Feature, "bluetooth") => Some(("Bluetooth", false)),
+        (PermKind::Feature, "devel") => Some(("Developer tools such as debuggers", true)),
+        (PermKind::Feature, "multiarch") => Some(("Run 32-bit programs", false)),
+        (PermKind::Feature, "canbus") => Some(("CAN bus devices", false)),
+        (PermKind::Feature, "per-app-dev-shm") => Some(("Its own shared memory", false)),
+        _ => None,
+    };
+    match (known, kind) {
+        (Some((l, b)), _) => (l.to_string(), b),
+        (None, PermKind::TalkName) => (format!("Talk to “{token}” on your desktop"), token == "*" || token.ends_with(".*") && token.matches('.').count() < 2),
+        (None, _) => (token.to_string(), false),
+    }
+}
+
+/// The `[Session Bus Policy]` names of a permissions text: name -> level (`talk`, `own`, `see`, `none`).
+pub fn parse_bus_policy(text: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let mut inside = false;
+    for line in text.lines() {
+        let l = line.trim();
+        if l.starts_with('[') {
+            inside = l == "[Session Bus Policy]";
+        } else if inside {
+            if let Some((k, v)) = l.split_once('=') {
+                out.insert(k.trim().to_string(), v.trim().to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Every permission the app has or could have (its own list plus what the person added or switched off), with
+/// whether it is allowed now. Folders are handled separately.
+pub fn permission_items(meta_text: &str, over_text: &str) -> Vec<Perm> {
+    let meta = parse_context(meta_text);
+    let over = parse_context(over_text);
+    let eff = meta.with_overrides(&over);
+    let mut out: Vec<Perm> = Vec::new();
+    for (key, kind) in [("shared", PermKind::Shared), ("sockets", PermKind::Socket), ("devices", PermKind::Device), ("features", PermKind::Feature)] {
+        let mut names: Vec<String> = Vec::new();
+        for src in [&meta, &over] {
+            for t in src.lists.get(key).into_iter().flatten() {
+                let n = strip_mode(t.trim_start_matches('!')).to_string();
+                if safe_token(&n) && !names.contains(&n) {
+                    names.push(n);
+                }
+            }
+        }
+        for n in names {
+            let (label, broad) = describe(kind, &n);
+            let allowed = eff.has(key, &n);
+            out.push(Perm { kind, token: n, label, broad, allowed });
+        }
+    }
+    let (mb, ob) = (parse_bus_policy(meta_text), parse_bus_policy(over_text));
+    let mut names: Vec<String> = mb.keys().chain(ob.keys()).cloned().collect();
+    names.sort();
+    names.dedup();
+    for n in names {
+        if !safe_token(&n) {
+            continue;
+        }
+        let level = ob.get(&n).or_else(|| mb.get(&n)).map(String::as_str).unwrap_or("none");
+        let (label, broad) = describe(PermKind::TalkName, &n);
+        out.push(Perm { kind: PermKind::TalkName, token: n, label, broad, allowed: level != "none" });
+    }
+    out
+}
+
+/// `flatpak override` words to allow or deny one permission.
+pub fn perm_override_args(kind: PermKind, token: &str, on: bool) -> Result<Vec<String>, String> {
+    if !safe_token(token) {
+        return Err("That permission can't be changed.".into());
+    }
+    let (yes, no) = match kind {
+        PermKind::Shared => ("--share", "--unshare"),
+        PermKind::Socket => ("--socket", "--nosocket"),
+        PermKind::Device => ("--device", "--nodevice"),
+        PermKind::Feature => ("--allow", "--disallow"),
+        PermKind::TalkName => ("--talk-name", "--no-talk-name"),
+    };
+    Ok(vec![format!("{}={token}", if on { yes } else { no })])
+}
+
+pub fn set_folder(app: &str, token: &str, access: Access) -> Result<(), String> {
+    flatpak_override(app, folder_override_args(token, access)?)
+}
+
+pub fn set_perm(app: &str, kind: PermKind, token: &str, on: bool) -> Result<(), String> {
+    flatpak_override(app, perm_override_args(kind, token, on)?)
+}
+
+/// The app's own permissions text and the person's changes, as Flatpak prints them.
+pub fn permission_texts(app: &str) -> Option<(String, String)> {
+    if !safe_flatpak_id(app) {
+        return None;
+    }
+    let meta = run("flatpak", &["info".into(), "--show-permissions".into(), app.to_string()]).ok()?;
+    let over = run("flatpak", &["override".into(), "--user".into(), "--show".into(), app.to_string()]).unwrap_or_default();
+    Some((meta, over))
+}
+
 // ── Flatpak: the choices made through the desktop (camera, microphone, notifications) ──
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -506,6 +728,61 @@ mod tests {
     use super::*;
 
     const SPOTIFY_OWN: &str = "[Context]\nshared=ipc;network;\nsockets=pulseaudio;wayland;\ndevices=dri;\nfilesystems=xdg-run/pipewire-0:ro;xdg-pictures:ro;xdg-music:ro;\n\n[Session Bus Policy]\norg.kde.StatusNotifierWatcher=talk\n\n[Environment]\nTMPDIR=/tmp\n";
+
+    #[test]
+    fn a_folder_is_none_read_only_or_read_write_by_the_filesystems_list() {
+        let ctx = parse_context("[Context]\nfilesystems=xdg-download:ro;xdg-documents;/data/games:rw;home:ro;\n");
+        assert_eq!(folder_access(&ctx, "xdg-download"), Access::ReadOnly);
+        assert_eq!(folder_access(&ctx, "xdg-documents"), Access::ReadWrite);
+        assert_eq!(folder_access(&ctx, "xdg-music"), Access::None);
+        assert_eq!(folder_access(&ctx, "/data/games"), Access::ReadWrite);
+    }
+
+    #[test]
+    fn folder_changes_become_the_right_override_words_and_bad_names_are_refused() {
+        assert_eq!(folder_override_args("xdg-download", Access::ReadOnly).unwrap(), vec!["--filesystem=xdg-download:ro"]);
+        assert_eq!(folder_override_args("xdg-music", Access::ReadWrite).unwrap(), vec!["--filesystem=xdg-music:rw"]);
+        assert_eq!(folder_override_args("/data/games", Access::None).unwrap(), vec!["--nofilesystem=/data/games"]);
+        for bad in ["", "/", "/data/../etc", "xdg-download:rw;--x", "--filesystem=host", "!home", "relative/path", "a\nb", "xdg-data/../x"] {
+            assert!(folder_override_args(bad, Access::ReadOnly).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn only_the_apps_own_chosen_folders_are_listed_as_custom() {
+        let ctx = parse_context("[Context]\nfilesystems=xdg-download;/data/games:ro;home;xdg-data/Steam;host;xdg-run/app/x;\n");
+        assert_eq!(custom_folders(&ctx), vec![("/data/games".to_string(), Access::ReadOnly), ("xdg-data/Steam".to_string(), Access::ReadWrite)]);
+    }
+
+    const META: &str = "[Context]\nshared=network;ipc;\nsockets=x11;pulseaudio;session-bus;\ndevices=dri;all;\nfeatures=bluetooth;\nfilesystems=xdg-download;\n\n[Session Bus Policy]\norg.freedesktop.Notifications=talk\norg.kde.StatusNotifierWatcher=talk\n";
+
+    #[test]
+    fn every_permission_is_listed_with_plain_words_and_whether_it_is_on() {
+        let over = "[Context]\nshared=!network;\nsockets=!pulseaudio;\ndevices=kvm;\n\n[Session Bus Policy]\norg.kde.StatusNotifierWatcher=none\n";
+        let items = permission_items(META, over);
+        let get = |k: PermKind, t: &str| items.iter().find(|p| p.kind == k && p.token == t).unwrap_or_else(|| panic!("missing {t}"));
+        assert!(!get(PermKind::Shared, "network").allowed, "switched off by the person");
+        assert!(get(PermKind::Shared, "ipc").allowed);
+        assert!(!get(PermKind::Socket, "pulseaudio").allowed);
+        assert!(get(PermKind::Socket, "session-bus").allowed && get(PermKind::Socket, "session-bus").broad);
+        assert!(get(PermKind::Device, "kvm").allowed, "added by the person");
+        assert!(get(PermKind::Device, "all").broad);
+        assert_eq!(get(PermKind::Shared, "network").label, "Internet and your local network");
+        assert!(get(PermKind::TalkName, "org.freedesktop.Notifications").allowed);
+        assert!(!get(PermKind::TalkName, "org.kde.StatusNotifierWatcher").allowed);
+        assert!(items.iter().all(|p| p.token != "xdg-download"), "folders are not in this list");
+    }
+
+    #[test]
+    fn single_permissions_become_the_right_override_words() {
+        assert_eq!(perm_override_args(PermKind::Shared, "network", false).unwrap(), vec!["--unshare=network"]);
+        assert_eq!(perm_override_args(PermKind::Socket, "x11", true).unwrap(), vec!["--socket=x11"]);
+        assert_eq!(perm_override_args(PermKind::Device, "all", false).unwrap(), vec!["--nodevice=all"]);
+        assert_eq!(perm_override_args(PermKind::Feature, "bluetooth", true).unwrap(), vec!["--allow=bluetooth"]);
+        assert_eq!(perm_override_args(PermKind::TalkName, "org.x.Y", false).unwrap(), vec!["--no-talk-name=org.x.Y"]);
+        assert!(perm_override_args(PermKind::Socket, "x11 --device=all", true).is_err());
+        assert!(perm_override_args(PermKind::Socket, "--x", true).is_err());
+    }
 
     #[test]
     fn sizes_read_like_sizes() {
@@ -810,5 +1087,46 @@ mod tests {
         assert!(moved && restored && came_from.ends_with(&name));
         assert!(!in_trash.exists() && !info.exists() && !dir.exists(), "no trace left");
     }
-}
 
+    /// Real Flatpak with a throwaway user folder: `XDG_DATA_HOME` is pointed at a temp folder so nothing real changes.
+    /// `cargo test app_details::tests::live_folders -- --ignored --test-threads=1`
+    #[test]
+    #[ignore]
+    fn live_folders_and_single_permissions_round_trip_in_a_throwaway_folder() {
+        let app = "com.valvesoftware.Steam";
+        if run("flatpak", &["info".into(), app.into()]).is_err() {
+            return; // the app is not installed here
+        }
+        let dir = std::env::temp_dir().join(format!("zohara-fp-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var("XDG_DATA_HOME", &dir);
+        let folder = dir.join("games");
+        std::fs::create_dir_all(&folder).unwrap();
+        let folder = folder.to_string_lossy().to_string();
+
+        let (meta, over) = permission_texts(app).unwrap();
+        assert!(over.trim().is_empty(), "the throwaway folder starts with no changes: {over:?}");
+        let eff = parse_context(&meta).with_overrides(&parse_context(&over));
+        assert_eq!(folder_access(&eff, &folder), Access::None);
+
+        set_folder(app, &folder, Access::ReadOnly).unwrap();
+        set_folder(app, "xdg-download", Access::ReadWrite).unwrap();
+        set_perm(app, PermKind::Feature, "multiarch", false).unwrap();
+        let (meta, over) = permission_texts(app).unwrap();
+        let eff = parse_context(&meta).with_overrides(&parse_context(&over));
+        assert_eq!(folder_access(&eff, &folder), Access::ReadOnly);
+        assert_eq!(folder_access(&eff, "xdg-download"), Access::ReadWrite);
+        assert!(custom_folders(&eff).iter().any(|(p, a)| *p == folder && *a == Access::ReadOnly));
+        assert!(permission_items(&meta, &over).iter().any(|p| p.token == "multiarch" && !p.allowed));
+
+        set_folder(app, &folder, Access::None).unwrap();
+        let (meta, over) = permission_texts(app).unwrap();
+        let eff = parse_context(&meta).with_overrides(&parse_context(&over));
+        assert_eq!(folder_access(&eff, &folder), Access::None);
+        assert!(!custom_folders(&eff).iter().any(|(p, _)| *p == folder));
+
+        reset_permissions(app).unwrap();
+        assert!(permission_texts(app).unwrap().1.trim().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

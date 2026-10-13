@@ -306,7 +306,12 @@ pub fn open(parent: &impl IsA<gtk4::Widget>, target: Target, uninstall: Option<R
     reset.set_sensitive(false);
     perms.set_visible(target.flatpak_id().is_some());
     body.append(&perms);
-    if target.flatpak_id().is_some() {
+    // Folder by folder, and every other permission, in their own panel.
+    let panel_refresh: Rc<std::cell::RefCell<Option<Rc<dyn Fn()>>>> = Rc::default();
+    if let Some(id) = target.flatpak_id() {
+        let panel = super::app_permissions::build(id, &dialog);
+        body.append(&panel.widget);
+        *panel_refresh.borrow_mut() = Some(panel.refresh.clone());
         body.append(&reset);
     }
 
@@ -418,13 +423,13 @@ pub fn open(parent: &impl IsA<gtk4::Widget>, target: Target, uninstall: Option<R
     // Permissions: each switch applies at once and goes back if Flatpak refuses.
     if let Some(app) = target.flatpak_id().map(String::from) {
         for (row, sw) in [(network.clone(), ad::Switch::Network), (sound.clone(), ad::Switch::Sound), (graphics.clone(), ad::Switch::Graphics), (devices.clone(), ad::Switch::AllDevices), (bluetooth.clone(), ad::Switch::Bluetooth)] {
-            let (app, updating, dialog) = (app.clone(), updating.clone(), dialog.clone());
+            let (app, updating, dialog, pr) = (app.clone(), updating.clone(), dialog.clone(), panel_refresh.clone());
             row.connect_active_notify(move |r| {
                 if updating.get() {
                     return;
                 }
                 let on = r.is_active();
-                let (app, r2, updating, dialog) = (app.clone(), r.clone(), updating.clone(), dialog.clone());
+                let (app, r2, updating, dialog, pr) = (app.clone(), r.clone(), updating.clone(), dialog.clone(), pr.clone());
                 in_background(
                     move || ad::set_switch(&app, sw, on),
                     move |res| {
@@ -433,6 +438,10 @@ pub fn open(parent: &impl IsA<gtk4::Widget>, target: Target, uninstall: Option<R
                             r2.set_active(!on);
                             updating.set(false);
                             message(&dialog, "Couldn't change it", &e);
+                        }
+                        // The full permission list and the folder list read the same settings.
+                        if let Some(f) = pr.borrow().clone() {
+                            f();
                         }
                     },
                 );
@@ -460,7 +469,7 @@ pub fn open(parent: &impl IsA<gtk4::Widget>, target: Target, uninstall: Option<R
             });
         }
         {
-            let (app, updating, dialog) = (app.clone(), updating.clone(), dialog.clone());
+            let (app, updating, dialog, pr) = (app.clone(), updating.clone(), dialog.clone(), panel_refresh.clone());
             files.connect_selected_notify(move |r| {
                 if updating.get() {
                     return;
@@ -470,16 +479,19 @@ pub fn open(parent: &impl IsA<gtk4::Widget>, target: Target, uninstall: Option<R
                     2 => ad::Files::Everything,
                     _ => ad::Files::Chosen,
                 };
-                let (app, dialog) = (app.clone(), dialog.clone());
+                let (app, dialog, pr) = (app.clone(), dialog.clone(), pr.clone());
                 in_background(move || ad::set_files(&app, level), move |res| {
                     if let Err(e) = res {
                         message(&dialog, "Couldn't change it", &e);
+                    }
+                    if let Some(f) = pr.borrow().clone() {
+                        f();
                     }
                 });
             });
         }
         {
-            let (app, dialog) = (app.clone(), dialog.clone());
+            let (app, dialog, pr) = (app.clone(), dialog.clone(), panel_refresh.clone());
             reset.connect_clicked(move |_| {
                 let d = adw::AlertDialog::new(
                     Some("Go back to the app's own permissions?"),
@@ -488,15 +500,20 @@ pub fn open(parent: &impl IsA<gtk4::Widget>, target: Target, uninstall: Option<R
                 d.add_responses(&[("cancel", "Cancel"), ("reset", "Go back")]);
                 d.set_response_appearance("reset", adw::ResponseAppearance::Destructive);
                 d.set_close_response("cancel");
-                let (app, dialog2) = (app.clone(), dialog.clone());
+                let (app, dialog2, pr) = (app.clone(), dialog.clone(), pr.clone());
                 d.connect_response(None, move |_, r| {
                     if r != "reset" {
                         return;
                     }
-                    let (app, dialog3) = (app.clone(), dialog2.clone());
-                    in_background(move || ad::reset_permissions(&app), move |res| match res {
-                        Ok(()) => message(&dialog3, "Done", "Close and open the details again to see the app's own permissions. The app picks them up the next time it opens."),
-                        Err(e) => message(&dialog3, "Couldn't reset", &e),
+                    let (app, dialog3, pr) = (app.clone(), dialog2.clone(), pr.clone());
+                    in_background(move || ad::reset_permissions(&app), move |res| {
+                        if let Some(f) = pr.borrow().clone() {
+                            f();
+                        }
+                        match res {
+                            Ok(()) => message(&dialog3, "Done", "The folder and permission lists show the app's own permissions again. Close and open the details to see the big switches too. The app picks them up the next time it opens."),
+                            Err(e) => message(&dialog3, "Couldn't reset", &e),
+                        }
                     });
                 });
                 d.present(Some(&dialog));

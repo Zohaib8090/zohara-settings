@@ -31,6 +31,7 @@ pub mod touch_keyboard;
 pub mod wallet;
 pub mod community_apps;
 pub mod web_accounts;
+pub mod windows_apps;
 pub mod wifi_diag;
 pub mod worker;
 pub mod zohara_link;

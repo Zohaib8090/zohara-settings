@@ -132,13 +132,7 @@ fn refresh_menu() {
 fn context_for(id: &str, settings: &GameSettings) -> Context {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
     let data = std::env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|_| home.join(".local/share"));
-    let proton_dir = proton::installed().first().and_then(|tag| proton::tool_dirs().into_iter().map(|d| d.join(tag)).find(|p| p.join("proton").exists()));
-    Context {
-        proton_dir,
-        steam_root: home.join(".local/share/Steam"),
-        prefix_dir: data.join("zohara/prefixes").join(id),
-        gpu_env: if settings.dedicated_gpu { gpu_pref::dedicated_env() } else { Vec::new() },
-    }
+    Context::here(data.join("zohara/prefixes").join(id), PathBuf::new(), settings.dedicated_gpu)
 }
 
 /// Writes the game's desktop entry (new or changed) and refreshes the menu.

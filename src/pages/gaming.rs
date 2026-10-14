@@ -721,6 +721,149 @@ fn windows_group(page: &gtk4::Box) -> adw::PreferencesGroup {
     g
 }
 
+/// Windows programs with a double-click: the switch that makes the file manager open .exe/.bat/.msi files with
+/// Proton-GE (or Wine) directly, and the defaults they run with.
+fn double_click_group(page: &gtk4::Box) -> adw::PreferencesGroup {
+    use crate::backend::game_launch::Runner;
+    use crate::backend::{gpu_pref, proton, windows_apps};
+    use std::rc::Rc;
+
+    let g = adw::PreferencesGroup::new();
+    g.set_title("Windows programs");
+    g.set_description(Some("Run any Windows program or game by double-clicking it in the file manager: .exe, .bat, installers and shortcuts. No Steam needed."));
+
+    let current = windows_apps::load();
+
+    let on = adw::SwitchRow::new();
+    on.set_title("Open Windows programs with a double-click");
+    on.set_subtitle_lines(0);
+    on.set_active(windows_apps::enabled());
+    let set_on_subtitle = {
+        let on = on.clone();
+        move || {
+            on.set_subtitle(if on.is_active() {
+                "On: double-clicking a Windows file runs it with the choices below."
+            } else {
+                "Off: Windows files open the way they did before (plain Wine)."
+            })
+        }
+    };
+    set_on_subtitle();
+
+    let layer = adw::ComboRow::new();
+    layer.set_title("Compatibility layer");
+    layer.set_subtitle_lines(0);
+    layer.set_model(Some(&gtk4::StringList::new(&["Proton-GE (recommended)", "Wine"])));
+    layer.set_selected(if current.runner == Runner::Wine { 1 } else { 0 });
+    let set_layer_subtitle = {
+        let layer = layer.clone();
+        move || {
+            let has = proton::installed().first().cloned();
+            layer.set_subtitle(&match (layer.selected(), has) {
+                (0, Some(v)) => format!("Uses {v} with DXVK: the fastest for games. Programs share one Windows C: drive."),
+                (0, None) => "Proton-GE isn't installed yet: install it above. Until then plain Wine is used.".to_string(),
+                _ => "Plain Wine. Fine for older programs; slower for modern games.".to_string(),
+            });
+        }
+    };
+    set_layer_subtitle();
+
+    let dxvk = adw::SwitchRow::new();
+    dxvk.set_title("DirectX through Vulkan (DXVK)");
+    dxvk.set_subtitle("Proton-GE only. Faster for most games; turn it off if a game shows glitches.");
+    dxvk.set_subtitle_lines(0);
+    dxvk.set_active(current.dxvk);
+
+    let gpu = adw::SwitchRow::new();
+    gpu.set_title("Use the stronger graphics chip");
+    gpu.set_subtitle_lines(0);
+    if gpu_pref::has_two_gpus() {
+        gpu.set_subtitle("On a laptop with two chips, Windows programs run on the dedicated one.");
+        gpu.set_active(current.dedicated_gpu);
+    } else {
+        gpu.set_subtitle("This computer has one graphics chip.");
+        gpu.set_sensitive(false);
+    }
+
+    let has = |c: &str| Command::new("sh").args(["-c", &format!("command -v {c}")]).output().map(|o| o.status.success()).unwrap_or(false);
+    let gm = adw::SwitchRow::new();
+    gm.set_title("Game Mode");
+    gm.set_subtitle(if has("gamemoderun") { "Give the program priority while it runs" } else { "Game Mode isn't installed" });
+    gm.set_sensitive(has("gamemoderun"));
+    gm.set_active(current.gamemode && has("gamemoderun"));
+    let ov = adw::SwitchRow::new();
+    ov.set_title("Performance overlay (MangoHud)");
+    ov.set_subtitle(if has("mangohud") { "Frame rate and load on screen" } else { "MangoHud isn't installed" });
+    ov.set_sensitive(has("mangohud"));
+    ov.set_active(current.overlay && has("mangohud"));
+
+    let cdrive = adw::ActionRow::new();
+    cdrive.set_title("Windows C: drive");
+    cdrive.set_subtitle("Where installers put programs. Open it to find an installed program and double-click it.");
+    cdrive.set_subtitle_lines(0);
+    let open_c = gtk4::Button::with_label("Open");
+    open_c.set_valign(gtk4::Align::Center);
+    cdrive.add_suffix(&open_c);
+
+    // Every change is saved at once.
+    let save: Rc<dyn Fn()> = {
+        let (layer, dxvk, gpu, gm, ov, page) = (layer.clone(), dxvk.clone(), gpu.clone(), gm.clone(), ov.clone(), page.clone());
+        Rc::new(move || {
+            let s = crate::backend::game_launch::GameSettings {
+                runner: if layer.selected() == 1 { Runner::Wine } else { Runner::Proton },
+                dxvk: dxvk.is_active(),
+                dedicated_gpu: gpu.is_active() && gpu.is_sensitive(),
+                gamemode: gm.is_active() && gm.is_sensitive(),
+                overlay: ov.is_active() && ov.is_sensitive(),
+                ..windows_apps::defaults()
+            };
+            if let Err(e) = windows_apps::save(&s) {
+                message(&page, "Couldn't save", &e);
+            }
+        })
+    };
+    {
+        let (save, set_layer_subtitle, dxvk) = (save.clone(), set_layer_subtitle.clone(), dxvk.clone());
+        layer.connect_selected_notify(move |l| {
+            dxvk.set_sensitive(l.selected() == 0);
+            set_layer_subtitle();
+            save();
+        });
+    }
+    dxvk.set_sensitive(layer.selected() == 0);
+    for sw in [&dxvk, &gpu, &gm, &ov] {
+        let save = save.clone();
+        sw.connect_active_notify(move |_| save());
+    }
+    {
+        let (page, set_on_subtitle) = (page.clone(), set_on_subtitle.clone());
+        on.connect_active_notify(move |r| {
+            if let Err(e) = windows_apps::set_enabled(r.is_active()) {
+                message(&page, "Couldn't change the file types", &e);
+            }
+            set_on_subtitle();
+        });
+    }
+    {
+        let layer = layer.clone();
+        open_c.connect_clicked(move |_| {
+            let s = crate::backend::game_launch::GameSettings { runner: if layer.selected() == 1 { Runner::Wine } else { Runner::Proton }, ..windows_apps::defaults() };
+            let dir = windows_apps::c_drive(&s);
+            if !dir.exists() {
+                // Not made yet: open the folder above it, which is made on the first run.
+                let _ = std::fs::create_dir_all(dir.parent().unwrap_or(&dir));
+            }
+            let target = if dir.exists() { dir } else { dir.parent().map(|p| p.to_path_buf()).unwrap_or(dir) };
+            let _ = Command::new("xdg-open").arg(target).spawn();
+        });
+    }
+
+    for w in [on.upcast_ref::<gtk4::Widget>(), layer.upcast_ref(), dxvk.upcast_ref(), gpu.upcast_ref(), gm.upcast_ref(), ov.upcast_ref(), cdrive.upcast_ref()] {
+        g.add(w);
+    }
+    g
+}
+
 pub fn build() -> gtk4::Widget {
     let scroll = gtk4::ScrolledWindow::builder()
         .hscrollbar_policy(gtk4::PolicyType::Never)
@@ -750,6 +893,7 @@ pub fn build() -> gtk4::Widget {
     root.append(&live_group());
     root.append(&graphics_group());
     root.append(&windows_group(&root));
+    root.append(&double_click_group(&root));
     root.append(&stores_group(&root));
 
     scroll.set_child(Some(&root));

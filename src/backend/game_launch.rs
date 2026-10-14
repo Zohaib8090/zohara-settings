@@ -88,6 +88,26 @@ pub struct Context {
     pub prefix_dir: PathBuf,
     /// Variables that put the game on the stronger graphics chip (from `switcherooctl list`).
     pub gpu_env: Vec<(String, String)>,
+    /// Plain Wine's Windows folder; empty = Wine's own default (`~/.wine`).
+    pub wine_prefix: PathBuf,
+}
+
+impl Context {
+    /// This computer: the newest Proton-GE installed for the repository Steam, the given Windows folder, and the
+    /// stronger chip's variables when they are wanted.
+    pub fn here(prefix_dir: PathBuf, wine_prefix: PathBuf, dedicated: bool) -> Context {
+        let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+        let proton_dir = super::proton::installed()
+            .first()
+            .and_then(|tag| super::proton::tool_dirs().into_iter().map(|d| d.join(tag)).find(|p| p.join("proton").exists()));
+        Context {
+            proton_dir,
+            steam_root: home.join(".local/share/Steam"),
+            prefix_dir,
+            gpu_env: if dedicated { super::gpu_pref::dedicated_env() } else { Vec::new() },
+            wine_prefix,
+        }
+    }
 }
 
 /// A path as one word in an `Exec=` line: quoted, with the characters the spec escapes.
@@ -188,8 +208,9 @@ pub fn parse_env(s: &str) -> Result<Vec<(String, String)>, String> {
     Ok(out)
 }
 
-/// The `Exec=` line for a game. Err = what to tell the person (a typed field that doesn't parse, Proton not installed).
-pub fn command(path: &str, s: &GameSettings, ctx: &Context) -> Result<String, String> {
+/// The words that start a game: `env NAME=value … [gamemoderun] [mangohud] <runner> <file> <options>`.
+/// Err = what to tell the person (a typed field that doesn't parse, Proton not installed).
+pub fn argv(path: &str, s: &GameSettings, ctx: &Context) -> Result<Vec<String>, String> {
     let options = split_words(&s.options).ok_or("A quote in the game options is not closed.")?;
     let extra_env = parse_env(&s.env)?;
     let mut env: Vec<(String, String)> = Vec::new();
@@ -199,42 +220,33 @@ pub fn command(path: &str, s: &GameSettings, ctx: &Context) -> Result<String, St
     env.extend(extra_env);
 
     let mut parts: Vec<String> = Vec::new();
-    let wine = uses_wine(path, s.runner);
     let is_exe = path.to_lowercase().ends_with(".exe");
     if s.runner == Runner::Proton {
-        let dir = ctx.proton_dir.as_ref().ok_or("Proton-GE is not installed. Install it above first.")?;
+        let dir = ctx.proton_dir.as_ref().ok_or("Proton-GE is not installed. Install it in Gaming > Windows games first.")?;
         env.push(("STEAM_COMPAT_CLIENT_INSTALL_PATH".into(), ctx.steam_root.to_string_lossy().to_string()));
         env.push(("STEAM_COMPAT_DATA_PATH".into(), ctx.prefix_dir.to_string_lossy().to_string()));
         if !s.dxvk {
             env.push(("PROTON_USE_WINED3D".into(), "1".into()));
         }
-        parts.push(exec_quote(&dir.join("proton").to_string_lossy()));
+        parts.push(dir.join("proton").to_string_lossy().to_string());
         parts.push("run".into());
-        if !is_exe {
-            parts.push("start".into());
-            parts.push("/unix".into());
+    } else if uses_wine(path, s.runner) {
+        if !ctx.wine_prefix.as_os_str().is_empty() {
+            env.push(("WINEPREFIX".into(), ctx.wine_prefix.to_string_lossy().to_string()));
         }
-        parts.push(exec_quote(path));
-    } else if wine {
         parts.push("wine".into());
-        if !is_exe {
-            parts.push("start".into());
-            parts.push("/unix".into());
-        }
-        parts.push(exec_quote(path));
-    } else {
-        parts.push(exec_quote(path));
     }
-    for o in options {
-        parts.push(exec_quote(&o));
+    if uses_wine(path, s.runner) && !is_exe {
+        parts.push("start".into());
+        parts.push("/unix".into());
     }
+    parts.push(path.to_string());
+    parts.extend(options);
 
     let mut line: Vec<String> = Vec::new();
     if !env.is_empty() {
         line.push("env".into());
-        for (k, v) in &env {
-            line.push(exec_quote(&format!("{k}={v}")));
-        }
+        line.extend(env.into_iter().map(|(k, v)| format!("{k}={v}")));
     }
     if s.gamemode {
         line.push("gamemoderun".into());
@@ -243,7 +255,12 @@ pub fn command(path: &str, s: &GameSettings, ctx: &Context) -> Result<String, St
         line.push("mangohud".into());
     }
     line.extend(parts);
-    Ok(line.join(" "))
+    Ok(line)
+}
+
+/// The words as an `Exec=` line: every word quoted, so nothing in them is read as a field code or a shell character.
+pub fn command(path: &str, s: &GameSettings, ctx: &Context) -> Result<String, String> {
+    Ok(argv(path, s, ctx)?.iter().map(|w| exec_quote(w)).collect::<Vec<_>>().join(" "))
 }
 
 fn esc(v: &str) -> String {
@@ -322,59 +339,71 @@ mod tests {
             steam_root: PathBuf::from("/h/.local/share/Steam"),
             prefix_dir: PathBuf::from("/h/.local/share/zohara/prefixes/cool-game"),
             gpu_env: vec![("__NV_PRIME_RENDER_OFFLOAD".into(), "1".into()), ("__GLX_VENDOR_LIBRARY_NAME".into(), "nvidia".into())],
+            wine_prefix: PathBuf::new(),
         }
     }
 
     fn cmd(path: &str, s: &GameSettings) -> String {
-        command(path, s, &ctx()).unwrap()
+        argv(path, s, &ctx()).unwrap().join(" ")
     }
 
     #[test]
     fn exe_files_run_through_wine_and_game_mode_goes_first() {
         let mut s = GameSettings::default();
-        assert_eq!(cmd("/g/Game.EXE", &s), "wine \"/g/Game.EXE\"");
+        assert_eq!(cmd("/g/Game.EXE", &s), "wine /g/Game.EXE");
         s.gamemode = true;
-        assert_eq!(cmd("/g/run", &s), "gamemoderun \"/g/run\"");
+        assert_eq!(cmd("/g/run", &s), "gamemoderun /g/run");
+        assert_eq!(command("/g/My Game.exe", &GameSettings::default(), &ctx()).unwrap(), "\"wine\" \"/g/My Game.exe\"");
     }
 
     #[test]
     fn bat_files_and_other_windows_files_go_through_wine_start() {
         let s = GameSettings::default();
-        assert_eq!(cmd("/g/Run Me!.bat", &s), "wine start /unix \"/g/Run Me!.bat\"");
-        assert_eq!(cmd("/g/setup.MSI", &s), "wine start /unix \"/g/setup.MSI\"");
+        assert_eq!(cmd("/g/Run Me!.bat", &s), "wine start /unix /g/Run Me!.bat");
+        assert_eq!(cmd("/g/setup.MSI", &s), "wine start /unix /g/setup.MSI");
+        let with_prefix = Context { wine_prefix: PathBuf::from("/h/win"), ..ctx() };
+        assert_eq!(argv("/g/a.exe", &s, &with_prefix).unwrap(), vec!["env", "WINEPREFIX=/h/win", "wine", "/g/a.exe"]);
     }
 
     #[test]
     fn the_person_can_send_any_file_to_wine_or_run_it_directly() {
         let mut s = GameSettings { runner: Runner::Wine, ..GameSettings::default() };
-        assert_eq!(cmd("/g/game.dat", &s), "wine start /unix \"/g/game.dat\"");
-        assert_eq!(cmd("/g/Game.exe", &s), "wine \"/g/Game.exe\"");
+        assert_eq!(cmd("/g/game.dat", &s), "wine start /unix /g/game.dat");
+        assert_eq!(cmd("/g/Game.exe", &s), "wine /g/Game.exe");
         s.runner = Runner::Direct;
-        assert_eq!(cmd("/g/Game.exe", &s), "\"/g/Game.exe\"");
+        assert_eq!(cmd("/g/Game.exe", &s), "/g/Game.exe");
         assert!(uses_wine("/x/a.BAT", Runner::Auto) && !uses_wine("/x/a.sh", Runner::Auto));
     }
 
     #[test]
     fn proton_gets_its_own_folder_and_dxvk_can_be_switched_off() {
         let mut s = GameSettings { runner: Runner::Proton, ..GameSettings::default() };
-        let c = cmd("/g/Game.exe", &s);
-        assert!(c.starts_with("env \"STEAM_COMPAT_CLIENT_INSTALL_PATH=/h/.local/share/Steam\" \"STEAM_COMPAT_DATA_PATH=/h/.local/share/zohara/prefixes/cool-game\" "), "{c}");
-        assert!(c.ends_with("\"/h/.local/share/Steam/compatibilitytools.d/GE-Proton11-9/proton\" run \"/g/Game.exe\""), "{c}");
-        assert!(!c.contains("PROTON_USE_WINED3D"));
+        let a = argv("/g/Game.exe", &s, &ctx()).unwrap();
+        assert_eq!(
+            a,
+            vec![
+                "env",
+                "STEAM_COMPAT_CLIENT_INSTALL_PATH=/h/.local/share/Steam",
+                "STEAM_COMPAT_DATA_PATH=/h/.local/share/zohara/prefixes/cool-game",
+                "/h/.local/share/Steam/compatibilitytools.d/GE-Proton11-9/proton",
+                "run",
+                "/g/Game.exe"
+            ]
+        );
         s.dxvk = false;
-        assert!(cmd("/g/Game.exe", &s).contains("\"PROTON_USE_WINED3D=1\""));
-        assert!(cmd("/g/go.bat", &s).ends_with("run start /unix \"/g/go.bat\""));
+        assert!(cmd("/g/Game.exe", &s).contains("PROTON_USE_WINED3D=1"));
+        assert!(cmd("/g/go.bat", &s).ends_with("proton run start /unix /g/go.bat"));
         // not installed: a plain message, not a broken launcher
         let none = Context { proton_dir: None, ..ctx() };
-        assert!(command("/g/Game.exe", &s, &none).unwrap_err().contains("not installed"));
+        assert!(argv("/g/Game.exe", &s, &none).unwrap_err().contains("not installed"));
     }
 
     #[test]
     fn graphics_chip_overlay_and_options_are_added_in_order() {
         let s = GameSettings { dedicated_gpu: true, gamemode: true, overlay: true, options: "-windowed -w \"1280 720\"".into(), env: "FOO=bar".into(), ..GameSettings::default() };
         assert_eq!(
-            cmd("/g/Game.exe", &s),
-            "env \"__NV_PRIME_RENDER_OFFLOAD=1\" \"__GLX_VENDOR_LIBRARY_NAME=nvidia\" \"FOO=bar\" gamemoderun mangohud wine \"/g/Game.exe\" \"-windowed\" \"-w\" \"1280 720\""
+            argv("/g/Game.exe", &s, &ctx()).unwrap(),
+            vec!["env", "__NV_PRIME_RENDER_OFFLOAD=1", "__GLX_VENDOR_LIBRARY_NAME=nvidia", "FOO=bar", "gamemoderun", "mangohud", "wine", "/g/Game.exe", "-windowed", "-w", "1280 720"]
         );
         // the stronger chip is only used when asked for
         let off = GameSettings { dedicated_gpu: false, ..s };
@@ -384,7 +413,7 @@ mod tests {
     #[test]
     fn typed_text_never_reaches_a_shell() {
         let s = GameSettings { options: "$(rm -rf ~) `x` ;&|".into(), ..GameSettings::default() };
-        let c = cmd("/g/Game.exe", &s);
+        let c = command("/g/Game.exe", &s, &ctx()).unwrap();
         assert!(c.contains("\"\\$(rm\"") && c.contains("\"\\`x\\`\""), "{c}");
         assert!(command("/g/a", &GameSettings { options: "'open".into(), ..GameSettings::default() }, &ctx()).is_err());
         assert!(parse_env("1BAD=x").is_err());

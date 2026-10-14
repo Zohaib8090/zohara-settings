@@ -36,6 +36,11 @@ fn main() -> glib::ExitCode {
     backend::diag::init();
     let args: Vec<String> = std::env::args().collect();
 
+    // A double-clicked Windows program (Gaming > Windows games > "Open Windows programs with a double-click").
+    if let Some(i) = args.iter().position(|a| a == "--run-windows") {
+        let file = args.get(i + 1).cloned().unwrap_or_default();
+        std::process::exit(backend::windows_apps::run_file(&file));
+    }
     // Background health check (systemd user timer): no window, just notify.
     if args.iter().any(|a| a == "--health-check") {
         std::process::exit(backend::health::background_check());

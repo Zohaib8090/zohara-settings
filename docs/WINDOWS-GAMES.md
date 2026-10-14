@@ -89,3 +89,24 @@ an installed app have no gear (they keep their own launcher). Proton-GE per game
 Verified: unit tests (command building, quoting, round trip), real GE-Proton11-9 on the owner's laptop ran
 `proton run start /unix file.bat` (wrote its output file) and `proton run file.exe` with a private prefix. Not verified:
 a real game under Proton-GE from the gear window, the Dedicated switch on an AMD laptop, MangoHud (not installed on this laptop).
+
+## Windows programs with a double-click, no Steam (2026-10-14)
+Owner's goal: the compatibility layer is part of the OS. Turn it on once in Settings, then double-click any Windows game or
+program and it runs; Steam is not needed in the background.
+
+Gaming > **Windows programs**: "Open Windows programs with a double-click" switch, Compatibility layer (Proton-GE,
+recommended / Wine), DXVK, stronger graphics chip, Game Mode, MangoHud, and "Windows C: drive > Open".
+* The switch writes `~/.local/share/applications/zohara-windows.desktop` (`Exec=zohara-settings --run-windows %f`,
+  NoDisplay) and makes it the default for `application/x-ms-dos-executable`, `x-msdownload`, `x-msi`, `x-ms-shortcut`,
+  `x-bat`, `x-mswinurl` with `xdg-mime default` (the person's own `~/.config/mimeapps.list`; no password). Off takes only our
+  entry out of `mimeapps.list` and deletes the desktop file, so Wine's own handler is back.
+* `--run-windows FILE` (`backend/windows_apps.rs`) reads `~/.config/zohara/windows-apps.conf`, starts the file from its own
+  folder and returns. Proton-GE runs **directly** (`proton run`, plus `start /unix` for non-.exe files) with
+  `STEAM_COMPAT_DATA_PATH=~/.local/share/zohara/windows` (one shared Windows folder, so installed programs find each other) and
+  `STEAM_COMPAT_CLIENT_INSTALL_PATH=~/.local/share/Steam` (created if missing; Steam itself is not needed). Plain Wine uses its
+  own folder `~/.local/share/zohara/windows-wine` (Proton's and Wine's must not be shared). If Proton-GE is chosen but not
+  installed, it falls back to Wine and says so in a notification. Output goes to `~/.cache/zohara/windows-run.log`.
+* Verified on the owner's laptop: `zohara-settings --run-windows "…/Game Folder/Run Me!.bat"` (throwaway data folder)
+  created the Proton prefix with GE-Proton11-9 and the .bat wrote its result next to itself.
+* Known limits: Proton turns off Wine's start-menu shortcuts, so an installed program is found through "Windows C: drive";
+  anti-cheat games do not run; a game that needs Steam itself (Steam DRM) still needs Steam.

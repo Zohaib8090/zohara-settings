@@ -56,3 +56,9 @@ installs with `--overwrite /etc/lsb-release`, and puts Zohara's file back. The s
 `/var/log/zohara-games-setup.log` and the error dialog shows the `error:` lines. Second run: steam, lutris, winetricks,
 lib32-mesa, lib32-nvidia-utils (Intel + NVIDIA laptop, so also lib32-vulkan-radeon/intel by the fallback rule) and protonup-qt
 installed; `/etc/lsb-release` still says Zohara OS. Any other ISO file that a dependency also ships would fail the same way.
+
+**Second finding (same laptop):** Proton-GE was already in the Flatpak Steam folder (put there by ProtonUp-Qt's Flatpak), so the
+button thought it was installed and did nothing for the native Steam. Install now checks every Steam folder (`missing_in`,
+`fully_installed`) and downloads only into the ones that lack the version. Result: GE-Proton11-9 unpacked into
+`~/.local/share/Steam/compatibilitytools.d` on the laptop, download file removed. Steam's own internal name for it is
+`GE-Proton11-9-x86_64` (from the archive's `compatibilitytool.vdf`).

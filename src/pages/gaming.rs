@@ -474,7 +474,7 @@ fn windows_group(page: &gtk4::Box) -> adw::PreferencesGroup {
 
             let have = proton::installed();
             let newest = latest.borrow().as_ref().map(|r| r.tag.clone());
-            let up_to_date = newest.as_ref().map(|n| have.contains(n)).unwrap_or(false);
+            let up_to_date = newest.as_ref().map(|n| have.contains(n) && proton::fully_installed(n)).unwrap_or(false);
             ge.set_subtitle(&match (have.first(), &newest) {
                 (None, Some(n)) => format!("Not installed. Newest is {n}. It goes into Steam's compatibility list."),
                 (None, None) => "Not installed. Press Install to download the newest version (about 560 MB).".to_string(),
@@ -552,7 +552,7 @@ fn windows_group(page: &gtk4::Box) -> adw::PreferencesGroup {
                     }
                     Ok(rel) => {
                         *latest.borrow_mut() = Some(rel.clone());
-                        if proton::installed().contains(&rel.tag) {
+                        if proton::fully_installed(&rel.tag) {
                             busy.set(false);
                             refresh_fn(); // already the newest
                             return;

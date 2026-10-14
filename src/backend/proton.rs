@@ -214,6 +214,16 @@ pub fn installed() -> Vec<String> {
     installed_in(&tool_dirs())
 }
 
+/// Folders that do not have `tag` yet (one Steam may have it while the other does not).
+pub fn missing_in(dirs: &[PathBuf], tag: &str) -> Vec<PathBuf> {
+    dirs.iter().filter(|d| !d.join(tag).join("proton").exists()).cloned().collect()
+}
+
+/// Whether every Steam folder already has `tag`.
+pub fn fully_installed(tag: &str) -> bool {
+    missing_in(&tool_dirs(), tag).is_empty()
+}
+
 /// Where the download goes while it is running (the page reads its size for progress).
 pub fn download_path(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!("zohara-{tag}.tar.gz"))
@@ -224,7 +234,10 @@ pub fn install(rel: &Release) -> Result<(), String> {
     if !valid_tag(&rel.tag) {
         return Err("Unexpected version name.".into());
     }
-    let dirs = tool_dirs();
+    let dirs = missing_in(&tool_dirs(), &rel.tag);
+    if dirs.is_empty() {
+        return Ok(());
+    }
     let file = download_path(&rel.tag);
     let result = install_inner(rel, &dirs, &file);
     let _ = std::fs::remove_file(&file);
@@ -362,6 +375,9 @@ mod tests {
         let dirs = tool_dirs_in(&home);
         assert_eq!(dirs.len(), 2);
         assert_eq!(installed_in(&dirs), vec!["GE-Proton11-9", "GE-Proton9-4"]);
+        // 11-9 is in both Steam folders, 9-4 only in the native one: the other Steam still needs 9-4
+        assert!(missing_in(&dirs, "GE-Proton11-9").is_empty());
+        assert_eq!(missing_in(&dirs, "GE-Proton9-4"), vec![flat.clone()]);
         // with no Steam at all, the repository Steam's folder is where it goes
         let bare = std::env::temp_dir().join(format!("zs-proton-bare-{}", std::process::id()));
         assert_eq!(tool_dirs_in(&bare), vec![bare.join(".local/share/Steam/compatibilitytools.d")]);

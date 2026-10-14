@@ -34,7 +34,7 @@ Not yet tried on a real Steam game; Flatpak Steam hides Game Mode/MangoHud (step
 * Show them in My games with the same gear. Saving writes the game's launch options (`localconfig.vdf`, e.g.
   `gamemoderun mangohud %command%` plus chip variables). Steam must be closed while writing; Settings asks for that.
 
-### D. Flatpak apps
+### D. Flatpak apps  (chip choice existed before; MangoHud/Game Mode extension installer and live-view names NOT done: needs a running Flatpak game to check, and the owner removed Flatpak Steam)
 * Chip choice per Flatpak app with `flatpak override --user --env=...`.
 * One-click install of the Flatpak MangoHud and Game Mode extensions.
 * Live view maps sandbox process names to the app name.
@@ -42,7 +42,7 @@ Not yet tried on a real Steam game; Flatpak Steam hides Game Mode/MangoHud (step
 ### E. Heroic and Lutris games  (BUILT 2026-10-14, alpha; not tried on a real Lutris/Heroic game)
 * One small adapter each (Heroic per-game JSON, Lutris `.yml`) to list games and write the same settings.
 
-### F. Java games (Minecraft, Modrinth/Prism/ATLauncher)  (new, from the owner's report)
+### F. Java games (Minecraft, Modrinth/Prism/ATLauncher)  (PAGE BUILT 2026-10-14, alpha: Java listing, install, make default; the owner's own Minecraft error is still unknown; chip choice for Minecraft launchers = the existing Flatpak/app graphics choice)
 * Gaming > Java: list installed Javas (and the ones launchers bring themselves, e.g. Modrinth's Zulu 25), show which version
   each Minecraft version needs (1.21+ Java 21, 1.18-1.20.4 Java 17, older Java 8), install/switch with `archlinux-java`,
   warn when a launcher's Java is too old for the profile.

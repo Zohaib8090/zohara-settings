@@ -240,6 +240,7 @@ pub static ENTRIES: &[Entry] = &[
     e!("Apps for websites", "Apps", "web apps pwa"),
     e!("Video playback", "Apps", "hardware decoding codec gpu"),
     // Gaming
+    e!("Java for Minecraft", "Gaming", "java jre jdk openjdk minecraft modrinth prism launcher version install default"),
     e!("Game stores", "Gaming", "steam lutris heroic bottles"),
     e!("Graphics in use", "Gaming", "gpu graphics usage load temperature video memory vram which app nvidia amd intel dedicated integrated"),
     e!("Windows games", "Gaming", "windows games proton wine steam 32-bit multilib lutris winetricks"),

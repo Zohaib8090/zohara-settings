@@ -915,6 +915,7 @@ pub fn build() -> gtk4::Widget {
     root.append(&graphics_group());
     root.append(&windows_group(&root));
     root.append(&double_click_group(&root));
+    root.append(&java_group(&root));
     root.append(&stores_group(&root));
 
     scroll.set_child(Some(&root));
@@ -931,4 +932,114 @@ mod tests {
         assert_eq!(last_error_line(""), "");
         assert_eq!(last_error_line(&"x".repeat(500)).len(), 200);
     }
+}
+
+// ── Java for games ─────────────────────────────────────────────────────────
+
+/// Gaming > Java: which Java is installed, which one Minecraft needs, install and switch the system Java.
+fn java_group(root: &gtk4::Box) -> gtk4::Box {
+    let holder = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    java_fill(&holder, root);
+    holder
+}
+
+fn java_fill(holder: &gtk4::Box, root: &gtk4::Box) {
+    use crate::backend::java_games as jg;
+    while let Some(c) = holder.first_child() {
+        holder.remove(&c);
+    }
+    let g = adw::PreferencesGroup::new();
+    g.set_title("Java for Minecraft");
+    g.set_description(Some("Minecraft needs a certain Java for each version: 1.20.5 and newer need Java 21, 1.18 to 1.20.4 need Java 17, older ones Java 8, and the newest year-numbered versions (26.x) a newer Java still. Launchers installed as Flatpaks (Modrinth, Prism) bring their own and cannot use these."));
+    let loading = adw::ActionRow::new();
+    loading.set_title("Looking for Java…");
+    g.add(&loading);
+    holder.append(&g);
+    let (holder, root) = (holder.clone(), root.clone());
+    in_background(
+        move || (jg::system_javas(), jg::launcher_javas()),
+        move |(system, launcher)| {
+            while let Some(c) = holder.first_child() {
+                holder.remove(&c);
+            }
+            let g = adw::PreferencesGroup::new();
+            g.set_title("Java for Minecraft");
+            g.set_description(Some("Minecraft needs a certain Java for each version: 1.20.5 and newer need Java 21, 1.18 to 1.20.4 need Java 17, older ones Java 8, and the newest year-numbered versions (26.x) a newer Java still. Launchers installed as Flatpaks (Modrinth, Prism) bring their own and cannot use these."));
+            if system.is_empty() {
+                let r = adw::ActionRow::new();
+                r.set_title("No system Java installed");
+                r.set_subtitle("Programs that are not Flatpaks (a Minecraft launcher from the AUR, a .jar file) need one. Install the version your game needs below.");
+                r.set_subtitle_lines(0);
+                g.add(&r);
+            }
+            for j in &system {
+                let r = adw::ActionRow::new();
+                r.set_title(&format!("Java {}", j.major));
+                r.set_subtitle(if j.is_default { "The system's default Java" } else { "Installed" });
+                if !j.is_default {
+                    let b = gtk4::Button::with_label("Make default");
+                    b.set_valign(gtk4::Align::Center);
+                    let (name, all, holder, root) = (j.name.clone(), system.clone(), holder.clone(), root.clone());
+                    b.connect_clicked(move |b| {
+                        let script = match jg::default_script(&name, &all) {
+                            Ok(s) => s,
+                            Err(e) => return message(b, "Couldn't change it", &e),
+                        };
+                        b.set_sensitive(false);
+                        let (holder, root, b) = (holder.clone(), root.clone(), b.clone());
+                        in_background(move || jg::run_admin(&script), move |res| {
+                            if let Err(e) = res {
+                                message(&b, "Couldn't change it", &e);
+                            }
+                            java_fill(&holder, &root);
+                        });
+                    });
+                    r.add_suffix(&b);
+                }
+                g.add(&r);
+            }
+            for (major, pkg) in jg::PACKAGES {
+                if system.iter().any(|j| j.major == major) {
+                    continue;
+                }
+                let r = adw::ActionRow::new();
+                r.set_title(&format!("Install Java {major}"));
+                r.set_subtitle(&format!("The system package {pkg}. Asks for your password."));
+                let b = gtk4::Button::with_label("Install");
+                b.set_valign(gtk4::Align::Center);
+                let (holder, root) = (holder.clone(), root.clone());
+                b.connect_clicked(move |b| {
+                    let script = match jg::install_script(major) {
+                        Ok(s) => s,
+                        Err(e) => return message(b, "Couldn't install", &e),
+                    };
+                    b.set_sensitive(false);
+                    b.set_label("Installing…");
+                    let (holder, root, b) = (holder.clone(), root.clone(), b.clone());
+                    in_background(move || jg::run_admin(&script), move |res| {
+                        if let Err(e) = res {
+                            message(&b, "Couldn't install", &e);
+                        }
+                        java_fill(&holder, &root);
+                    });
+                });
+                r.add_suffix(&b);
+                g.add(&r);
+            }
+            holder.append(&g);
+            if !launcher.is_empty() {
+                let l = adw::PreferencesGroup::new();
+                l.set_title("Java that launchers brought");
+                l.set_description(Some("Each launcher picks the right one for a game by itself. They are listed so you can see what is on this computer."));
+                for j in &launcher {
+                    let r = adw::ActionRow::new();
+                    r.set_title(&format!("Java {}: {}", j.major, j.launcher));
+                    r.set_subtitle(&glib::markup_escape_text(&j.path.to_string_lossy()));
+                    r.set_subtitle_lines(1);
+                    l.add(&r);
+                }
+                holder.append(&l);
+            }
+        },
+    );
 }

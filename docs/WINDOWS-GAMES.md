@@ -173,3 +173,12 @@ Gaming > Your games: a gear for Lutris and Heroic games too (`src/backend/launch
 * In a Flatpak launcher the Game Mode / MangoHud switches are shown but cannot be changed (not inside the sandbox).
 * **Not verified against a real Lutris or Heroic game**: none was installed on the laptop. Tested with files in the
   documented shape, in the test container (opened the gear, pressed Save, read the files back).
+
+## Java for Minecraft (2026-10-14)
+Gaming > Java for Minecraft (`src/backend/java_games.rs`): lists the system Javas (`archlinux-java status`), the Javas that
+launchers brought (Modrinth, Prism, the official launcher; found by their `release` files), installs Java 8/17/21/25
+(`pacman -S jre*-openjdk`, one password prompt) and switches the default (`archlinux-java set`). The version table is
+Mojang's published one for 8/16/17/21; "26.x needs Java 25" is inferred from Modrinth bringing Java 25 for Minecraft 26.3
+(not from a Mojang statement). A Flatpak launcher cannot see the system Java, which the page says. On the owner's laptop it
+finds Modrinth's Zulu 25. Install/Make default were not pressed (they need a password).
+The owner's actual Modrinth problem is still unknown: its log from 2026-10-12 shows Minecraft 26.3 running fine with its own Java 25.

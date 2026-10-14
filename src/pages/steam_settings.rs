@@ -112,12 +112,12 @@ fn fill(win: &adw::Window, tv: &adw::ToolbarView, game: SteamGame, l: Loaded) {
     let gm = adw::SwitchRow::new();
     gm.set_title("Game Mode");
     gm.set_subtitle(if has("gamemoderun") { "Give the game priority while it runs" } else { "Not available for this Steam" });
-    gm.set_active(current.gamemode && has("gamemoderun"));
+    gm.set_active(current.gamemode); // shown as it is, even when it cannot be changed here
     gm.set_sensitive(has("gamemoderun"));
     let ov = adw::SwitchRow::new();
     ov.set_title("Performance overlay (MangoHud)");
     ov.set_subtitle(if has("mangohud") { "Shows frame rate and load on screen while playing" } else { "Not available for this Steam" });
-    ov.set_active(current.overlay && has("mangohud"));
+    ov.set_active(current.overlay);
     ov.set_sensitive(has("mangohud"));
 
     let options = adw::EntryRow::new();

@@ -22,6 +22,7 @@ pub mod time_language;
 pub mod troubleshoot;
 pub mod gaming;
 pub mod game_libraries;
+pub mod launcher_settings;
 pub mod my_games;
 pub mod steam_settings;
 pub mod accessibility;

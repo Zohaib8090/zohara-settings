@@ -39,7 +39,7 @@ Not yet tried on a real Steam game; Flatpak Steam hides Game Mode/MangoHud (step
 * One-click install of the Flatpak MangoHud and Game Mode extensions.
 * Live view maps sandbox process names to the app name.
 
-### E. Heroic and Lutris games
+### E. Heroic and Lutris games  (BUILT 2026-10-14, alpha; not tried on a real Lutris/Heroic game)
 * One small adapter each (Heroic per-game JSON, Lutris `.yml`) to list games and write the same settings.
 
 ### F. Java games (Minecraft, Modrinth/Prism/ATLauncher)  (new, from the owner's report)

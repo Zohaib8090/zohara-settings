@@ -159,3 +159,17 @@ with winetricks, using the **same Wine as the game** (Proton-GE's `files/bin/win
 open the game's own C: drive; reset the game's own Windows folder (moved to the trash; refused for the shared one).
 Checked by hand: the exact winetricks command with GE-Proton11-9's Wine installed `corefonts` into a throwaway folder
 (exit 0). The window itself was seen in the test container; Install/Reset were not pressed there.
+
+## Lutris and Heroic games (2026-10-14)
+Gaming > Your games: a gear for Lutris and Heroic games too (`src/backend/launcher_config.rs`, `src/pages/launcher_settings.rs`).
+* **Lutris**: edits `~/.config/lutris/games/<slug>-<id>.yml` (or the Flatpak path): `system: gamemode, mangohud, env`,
+  `game: args`, `wine: dxvk`. Only those keys are touched, the rest of the file stays byte for byte; a file with tabs, a
+  one-line `env: {..}` or other odd shapes is refused. The edited output was parsed with PyYAML to check it is valid YAML.
+* **Heroic**: edits `GamesConfig/<app>.json` (`autoInstallDxvk, useGameMode, showMangohud, launcherArgs,
+  enviromentOptions`; key names checked against Heroic's `types.ts` / `game_config.ts`); a game without a file gets
+  `{"<app>": {...}, "version": "v0.1", "explicit": false}`.
+* The graphics chip is written as environment variables (from `switcherooctl`); "Dedicated" is recognised when they are all there.
+* The launcher must be closed (it rewrites its files); a `.zohara-backup` copy is kept the first time.
+* In a Flatpak launcher the Game Mode / MangoHud switches are shown but cannot be changed (not inside the sandbox).
+* **Not verified against a real Lutris or Heroic game**: none was installed on the laptop. Tested with files in the
+  documented shape, in the test container (opened the gear, pressed Save, read the files back).

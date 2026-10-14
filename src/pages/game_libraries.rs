@@ -7,7 +7,7 @@ use crate::backend::worker::in_background;
 use adw::prelude::*;
 use gtk4::prelude::*;
 use libadwaita as adw;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,6 +18,14 @@ pub struct Game {
     pub launch: Vec<String>,
     /// Steam games only: what the settings window needs to change their launch options.
     pub steam: Option<crate::backend::steam_games::SteamGame>,
+    /// Lutris and Heroic games: where their per-game settings live.
+    pub config: Option<Cfg>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Cfg {
+    Lutris { file: PathBuf, flatpak: bool },
+    Heroic { file: PathBuf, app: String, flatpak: bool },
 }
 
 fn home() -> PathBuf {
@@ -103,7 +111,7 @@ fn steam_games() -> Vec<Game> {
             };
             let flatpak = root.to_string_lossy().contains(".var/app");
             let steam = Some(crate::backend::steam_games::SteamGame { appid: id.clone(), name: name.clone(), root: crate::backend::steam_games::SteamRoot { path: root.clone(), flatpak } });
-            out.push(Game { launcher: "Steam", name, launch, steam });
+            out.push(Game { launcher: "Steam", name, launch, steam, config: None });
         }
     }
     out
@@ -181,11 +189,23 @@ fn lutris_games() -> Vec<Game> {
             let mut launch = start.clone();
             launch.push(format!("lutris:rungame/{slug}"));
             if !out.iter().any(|g: &Game| g.launcher == "Lutris" && g.name == name) {
-                out.push(Game { launcher: "Lutris", name, launch, steam: None });
+                let file = newest_lutris_config(&config.join("games"), &slug);
+                let flatpak = config.to_string_lossy().contains(".var/app");
+                out.push(Game { launcher: "Lutris", name, launch, steam: None, config: file.map(|file| Cfg::Lutris { file, flatpak }) });
             }
         }
     }
     out
+}
+
+/// The settings file of a Lutris game: `<slug>-<id>.yml`, the newest when there are several.
+fn newest_lutris_config(dir: &Path, slug: &str) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().map_or(false, |x| x == "yml") && lutris_slug(&p.file_stem().unwrap_or_default().to_string_lossy()) == slug)
+        .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
 }
 
 // ── Heroic (Epic and GOG) ──────────────────────────────────────────────────
@@ -227,7 +247,7 @@ fn heroic_games() -> Vec<Game> {
         let mut add = |runner: &str, list: Vec<(String, String)>| {
             for (app, title) in list {
                 if !out.iter().any(|g: &Game| g.launcher == "Heroic" && g.name == title) {
-                    out.push(Game { launcher: "Heroic", name: title, launch: vec!["xdg-open".into(), format!("heroic://launch/{runner}/{app}")], steam: None });
+                    out.push(Game { launcher: "Heroic", name: title, launch: vec!["xdg-open".into(), format!("heroic://launch/{runner}/{app}")], steam: None, config: crate::backend::launcher_config::heroic_config_path(&base, &app).map(|file| Cfg::Heroic { file, app: app.clone(), flatpak: base.to_string_lossy().contains(".var/app") }) });
                 }
             }
         };
@@ -314,6 +334,15 @@ fn show(holder: &gtk4::Box, games: Vec<Game>) {
                     let _ = Command::new(prog).args(args).spawn();
                 }
             });
+            if let Some(cfg) = game.config.clone() {
+                let gear = gtk4::Button::from_icon_name("emblem-system-symbolic");
+                gear.set_valign(gtk4::Align::Center);
+                gear.set_tooltip_text(Some("Settings for this game"));
+                gear.update_property(&[gtk4::accessible::Property::Label("Settings for this game")]);
+                let name = game.name.clone();
+                gear.connect_clicked(move |b| super::launcher_settings::open(b, &name, cfg.clone()));
+                r.add_suffix(&gear);
+            }
             if let Some(sg) = game.steam.clone() {
                 let gear = gtk4::Button::from_icon_name("emblem-system-symbolic");
                 gear.set_valign(gtk4::Align::Center);

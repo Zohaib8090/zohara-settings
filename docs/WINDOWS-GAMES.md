@@ -62,3 +62,10 @@ button thought it was installed and did nothing for the native Steam. Install no
 `fully_installed`) and downloads only into the ones that lack the version. Result: GE-Proton11-9 unpacked into
 `~/.local/share/Steam/compatibilitytools.d` on the laptop, download file removed. Steam's own internal name for it is
 `GE-Proton11-9-x86_64` (from the archive's `compatibilitytool.vdf`).
+
+## My games: .bat files and "Run with" (2026-10-14)
+Owner double-clicked a game's `Run Me!.bat` and it ran through Wine, so "My games" now handles that too. The add-a-game
+window has **Run with**: *Automatic* (a .exe goes to `wine`; .bat, .cmd, .msi and .lnk go to `wine start /unix`; anything
+else runs as it is), *Windows app support (Wine)* (any file at all, even without a known ending) and *Run the file
+itself*. The launcher's working folder is the file's folder, which .bat files need. Verified with real Wine: a `.bat` with
+spaces and `!` in its name, started with `wine start /unix`, wrote its output file next to itself. Plain Wine, not Proton-GE.

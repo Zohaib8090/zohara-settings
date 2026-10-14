@@ -50,18 +50,63 @@ pub fn exec_quote(p: &str) -> String {
     s
 }
 
-/// What starts a program file: a Windows .exe needs Wine, anything else runs as it is.
-pub fn launch_command(path: &str, gamemode: bool) -> String {
-    let base = if path.to_lowercase().ends_with(".exe") { format!("wine {}", exec_quote(path)) } else { exec_quote(path) };
+/// How a program file is started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Runner {
+    /// Decide from the file: a Windows .exe, .bat, .cmd, .msi or .lnk goes to Wine, anything else runs as it is.
+    Auto,
+    /// Always through Windows app support (Wine), whatever the file is.
+    Wine,
+    /// Always run the file itself.
+    Direct,
+}
+
+impl Runner {
+    pub const ALL: [Runner; 3] = [Runner::Auto, Runner::Wine, Runner::Direct];
+    pub fn label(self) -> &'static str {
+        match self {
+            Runner::Auto => "Automatic",
+            Runner::Wine => "Windows app support (Wine)",
+            Runner::Direct => "Run the file itself",
+        }
+    }
+}
+
+fn is_windows_program(path: &str) -> bool {
+    let p = path.to_lowercase();
+    [".exe", ".bat", ".cmd", ".msi", ".lnk"].iter().any(|e| p.ends_with(e))
+}
+
+/// Whether this choice sends the file to Wine.
+pub fn uses_wine(path: &str, runner: Runner) -> bool {
+    match runner {
+        Runner::Wine => true,
+        Runner::Direct => false,
+        Runner::Auto => is_windows_program(path),
+    }
+}
+
+/// What starts a program file. A plain .exe is given to Wine directly; any other Windows file (a .bat, an installer,
+/// a shortcut, or something with no known ending that was sent to Wine on purpose) goes through `wine start /unix`,
+/// which opens it the way Windows would. The folder the file is in is the working folder (see `desktop_entry`), which
+/// .bat files rely on.
+pub fn launch_command(path: &str, gamemode: bool, runner: Runner) -> String {
+    let base = if !uses_wine(path, runner) {
+        exec_quote(path)
+    } else if path.to_lowercase().ends_with(".exe") {
+        format!("wine {}", exec_quote(path))
+    } else {
+        format!("wine start /unix {}", exec_quote(path))
+    };
     if gamemode { format!("gamemoderun {base}") } else { base }
 }
 
 /// The desktop entry for a program file.
-pub fn desktop_entry(name: &str, path: &str, gamemode: bool) -> String {
+pub fn desktop_entry(name: &str, path: &str, gamemode: bool, runner: Runner) -> String {
     let dir = Path::new(path).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
     let mut s = String::from("[Desktop Entry]\nType=Application\n");
     s.push_str(&format!("Name={}\n", name.replace('\n', " ")));
-    s.push_str(&format!("Exec={}\n", launch_command(path, gamemode)));
+    s.push_str(&format!("Exec={}\n", launch_command(path, gamemode, runner)));
     if !dir.is_empty() {
         s.push_str(&format!("Path={dir}\n"));
     }
@@ -164,7 +209,7 @@ fn refresh_menu() {
     let _ = Command::new("kbuildsycoca6").status();
 }
 
-fn add_program(name: &str, path: &str, gamemode: bool) -> Result<(), String> {
+fn add_program(name: &str, path: &str, gamemode: bool, runner: Runner) -> Result<(), String> {
     let p = Path::new(path);
     if !p.is_file() {
         return Err("That file doesn't exist".into());
@@ -172,8 +217,8 @@ fn add_program(name: &str, path: &str, gamemode: bool) -> Result<(), String> {
     if name.trim().is_empty() {
         return Err("Give the game a name".into());
     }
-    // An AppImage or a program needs the executable bit; Wine runs a .exe without it.
-    if !path.to_lowercase().ends_with(".exe") {
+    // An AppImage or a program needs the executable bit; Wine runs a Windows file without it.
+    if !uses_wine(path, runner) {
         use std::os::unix::fs::PermissionsExt;
         let mut perm = std::fs::metadata(p).map_err(|e| e.to_string())?.permissions();
         if perm.mode() & 0o111 == 0 {
@@ -187,7 +232,7 @@ fn add_program(name: &str, path: &str, gamemode: bool) -> Result<(), String> {
         return Err("Use letters or numbers in the name".into());
     }
     let file = apps_dir().join(format!("zohara-game-{id}.desktop"));
-    std::fs::write(&file, desktop_entry(name.trim(), path, gamemode)).map_err(|e| e.to_string())?;
+    std::fs::write(&file, desktop_entry(name.trim(), path, gamemode, runner)).map_err(|e| e.to_string())?;
     refresh_menu();
     Ok(())
 }
@@ -292,7 +337,7 @@ fn add_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box) {
     // 1. A program file.
     let file_group = adw::PreferencesGroup::new();
     file_group.set_title("A game's program file");
-    file_group.set_description(Some("A program, an AppImage, or a Windows .exe (needs Wine)."));
+    file_group.set_description(Some("Any program file: a program, an AppImage, or a Windows game (.exe, .bat, installer). Pick how to run it below."));
     let name_row = adw::EntryRow::new();
     name_row.set_title("Name");
     let file_row = adw::ActionRow::new();
@@ -301,6 +346,11 @@ fn add_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box) {
     let choose = gtk4::Button::with_label("Choose…");
     choose.set_valign(gtk4::Align::Center);
     file_row.add_suffix(&choose);
+    let run_row = adw::ComboRow::new();
+    run_row.set_title("Run with");
+    run_row.set_subtitle("Automatic sends Windows files (.exe, .bat, .cmd, .msi, .lnk) to Windows app support and runs everything else itself");
+    run_row.set_subtitle_lines(0);
+    run_row.set_model(Some(&gtk4::StringList::new(&Runner::ALL.iter().map(|r| r.label()).collect::<Vec<_>>())));
     let gm = adw::SwitchRow::new();
     gm.set_title("Use Game Mode");
     gm.set_subtitle("Give the game priority while it runs");
@@ -312,6 +362,7 @@ fn add_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box) {
     }
     file_group.add(&name_row);
     file_group.add(&file_row);
+    file_group.add(&run_row);
     file_group.add(&gm);
     content.append(&file_group);
 
@@ -344,7 +395,7 @@ fn add_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box) {
     add_btn.add_css_class("suggested-action");
     add_btn.set_halign(gtk4::Align::End);
     {
-        let (win, holder, status, name_row, gm, chosen) = (win.clone(), holder.clone(), status.clone(), name_row.clone(), gm.clone(), chosen.clone());
+        let (win, holder, status, name_row, gm, chosen, run_row) = (win.clone(), holder.clone(), status.clone(), name_row.clone(), gm.clone(), chosen.clone(), run_row.clone());
         add_btn.connect_clicked(move |_| {
             let Some(path) = chosen.borrow().clone() else {
                 status.set_text("Choose the game's program file first.");
@@ -352,7 +403,8 @@ fn add_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box) {
             };
             let (name, gamemode, p) = (name_row.text().to_string(), gm.is_active() && gm.is_sensitive(), path.to_string_lossy().to_string());
             let (win, holder, status) = (win.clone(), holder.clone(), status.clone());
-            in_background(move || add_program(&name, &p, gamemode), move |res| match res {
+            let runner = Runner::ALL[(run_row.selected() as usize).min(Runner::ALL.len() - 1)];
+            in_background(move || add_program(&name, &p, gamemode, runner), move |res| match res {
                 Ok(()) => {
                     fill(&holder);
                     win.close();
@@ -465,13 +517,30 @@ mod tests {
 
     #[test]
     fn exe_files_run_through_wine_and_game_mode_goes_first() {
-        assert_eq!(launch_command("/g/Game.EXE", false), "wine \"/g/Game.EXE\"");
-        assert_eq!(launch_command("/g/run", true), "gamemoderun \"/g/run\"");
+        assert_eq!(launch_command("/g/Game.EXE", false, Runner::Auto), "wine \"/g/Game.EXE\"");
+        assert_eq!(launch_command("/g/run", true, Runner::Auto), "gamemoderun \"/g/run\"");
+    }
+
+    #[test]
+    fn bat_files_and_other_windows_files_go_through_wine_start() {
+        assert_eq!(launch_command("/g/Run Me!.bat", false, Runner::Auto), "wine start /unix \"/g/Run Me!.bat\"");
+        assert_eq!(launch_command("/g/setup.MSI", false, Runner::Auto), "wine start /unix \"/g/setup.MSI\"");
+        assert_eq!(launch_command("/g/go.cmd", true, Runner::Auto), "gamemoderun wine start /unix \"/g/go.cmd\"");
+    }
+
+    #[test]
+    fn the_person_can_send_any_file_to_wine_or_run_it_directly() {
+        // no known ending, sent to Wine on purpose
+        assert_eq!(launch_command("/g/game.dat", false, Runner::Wine), "wine start /unix \"/g/game.dat\"");
+        assert_eq!(launch_command("/g/Game.exe", false, Runner::Wine), "wine \"/g/Game.exe\"");
+        // a .exe the person wants run itself (rare)
+        assert_eq!(launch_command("/g/Game.exe", false, Runner::Direct), "\"/g/Game.exe\"");
+        assert!(uses_wine("/x/a.BAT", Runner::Auto) && !uses_wine("/x/a.sh", Runner::Auto));
     }
 
     #[test]
     fn entry_is_a_marked_game() {
-        let e = desktop_entry("Cool Game", "/g/cool/run.sh", false);
+        let e = desktop_entry("Cool Game", "/g/cool/run.sh", false, Runner::Auto);
         assert!(e.contains("Categories=Game;"));
         assert!(e.contains("Path=/g/cool\n"));
         assert!(is_marked(&e));

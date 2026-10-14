@@ -241,6 +241,7 @@ pub static ENTRIES: &[Entry] = &[
     e!("Video playback", "Apps", "hardware decoding codec gpu"),
     // Gaming
     e!("Game stores", "Gaming", "steam lutris heroic bottles"),
+    e!("Graphics in use", "Gaming", "gpu graphics usage load temperature video memory vram which app nvidia amd intel dedicated integrated"),
     e!("Windows games", "Gaming", "windows games proton wine steam 32-bit multilib lutris winetricks"),
     e!("Proton-GE", "Gaming", "proton ge glorious eggroll windows games compatibility steam"),
     e!("ProtonUp-Qt", "Gaming", "protonup proton wine versions manager"),

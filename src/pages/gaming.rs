@@ -324,6 +324,102 @@ fn graphics_group() -> adw::PreferencesGroup {
     g
 }
 
+// ── Live graphics ──────────────────────────────────────────────────────────
+
+/// Each graphics chip with its load, video memory and temperature, and which apps use which chip. Refreshes every two
+/// seconds while the page is on screen. A sleeping chip is not woken (see `backend::gpu_live`).
+fn live_group() -> adw::PreferencesGroup {
+    use crate::backend::gpu_live::{self, Gpu, GpuApp};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let g = adw::PreferencesGroup::new();
+    g.set_title("Graphics in use");
+    g.set_description(Some("Live numbers for each graphics chip, and which app is using which one. A chip that nothing uses goes to sleep to save battery, and is shown as asleep."));
+
+    let rows: Rc<RefCell<Vec<adw::ActionRow>>> = Rc::new(RefCell::new(Vec::new()));
+    let ids: std::sync::Arc<String> = std::sync::Arc::new(std::fs::read_to_string("/usr/share/hwdata/pci.ids").unwrap_or_default());
+    let busy = Rc::new(Cell::new(false));
+
+    let show = {
+        let (g, rows) = (g.clone(), rows.clone());
+        move |gpus: Vec<Gpu>, apps: Vec<GpuApp>| {
+            for r in rows.borrow_mut().drain(..) {
+                g.remove(&r);
+            }
+            if gpus.is_empty() {
+                let r = adw::ActionRow::new();
+                r.set_title("No graphics chip found");
+                g.add(&r);
+                rows.borrow_mut().push(r);
+                return;
+            }
+            for gpu in &gpus {
+                let r = adw::ActionRow::new();
+                r.set_title(&glib::markup_escape_text(&gpu.name));
+                r.set_subtitle(&glib::markup_escape_text(&gpu_live::describe(gpu)));
+                r.set_subtitle_lines(0);
+                r.add_prefix(&gtk4::Image::from_icon_name("video-display-symbolic"));
+                if gpu.primary && gpus.len() > 1 {
+                    let tag = gtk4::Label::new(Some("Drives the screen"));
+                    tag.add_css_class("dim-label");
+                    r.add_suffix(&tag);
+                }
+                g.add(&r);
+                rows.borrow_mut().push(r);
+            }
+            let r = adw::ActionRow::new();
+            r.set_title("Apps using a graphics chip");
+            r.set_subtitle_lines(0);
+            r.set_subtitle(&if apps.is_empty() {
+                "None right now. Start a game and it shows up here.".to_string()
+            } else {
+                apps.iter().take(8).map(|a| format!("{}  →  {}", a.name, gpus.get(a.gpu).map(|g| g.name.as_str()).unwrap_or("?"))).collect::<Vec<_>>().join("\n")
+            });
+            r.add_prefix(&gtk4::Image::from_icon_name("applications-games-symbolic"));
+            g.add(&r);
+            rows.borrow_mut().push(r);
+        }
+    };
+    let show = Rc::new(show);
+
+    let tick = {
+        let (g, ids, busy, show) = (g.clone(), ids.clone(), busy.clone(), show.clone());
+        Rc::new(move || {
+            if busy.get() || !g.is_mapped() {
+                return;
+            }
+            busy.set(true);
+            let (ids, busy, show) = (ids.clone(), busy.clone(), show.clone());
+            in_background(
+                move || {
+                    let gpus = gpu_live::read_gpus(&ids);
+                    let apps = gpu_live::apps_on_gpus(&gpus);
+                    (gpus, apps)
+                },
+                move |(gpus, apps)| {
+                    busy.set(false);
+                    show(gpus, apps);
+                },
+            );
+        })
+    };
+    // First look as soon as the page is on screen, then every two seconds while it is.
+    {
+        let tick = tick.clone();
+        g.connect_map(move |_| tick());
+    }
+    let weak = g.downgrade();
+    glib::timeout_add_local(std::time::Duration::from_secs(2), move || {
+        if weak.upgrade().is_none() {
+            return glib::ControlFlow::Break;
+        }
+        tick();
+        glib::ControlFlow::Continue
+    });
+    g
+}
+
 // ── Game stores ────────────────────────────────────────────────────────────
 
 const STORES: [(&str, &str, &str); 4] = [
@@ -651,6 +747,7 @@ pub fn build() -> gtk4::Widget {
     if let Some(p) = power_group() {
         root.append(&p);
     }
+    root.append(&live_group());
     root.append(&graphics_group());
     root.append(&windows_group(&root));
     root.append(&stores_group(&root));

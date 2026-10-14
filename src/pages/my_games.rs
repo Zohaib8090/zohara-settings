@@ -3,7 +3,9 @@
 //! `X-Zohara-Game=true` (so this page can list and remove only what it added). Two ways to add one: pick a program file
 //! (a native program, an AppImage or a Windows .exe), or mark an app that is already installed as a game.
 
+use crate::backend::game_launch::{self, Context, GameSettings, Runner};
 use crate::backend::worker::in_background;
+use crate::backend::{gpu_pref, proton};
 use adw::prelude::*;
 use gtk4::gio;
 use gtk4::prelude::*;
@@ -31,89 +33,6 @@ pub fn slug(name: &str) -> String {
         }
     }
     out.trim_end_matches('-').to_string()
-}
-
-/// A path as one word in an `Exec=` line: quoted, with the characters the spec escapes.
-pub fn exec_quote(p: &str) -> String {
-    let mut s = String::from("\"");
-    for c in p.chars() {
-        match c {
-            '"' | '`' | '$' | '\\' => {
-                s.push('\\');
-                s.push(c);
-            }
-            '%' => s.push_str("%%"),
-            _ => s.push(c),
-        }
-    }
-    s.push('"');
-    s
-}
-
-/// How a program file is started.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Runner {
-    /// Decide from the file: a Windows .exe, .bat, .cmd, .msi or .lnk goes to Wine, anything else runs as it is.
-    Auto,
-    /// Always through Windows app support (Wine), whatever the file is.
-    Wine,
-    /// Always run the file itself.
-    Direct,
-}
-
-impl Runner {
-    pub const ALL: [Runner; 3] = [Runner::Auto, Runner::Wine, Runner::Direct];
-    pub fn label(self) -> &'static str {
-        match self {
-            Runner::Auto => "Automatic",
-            Runner::Wine => "Windows app support (Wine)",
-            Runner::Direct => "Run the file itself",
-        }
-    }
-}
-
-fn is_windows_program(path: &str) -> bool {
-    let p = path.to_lowercase();
-    [".exe", ".bat", ".cmd", ".msi", ".lnk"].iter().any(|e| p.ends_with(e))
-}
-
-/// Whether this choice sends the file to Wine.
-pub fn uses_wine(path: &str, runner: Runner) -> bool {
-    match runner {
-        Runner::Wine => true,
-        Runner::Direct => false,
-        Runner::Auto => is_windows_program(path),
-    }
-}
-
-/// What starts a program file. A plain .exe is given to Wine directly; any other Windows file (a .bat, an installer,
-/// a shortcut, or something with no known ending that was sent to Wine on purpose) goes through `wine start /unix`,
-/// which opens it the way Windows would. The folder the file is in is the working folder (see `desktop_entry`), which
-/// .bat files rely on.
-pub fn launch_command(path: &str, gamemode: bool, runner: Runner) -> String {
-    let base = if !uses_wine(path, runner) {
-        exec_quote(path)
-    } else if path.to_lowercase().ends_with(".exe") {
-        format!("wine {}", exec_quote(path))
-    } else {
-        format!("wine start /unix {}", exec_quote(path))
-    };
-    if gamemode { format!("gamemoderun {base}") } else { base }
-}
-
-/// The desktop entry for a program file.
-pub fn desktop_entry(name: &str, path: &str, gamemode: bool, runner: Runner) -> String {
-    let dir = Path::new(path).parent().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
-    let mut s = String::from("[Desktop Entry]\nType=Application\n");
-    s.push_str(&format!("Name={}\n", name.replace('\n', " ")));
-    s.push_str(&format!("Exec={}\n", launch_command(path, gamemode, runner)));
-    if !dir.is_empty() {
-        s.push_str(&format!("Path={dir}\n"));
-    }
-    s.push_str("Icon=applications-games\nCategories=Game;\nTerminal=false\n");
-    s.push_str(MARK);
-    s.push('\n');
-    s
 }
 
 /// An installed app's own desktop entry with `Game` added to its categories and the marker added. Only the
@@ -209,7 +128,33 @@ fn refresh_menu() {
     let _ = Command::new("kbuildsycoca6").status();
 }
 
-fn add_program(name: &str, path: &str, gamemode: bool, runner: Runner) -> Result<(), String> {
+/// What the launch line needs to know about this computer, for the game with this id.
+fn context_for(id: &str, settings: &GameSettings) -> Context {
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let data = std::env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|_| home.join(".local/share"));
+    let proton_dir = proton::installed().first().and_then(|tag| proton::tool_dirs().into_iter().map(|d| d.join(tag)).find(|p| p.join("proton").exists()));
+    Context {
+        proton_dir,
+        steam_root: home.join(".local/share/Steam"),
+        prefix_dir: data.join("zohara/prefixes").join(id),
+        gpu_env: if settings.dedicated_gpu { gpu_pref::dedicated_env() } else { Vec::new() },
+    }
+}
+
+/// Writes the game's desktop entry (new or changed) and refreshes the menu.
+fn save_game(file: &Path, name: &str, path: &str, settings: &GameSettings) -> Result<(), String> {
+    let id = file.file_stem().map(|s| s.to_string_lossy().trim_start_matches("zohara-game-").to_string()).unwrap_or_default();
+    let ctx = context_for(&id, settings);
+    let text = game_launch::entry_text(name.trim(), path, settings, &ctx)?;
+    if settings.runner == Runner::Proton {
+        std::fs::create_dir_all(&ctx.prefix_dir).map_err(|e| format!("Couldn't make the game's Windows folder: {e}"))?;
+    }
+    std::fs::write(file, text).map_err(|e| e.to_string())?;
+    refresh_menu();
+    Ok(())
+}
+
+fn add_program(name: &str, path: &str, settings: &GameSettings) -> Result<(), String> {
     let p = Path::new(path);
     if !p.is_file() {
         return Err("That file doesn't exist".into());
@@ -218,7 +163,7 @@ fn add_program(name: &str, path: &str, gamemode: bool, runner: Runner) -> Result
         return Err("Give the game a name".into());
     }
     // An AppImage or a program needs the executable bit; Wine runs a Windows file without it.
-    if !uses_wine(path, runner) {
+    if !game_launch::uses_wine(path, settings.runner) {
         use std::os::unix::fs::PermissionsExt;
         let mut perm = std::fs::metadata(p).map_err(|e| e.to_string())?.permissions();
         if perm.mode() & 0o111 == 0 {
@@ -231,10 +176,7 @@ fn add_program(name: &str, path: &str, gamemode: bool, runner: Runner) -> Result
     if id.is_empty() {
         return Err("Use letters or numbers in the name".into());
     }
-    let file = apps_dir().join(format!("zohara-game-{id}.desktop"));
-    std::fs::write(&file, desktop_entry(name.trim(), path, gamemode, runner)).map_err(|e| e.to_string())?;
-    refresh_menu();
-    Ok(())
+    save_game(&apps_dir().join(format!("zohara-game-{id}.desktop")), name, path, settings)
 }
 
 fn mark_installed(info: &gio::DesktopAppInfo) -> Result<(), String> {
@@ -298,6 +240,18 @@ fn fill(holder: &gtk4::Box) {
                 let _ = info.launch(&[], None::<&gio::AppLaunchContext>);
             }
         });
+        // Only games added from a program file have settings to change; an installed app that was marked as a game keeps
+        // its own launcher.
+        let entry = std::fs::read_to_string(&game.file).ok().and_then(|t| game_launch::parse_entry(&t));
+        if let Some((path, current)) = entry {
+            let gear = gtk4::Button::from_icon_name("emblem-system-symbolic");
+            gear.set_valign(gtk4::Align::Center);
+            gear.set_tooltip_text(Some("Settings for this game"));
+            gear.update_property(&[gtk4::accessible::Property::Label("Settings for this game")]);
+            let (f, h, name) = (game.file.clone(), holder.clone(), game.name.clone());
+            gear.connect_clicked(move |b| settings_window(b, &h, &f, &name, &path, &current));
+            r.add_suffix(&gear);
+        }
         let rm = gtk4::Button::from_icon_name("user-trash-symbolic");
         rm.set_valign(gtk4::Align::Center);
         rm.set_tooltip_text(Some("Remove from My games"));
@@ -323,6 +277,134 @@ fn fill(holder: &gtk4::Box) {
         g.add(&r);
     }
     holder.append(&g);
+}
+
+/// One game's settings: how it runs, which graphics chip, Game Mode, the overlay, options and variables.
+fn settings_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box, file: &Path, name: &str, path: &str, current: &GameSettings) {
+    let Some(parent) = from.root().and_downcast::<gtk4::Window>() else { return };
+    let win = adw::Window::builder().title(format!("{name}: settings")).transient_for(&parent).modal(true).default_width(560).default_height(640).build();
+    let page = adw::PreferencesPage::new();
+    let group = adw::PreferencesGroup::new();
+    group.set_title("How this game runs");
+    group.set_description(Some(&glib::markup_escape_text(path)));
+
+    let name_row = adw::EntryRow::new();
+    name_row.set_title("Name");
+    name_row.set_text(name);
+
+    let installed = proton::installed();
+    let run_row = adw::ComboRow::new();
+    run_row.set_title("Run with");
+    run_row.set_subtitle_lines(0);
+    run_row.set_subtitle(&match installed.first() {
+        Some(v) => format!("Proton-GE is installed ({v}). Windows app support is plain Wine."),
+        None => "Proton-GE is not installed yet (Gaming > Windows games). Windows app support is plain Wine.".to_string(),
+    });
+    run_row.set_model(Some(&gtk4::StringList::new(&Runner::ALL.iter().map(|r| r.label()).collect::<Vec<_>>())));
+    run_row.set_selected(Runner::ALL.iter().position(|r| *r == current.runner).unwrap_or(0) as u32);
+
+    let dxvk = adw::SwitchRow::new();
+    dxvk.set_title("DirectX through Vulkan (DXVK)");
+    dxvk.set_subtitle("Proton only. Faster for most games; turn it off if a game shows glitches.");
+    dxvk.set_subtitle_lines(0);
+    dxvk.set_active(current.dxvk);
+    let sync_dxvk = {
+        let (dxvk, run_row) = (dxvk.clone(), run_row.clone());
+        move || dxvk.set_sensitive(Runner::ALL.get(run_row.selected() as usize) == Some(&Runner::Proton))
+    };
+    sync_dxvk();
+    run_row.connect_selected_notify(move |_| sync_dxvk());
+
+    let gpu = adw::ComboRow::new();
+    gpu.set_title("Graphics chip");
+    gpu.set_subtitle_lines(0);
+    gpu.set_model(Some(&gtk4::StringList::new(&["Automatic", "Dedicated"])));
+    gpu.set_selected(current.dedicated_gpu as u32);
+    if !gpu_pref::has_two_gpus() {
+        gpu.set_sensitive(false);
+        gpu.set_subtitle("This computer has one graphics chip, so there is nothing to choose.");
+    } else {
+        gpu.set_subtitle("Automatic lets the system decide. On a laptop with two chips, Dedicated runs the game on the stronger one.");
+    }
+
+    let has = |cmd: &str| Command::new("sh").args(["-c", &format!("command -v {cmd}")]).output().map(|o| o.status.success()).unwrap_or(false);
+    let gm = adw::SwitchRow::new();
+    gm.set_title("Game Mode");
+    gm.set_subtitle(if has("gamemoderun") { "Give the game priority while it runs" } else { "Game Mode isn't installed" });
+    gm.set_active(current.gamemode && has("gamemoderun"));
+    gm.set_sensitive(has("gamemoderun"));
+    let ov = adw::SwitchRow::new();
+    ov.set_title("Performance overlay (MangoHud)");
+    ov.set_subtitle(if has("mangohud") { "Shows frame rate and load on screen while playing" } else { "MangoHud isn't installed" });
+    ov.set_active(current.overlay && has("mangohud"));
+    ov.set_sensitive(has("mangohud"));
+
+    let options = adw::EntryRow::new();
+    options.set_title("Game options (for example -windowed)");
+    options.set_text(&current.options);
+    let env = adw::EntryRow::new();
+    env.set_title("Environment variables (NAME=value NAME2=value)");
+    env.set_text(&current.env);
+
+    for r in [name_row.clone().upcast::<gtk4::Widget>(), run_row.clone().upcast(), dxvk.clone().upcast(), gpu.clone().upcast(), gm.clone().upcast(), ov.clone().upcast(), options.clone().upcast(), env.clone().upcast()] {
+        group.add(&r);
+    }
+    page.add(&group);
+
+    let status = gtk4::Label::new(None);
+    status.set_wrap(true);
+    status.set_halign(gtk4::Align::Start);
+    status.add_css_class("dim-label");
+    let save = gtk4::Button::with_label("Save");
+    save.add_css_class("suggested-action");
+    save.set_halign(gtk4::Align::End);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let (w2, c2) = (win.clone(), cancel.clone());
+    c2.connect_clicked(move |_| w2.close());
+    {
+        let (win, holder, status, file, path) = (win.clone(), holder.clone(), status.clone(), file.to_path_buf(), path.to_string());
+        let (name_row, run_row, dxvk, gpu, gm, ov, options, env) = (name_row.clone(), run_row.clone(), dxvk.clone(), gpu.clone(), gm.clone(), ov.clone(), options.clone(), env.clone());
+        save.connect_clicked(move |_| {
+            let settings = GameSettings {
+                runner: Runner::ALL[(run_row.selected() as usize).min(Runner::ALL.len() - 1)],
+                dxvk: dxvk.is_active(),
+                gamemode: gm.is_active(),
+                overlay: ov.is_active(),
+                dedicated_gpu: gpu.selected() == 1,
+                options: options.text().to_string(),
+                env: env.text().to_string(),
+            };
+            let (name, file, path) = (name_row.text().to_string(), file.clone(), path.clone());
+            if name.trim().is_empty() {
+                status.set_text("Give the game a name.");
+                return;
+            }
+            let (win, holder, status) = (win.clone(), holder.clone(), status.clone());
+            in_background(move || save_game(&file, &name, &path, &settings), move |res| match res {
+                Ok(()) => {
+                    fill(&holder);
+                    win.close();
+                }
+                Err(e) => status.set_text(&e),
+            });
+        });
+    }
+    let bar = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    bar.set_margin_top(8);
+    bar.set_margin_bottom(12);
+    bar.set_margin_start(18);
+    bar.set_margin_end(18);
+    status.set_hexpand(true);
+    bar.append(&status);
+    bar.append(&cancel);
+    bar.append(&save);
+
+    let tv = adw::ToolbarView::new();
+    tv.add_top_bar(&adw::HeaderBar::new());
+    tv.set_content(Some(&page));
+    tv.add_bottom_bar(&bar);
+    win.set_content(Some(&tv));
+    win.present();
 }
 
 fn add_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box) {
@@ -402,9 +484,9 @@ fn add_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box) {
                 return;
             };
             let (name, gamemode, p) = (name_row.text().to_string(), gm.is_active() && gm.is_sensitive(), path.to_string_lossy().to_string());
+            let settings = GameSettings { gamemode, runner: Runner::ALL[(run_row.selected() as usize).min(Runner::ALL.len() - 1)], ..GameSettings::default() };
             let (win, holder, status) = (win.clone(), holder.clone(), status.clone());
-            let runner = Runner::ALL[(run_row.selected() as usize).min(Runner::ALL.len() - 1)];
-            in_background(move || add_program(&name, &p, gamemode, runner), move |res| match res {
+            in_background(move || add_program(&name, &p, &settings), move |res| match res {
                 Ok(()) => {
                     fill(&holder);
                     win.close();
@@ -510,37 +592,15 @@ mod tests {
 
     #[test]
     fn paths_are_quoted_for_exec() {
+        use crate::backend::game_launch::exec_quote;
         assert_eq!(exec_quote("/home/me/My Games/run.sh"), "\"/home/me/My Games/run.sh\"");
         assert_eq!(exec_quote("/a/$b\"c"), "\"/a/\\$b\\\"c\"");
         assert_eq!(exec_quote("/a/100%"), "\"/a/100%%\"");
     }
 
     #[test]
-    fn exe_files_run_through_wine_and_game_mode_goes_first() {
-        assert_eq!(launch_command("/g/Game.EXE", false, Runner::Auto), "wine \"/g/Game.EXE\"");
-        assert_eq!(launch_command("/g/run", true, Runner::Auto), "gamemoderun \"/g/run\"");
-    }
-
-    #[test]
-    fn bat_files_and_other_windows_files_go_through_wine_start() {
-        assert_eq!(launch_command("/g/Run Me!.bat", false, Runner::Auto), "wine start /unix \"/g/Run Me!.bat\"");
-        assert_eq!(launch_command("/g/setup.MSI", false, Runner::Auto), "wine start /unix \"/g/setup.MSI\"");
-        assert_eq!(launch_command("/g/go.cmd", true, Runner::Auto), "gamemoderun wine start /unix \"/g/go.cmd\"");
-    }
-
-    #[test]
-    fn the_person_can_send_any_file_to_wine_or_run_it_directly() {
-        // no known ending, sent to Wine on purpose
-        assert_eq!(launch_command("/g/game.dat", false, Runner::Wine), "wine start /unix \"/g/game.dat\"");
-        assert_eq!(launch_command("/g/Game.exe", false, Runner::Wine), "wine \"/g/Game.exe\"");
-        // a .exe the person wants run itself (rare)
-        assert_eq!(launch_command("/g/Game.exe", false, Runner::Direct), "\"/g/Game.exe\"");
-        assert!(uses_wine("/x/a.BAT", Runner::Auto) && !uses_wine("/x/a.sh", Runner::Auto));
-    }
-
-    #[test]
     fn entry_is_a_marked_game() {
-        let e = desktop_entry("Cool Game", "/g/cool/run.sh", false, Runner::Auto);
+        let e = game_launch::entry_text("Cool Game", "/g/cool/run.sh", &GameSettings::default(), &Context::default()).unwrap();
         assert!(e.contains("Categories=Game;"));
         assert!(e.contains("Path=/g/cool\n"));
         assert!(is_marked(&e));

@@ -69,3 +69,23 @@ window has **Run with**: *Automatic* (a .exe goes to `wine`; .bat, .cmd, .msi an
 else runs as it is), *Windows app support (Wine)* (any file at all, even without a known ending) and *Run the file
 itself*. The launcher's working folder is the file's folder, which .bat files need. Verified with real Wine: a `.bat` with
 spaces and `!` in its name, started with `wine start /unix`, wrote its output file next to itself. Plain Wine, not Proton-GE.
+
+## Live graphics and per-game settings (2026-10-14)
+**Gaming > Graphics in use** (`backend/gpu_live.rs`): each chip's name (from `/usr/share/hwdata/pci.ids`, no `lspci`), load,
+video memory and temperature (NVIDIA: one `nvidia-smi` call; AMD: `/sys`; Intel: current MHz), and a list of apps with the chip
+each uses. **A sleeping chip is never woken**: `power/runtime_status` is read first and a sleeping chip shows "Asleep"
+(waking the NVIDIA chip costs battery and froze the page before; see `gpu.rs`). Refreshes every 2 s only while the page is on
+screen. Which chip an app uses comes from the device files it has open: `/dev/nvidiaN` wins, else the render node, preferring
+the chip that is not the screen chip. Child processes whose parent is listed are dropped (Electron helpers, `node`), desktop
+parts and Wine helper processes are skipped. Checked on the owner's laptop: RTX 3050 (53 MiB, 64 °C) and Intel UHD (600 MHz).
+
+**My games > gear button** (`backend/game_launch.rs`, `pages/my_games.rs`): per game: Run with (Automatic, Windows app support
+(Wine), Proton-GE, Run the file itself), DXVK on/off (Proton: `PROTON_USE_WINED3D=1` when off), Graphics chip (Automatic /
+Dedicated: the `switcherooctl` variables are put in the launch line), Game Mode, MangoHud, game options and environment
+variables. The settings are stored in the game's own desktop entry as `X-Zohara-*` keys and the `Exec=` line is rebuilt on
+Save. Typed text is split into words and every word is quoted; variable names are checked. Games that were only *marked* from
+an installed app have no gear (they keep their own launcher). Proton-GE per game uses a private Windows folder,
+`~/.local/share/zohara/prefixes/<game>`.
+Verified: unit tests (command building, quoting, round trip), real GE-Proton11-9 on the owner's laptop ran
+`proton run start /unix file.bat` (wrote its output file) and `proton run file.exe` with a private prefix. Not verified:
+a real game under Proton-GE from the gear window, the Dedicated switch on an AMD laptop, MangoHud (not installed on this laptop).

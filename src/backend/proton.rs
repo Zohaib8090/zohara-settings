@@ -39,7 +39,9 @@ pub fn support_ready() -> bool {
 /// Script for the one-click setup. Exit codes: 6 = updates are waiting (see `explain_exit`).
 pub fn support_script() -> String {
     format!(
-        r#"set -e
+        r#"LOG={LOG}
+(
+set -e
 if ! grep -q '^\[multilib\]' /etc/pacman.conf; then
   if grep -q '^#\[multilib\]' /etc/pacman.conf; then
     sed -i '/^#\[multilib\]/{{s/^#//;n;s/^#//}}' /etc/pacman.conf
@@ -55,10 +57,35 @@ if echo "$GPU" | grep -qi nvidia; then LIBS="$LIBS lib32-nvidia-utils"; fi
 if echo "$GPU" | grep -qiE 'amd|ati|radeon'; then LIBS="$LIBS lib32-vulkan-radeon"; fi
 if echo "$GPU" | grep -qi intel; then LIBS="$LIBS lib32-vulkan-intel"; fi
 if [ "$LIBS" = "lib32-mesa" ]; then LIBS="$LIBS lib32-vulkan-radeon lib32-vulkan-intel"; fi
-pacman -S --needed --noconfirm steam lutris winetricks lib32-gamemode lib32-mangohud $LIBS
+# Zohara ships its own /etc/lsb-release (branding) that no package owns; Lutris pulls in the lsb-release package, which
+# owns the same file. Let pacman take it, then put Zohara's file back.
+KEEP=/etc/lsb-release.zohara-keep
+OVER=""
+if [ -e /etc/lsb-release ] && ! pacman -Qo /etc/lsb-release >/dev/null 2>&1; then
+  cp -a /etc/lsb-release "$KEEP"
+  OVER="--overwrite /etc/lsb-release"
+fi
+RC=0
+pacman -S --needed --noconfirm $OVER steam lutris winetricks lib32-gamemode lib32-mangohud $LIBS || RC=$?
+if [ -e "$KEEP" ]; then mv -f "$KEEP" /etc/lsb-release; fi
+if [ "$RC" -ne 0 ]; then exit "$RC"; fi
 pacman -S --needed --noconfirm protonup-qt || true
+) > "$LOG" 2>&1
+RC=$?
+chmod 644 "$LOG" 2>/dev/null || true
+exit $RC
 "#
     )
+}
+
+/// The setup's own log (what pacman said), so the dialog can show the real reason.
+pub const LOG: &str = "/var/log/zohara-games-setup.log";
+
+/// Last meaningful lines of the log: pacman's `error:` lines first, else the final line.
+pub fn log_reason(log: &str) -> String {
+    let errs: Vec<&str> = log.lines().map(str::trim).filter(|l| l.starts_with("error:") || l.contains("exists in filesystem")).take(3).collect();
+    let text = if errs.is_empty() { log.lines().map(str::trim).rev().find(|l| !l.is_empty()).unwrap_or("").to_string() } else { errs.join("\n") };
+    text.chars().take(300).collect()
 }
 
 pub fn explain_exit(code: Option<i32>) -> Option<String> {
@@ -66,7 +93,15 @@ pub fn explain_exit(code: Option<i32>) -> Option<String> {
         Some(0) => None,
         Some(EXIT_UPDATES_WAITING) => Some("Updates are waiting. Update the computer first (Zohara Update), then try again.".into()),
         Some(126) | Some(127) => Some("The password prompt was cancelled.".into()),
-        Some(n) => Some(format!("Setup did not finish (error {n}). Check the internet connection and try again.")),
+        Some(n) => {
+            let why = std::fs::read_to_string(LOG).map(|l| log_reason(&l)).unwrap_or_default();
+            let mut m = format!("Setup did not finish (error {n}).");
+            if !why.is_empty() {
+                m += &format!("\n\nWhat pacman said:\n{why}");
+            }
+            m += &format!("\n\nThe full text is in {LOG}.");
+            Some(m)
+        }
         None => Some("Setup was stopped.".into()),
     }
 }
@@ -337,10 +372,21 @@ mod tests {
     fn the_setup_script_is_valid_and_safe() {
         let s = support_script();
         assert!(Command::new("sh").args(["-n", "-c", &s]).status().unwrap().success());
-        assert!(s.contains("pacman -S --needed --noconfirm steam"));
+        assert!(s.contains("steam lutris winetricks"));
+        assert!(s.contains("--overwrite /etc/lsb-release"), "Zohara's own lsb-release must not block Lutris");
+        assert!(s.contains("mv -f \"$KEEP\" /etc/lsb-release"), "and is put back");
         assert!(s.contains(&format!("exit {EXIT_UPDATES_WAITING}")));
         assert!(explain_exit(Some(EXIT_UPDATES_WAITING)).unwrap().contains("Update the computer"));
         assert!(explain_exit(Some(0)).is_none());
+    }
+
+    #[test]
+    fn the_reason_comes_from_pacmans_error_lines() {
+        let log = "Proceed? [Y/n]\nchecking for file conflicts...\nerror: failed to commit transaction (conflicting files)\nlsb-release: /etc/lsb-release exists in filesystem\nErrors occurred, no packages were upgraded.\n";
+        let r = log_reason(log);
+        assert!(r.contains("conflicting files") && r.contains("exists in filesystem"));
+        assert_eq!(log_reason("a\nlast line\n\n"), "last line");
+        assert_eq!(log_reason(""), "");
     }
 
     #[test]

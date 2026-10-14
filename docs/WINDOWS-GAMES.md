@@ -48,3 +48,11 @@ No repository carries it and the archive is 565 MB, so it is **not** shipped in 
 * A real game starting with Proton-GE selected in Steam; anti-cheat games do not work on Linux.
 * Steam's Flatpak seeing the folder (only the path is the documented one).
 * ProtonUp-Qt install through pkexec; its Flatpak fallback.
+
+## Found on the owner's laptop (2026-10-14)
+First real run of "Set up" failed (error 1): Zohara ships its own `/etc/lsb-release` (branding, owned by no package) and Lutris
+pulls in the `lsb-release` package, so pacman stopped on "exists in filesystem". The script now copies Zohara's file aside,
+installs with `--overwrite /etc/lsb-release`, and puts Zohara's file back. The script also writes what pacman said to
+`/var/log/zohara-games-setup.log` and the error dialog shows the `error:` lines. Second run: steam, lutris, winetricks,
+lib32-mesa, lib32-nvidia-utils (Intel + NVIDIA laptop, so also lib32-vulkan-radeon/intel by the fallback rule) and protonup-qt
+installed; `/etc/lsb-release` still says Zohara OS. Any other ISO file that a dependency also ships would fail the same way.

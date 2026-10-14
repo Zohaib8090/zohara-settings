@@ -128,18 +128,37 @@ fn refresh_menu() {
     let _ = Command::new("kbuildsycoca6").status();
 }
 
-/// What the launch line needs to know about this computer, for the game with this id.
-fn context_for(id: &str, settings: &GameSettings) -> Context {
-    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
-    let data = std::env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|_| home.join(".local/share"));
-    Context::here(data.join("zohara/prefixes").join(id), PathBuf::new(), settings.dedicated_gpu)
+/// What the launch line needs to know about this computer, for the game with this id and program file.
+fn context_for(id: &str, path: &str, settings: &GameSettings) -> Context {
+    let (prefix, wine) = crate::backend::windows_apps::prefixes_for(path, id);
+    Context::here(prefix, wine, settings.dedicated_gpu)
+}
+
+/// The icon file for a game, when its program has one of its own. Made once, kept when the game is edited.
+fn icon_for(file: &Path, path: &str, old_entry: &str) -> Option<String> {
+    let current = old_entry.lines().find_map(|l| l.strip_prefix("Icon=")).map(|v| v.trim().to_string());
+    if let Some(c) = current.filter(|c| c.starts_with('/') && Path::new(c).exists()) {
+        return Some(c);
+    }
+    if !path.to_lowercase().ends_with(".exe") {
+        return None;
+    }
+    let id = file.file_stem()?.to_string_lossy().trim_start_matches("zohara-game-").to_string();
+    let data = std::env::var("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share"));
+    let out = data.join("zohara/icons").join(format!("{id}.png"));
+    crate::backend::pe_icon::extract_png(Path::new(path), &out).ok().map(|_| out.to_string_lossy().to_string())
 }
 
 /// Writes the game's desktop entry (new or changed) and refreshes the menu.
 fn save_game(file: &Path, name: &str, path: &str, settings: &GameSettings) -> Result<(), String> {
     let id = file.file_stem().map(|s| s.to_string_lossy().trim_start_matches("zohara-game-").to_string()).unwrap_or_default();
-    let ctx = context_for(&id, settings);
-    let text = game_launch::entry_text(name.trim(), path, settings, &ctx)?;
+    let ctx = context_for(&id, path, settings);
+    let mut text = game_launch::entry_text(name.trim(), path, settings, &ctx)?;
+    if let Some(icon) = icon_for(file, path, &std::fs::read_to_string(file).unwrap_or_default()) {
+        text = text.replacen("Icon=applications-games", &format!("Icon={icon}"), 1);
+    }
     if settings.runner == Runner::Proton {
         std::fs::create_dir_all(&ctx.prefix_dir).map_err(|e| format!("Couldn't make the game's Windows folder: {e}"))?;
     }
@@ -173,6 +192,92 @@ fn add_program(name: &str, path: &str, settings: &GameSettings) -> Result<(), St
     save_game(&apps_dir().join(format!("zohara-game-{id}.desktop")), name, path, settings)
 }
 
+/// The shared Windows-program settings for a game that is added with one click. Plain Wine until Proton-GE is installed.
+fn default_windows_settings() -> GameSettings {
+    let mut settings = crate::backend::windows_apps::load();
+    if settings.runner == Runner::Proton && proton::installed().is_empty() {
+        settings.runner = Runner::Wine; // Proton-GE is a download away; the game can be switched to it later
+    }
+    settings
+}
+
+/// The programs Windows installers made, with an Add button each.
+fn found_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box) {
+    let Some(parent) = from.root().and_downcast::<gtk4::Window>() else { return };
+    let win = adw::Window::builder().title("Windows programs found").transient_for(&parent).modal(true).default_width(520).default_height(480).build();
+    let tv = adw::ToolbarView::new();
+    tv.add_top_bar(&adw::HeaderBar::new());
+    let spin = gtk4::Spinner::new();
+    spin.start();
+    spin.set_halign(gtk4::Align::Center);
+    spin.set_valign(gtk4::Align::Center);
+    tv.set_content(Some(&spin));
+    win.set_content(Some(&tv));
+    win.present();
+    let known: Vec<String> = my_games().iter().filter_map(|g| std::fs::read_to_string(&g.file).ok().and_then(|t| game_launch::parse_entry(&t)).map(|(p, _)| p)).collect();
+    let (tv, holder) = (tv.clone(), holder.clone());
+    in_background(
+        move || {
+            let data = std::env::var("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share"));
+            crate::backend::installed_programs::find(&data, &known)
+        },
+        move |found| {
+            let page = adw::PreferencesPage::new();
+            let g = adw::PreferencesGroup::new();
+            g.set_title("Installed with a Windows installer");
+            g.set_description(Some("These are in the shared Windows folder that double-clicked installers use. Add the ones you want as games."));
+            if found.is_empty() {
+                let r = adw::ActionRow::new();
+                r.set_title("Nothing new found");
+                r.set_subtitle("Run a Windows installer by double-clicking it, finish it, then look again.");
+                g.add(&r);
+            }
+            for f in found {
+                let r = adw::ActionRow::new();
+                r.set_title(&glib::markup_escape_text(&f.name));
+                r.set_subtitle(&glib::markup_escape_text(&f.exe.to_string_lossy()));
+                r.set_subtitle_lines(1);
+                let add = gtk4::Button::with_label("Add");
+                add.add_css_class("suggested-action");
+                add.set_valign(gtk4::Align::Center);
+                let (holder, name, path) = (holder.clone(), f.name.clone(), f.exe.to_string_lossy().to_string());
+                add.connect_clicked(move |b| {
+                    b.set_sensitive(false);
+                    b.set_label("Adding…");
+                    let (holder, b, name, path) = (holder.clone(), b.clone(), name.clone(), path.clone());
+                    in_background(
+                        move || {
+                            let mut id_name = name.clone();
+                            let mut n = 2;
+                            while apps_dir().join(format!("zohara-game-{}.desktop", slug(&id_name))).exists() {
+                                id_name = format!("{name} {n}");
+                                n += 1;
+                            }
+                            add_program(&id_name, &path, &default_windows_settings())
+                        },
+                        move |res| match res {
+                            Ok(()) => {
+                                b.set_label("Added");
+                                fill(&holder);
+                            }
+                            Err(e) => {
+                                b.set_label("Failed");
+                                b.set_tooltip_text(Some(&e));
+                            }
+                        },
+                    );
+                });
+                r.add_suffix(&add);
+                g.add(&r);
+            }
+            page.add(&g);
+            tv.set_content(Some(&page));
+        },
+    );
+}
+
 /// "Hades_II-setup.exe" -> "Hades II setup".
 fn name_from_file(path: &str) -> String {
     let stem = Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
@@ -183,10 +288,7 @@ fn name_from_file(path: &str) -> String {
 /// Exit code for the caller; the answer is shown as a notification.
 pub fn add_from_file_manager(path: &str) -> i32 {
     let base = name_from_file(path);
-    let mut settings = crate::backend::windows_apps::load();
-    if settings.runner == Runner::Proton && proton::installed().is_empty() {
-        settings.runner = Runner::Wine; // Proton-GE is a download away; the game can be switched to it later
-    }
+    let settings = default_windows_settings();
     let mut name = base.clone();
     let mut n = 2;
     while apps_dir().join(format!("zohara-game-{}.desktop", slug(&name))).exists() {
@@ -237,9 +339,15 @@ fn fill(holder: &gtk4::Box) {
     add.set_tooltip_text(Some("Choose a game's program file, AppImage or Windows .exe"));
     let h = holder.clone();
     add.connect_clicked(move |b| add_window(b, &h));
+    let find = gtk4::Button::with_label("Find Windows programs");
+    find.set_valign(gtk4::Align::Center);
+    find.set_tooltip_text(Some("Look for programs that a Windows installer put on this computer"));
+    let h = holder.clone();
+    find.connect_clicked(move |b| found_window(b, &h));
     let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
     buttons.append(&from_apps);
     buttons.append(&add);
+    buttons.append(&find);
     g.set_header_suffix(Some(&buttons));
 
     let games = my_games();

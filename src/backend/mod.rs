@@ -24,6 +24,8 @@ pub mod swap;
 pub mod network;
 pub mod privacy_indicator;
 pub mod process;
+pub mod installed_programs;
+pub mod pe_icon;
 pub mod proton;
 pub mod steam_games;
 pub mod system;

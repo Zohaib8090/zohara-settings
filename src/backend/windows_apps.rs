@@ -208,6 +208,27 @@ pub fn launch_words(path: &str, s: &GameSettings, ctx: &Context) -> Result<(Vec<
     Ok((game_launch::argv(path, &s, ctx)?, fell_back))
 }
 
+/// The Windows folders (Proton's, plain Wine's) for a program. A program an installer put into the shared Windows folder
+/// has to keep running in it (its settings, libraries and saves are there); anything else gets a folder of its own.
+pub fn prefixes_for(path: &str, game_id: &str) -> (PathBuf, PathBuf) {
+    prefixes_in(&data_home(), path, game_id)
+}
+
+pub fn prefixes_in(data: &Path, path: &str, game_id: &str) -> (PathBuf, PathBuf) {
+    let shared_proton = data.join("zohara/windows");
+    let shared_wine = data.join("zohara/windows-wine");
+    let own = data.join("zohara/prefixes").join(game_id);
+    if Path::new(path).starts_with(&shared_proton) {
+        // plain Wine (when Proton-GE is missing) can open Proton's folder too: its `pfx` is an ordinary Wine prefix
+        let wine = shared_proton.join("pfx");
+        (shared_proton, wine)
+    } else if Path::new(path).starts_with(&shared_wine) {
+        (own, shared_wine)
+    } else {
+        (own, PathBuf::new())
+    }
+}
+
 /// A choice for this one start only (right-click menu), over the game's or the shared settings.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Once {
@@ -240,7 +261,8 @@ pub fn run_file_once(path: &str, once: &Once) -> i32 {
     let games = known_games(&data_home().join("applications"));
     let (mut s, mut ctx, game) = match match_game(path, &games, &home()) {
         Some(g) => {
-            let ctx = Context::here(data_home().join("zohara/prefixes").join(&g.id), PathBuf::new(), g.settings.dedicated_gpu);
+            let (prefix, wine) = prefixes_for(path, &g.id);
+            let ctx = Context::here(prefix, wine, g.settings.dedicated_gpu);
             (g.settings.clone(), ctx, Some((g.id.clone(), g.name.clone())))
         }
         None => {
@@ -653,5 +675,16 @@ mod tests {
         assert_eq!(once_from_args(&a(&["x", "--run-windows", "f.exe", "--layer", "wine"])), Once { runner: Some(Runner::Wine), dedicated: false });
         assert_eq!(once_from_args(&a(&["--dedicated"])), Once { runner: None, dedicated: true });
         assert_eq!(once_from_args(&a(&["--layer", "bogus"])).runner, None);
+    }
+
+    #[test]
+    fn a_program_in_the_shared_windows_folder_keeps_using_it() {
+        let d = Path::new("/d");
+        let (p, w) = prefixes_in(d, "/d/zohara/windows/pfx/drive_c/Program Files/Game/g.exe", "game");
+        assert_eq!((p, w), (PathBuf::from("/d/zohara/windows"), PathBuf::from("/d/zohara/windows/pfx")));
+        let (p, w) = prefixes_in(d, "/d/zohara/windows-wine/drive_c/Game/g.exe", "game");
+        assert_eq!((p, w), (PathBuf::from("/d/zohara/prefixes/game"), PathBuf::from("/d/zohara/windows-wine")));
+        let (p, w) = prefixes_in(d, "/home/me/Games/g.exe", "game");
+        assert_eq!((p, w), (PathBuf::from("/d/zohara/prefixes/game"), PathBuf::new()));
     }
 }

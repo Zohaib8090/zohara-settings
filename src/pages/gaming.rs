@@ -1,6 +1,6 @@
 //! Gaming: Feral GameMode status and its config, the MangoHud performance
-//! overlay, power mode, graphics driver check, and game stores (installed
-//! from Flathub, since the ISO has no 32-bit multilib repo for native Steam).
+//! overlay, power mode, graphics driver check, Windows game support (32-bit
+//! libraries, Steam, Proton-GE, ProtonUp-Qt) and game stores from Flathub.
 
 use crate::backend::worker::in_background;
 use adw::prelude::*;
@@ -415,6 +415,215 @@ fn stores_group(page: &gtk4::Box) -> adw::PreferencesGroup {
     g
 }
 
+/// Windows games: one-click support (32-bit libraries + Steam, Lutris, winetricks), Proton-GE, ProtonUp-Qt.
+fn windows_group(page: &gtk4::Box) -> adw::PreferencesGroup {
+    use crate::backend::proton;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let g = adw::PreferencesGroup::new();
+    g.set_title("Windows games");
+    g.set_description(Some("Play Windows games through Steam's Proton. Proton-GE adds fixes for more games than Valve's own version."));
+
+    // 1. Support
+    let support = adw::ActionRow::new();
+    support.set_title("Windows game support");
+    support.set_subtitle_lines(0);
+    let sbtn = gtk4::Button::new();
+    sbtn.set_valign(gtk4::Align::Center);
+    support.add_suffix(&sbtn);
+    g.add(&support);
+
+    // 2. Proton-GE
+    let ge = adw::ActionRow::new();
+    ge.set_title("Proton-GE");
+    ge.set_subtitle_lines(0);
+    let gbtn = gtk4::Button::new();
+    gbtn.set_valign(gtk4::Align::Center);
+    ge.add_suffix(&gbtn);
+    g.add(&ge);
+
+    // 3. ProtonUp-Qt
+    let pq = adw::ActionRow::new();
+    pq.set_title("ProtonUp-Qt");
+    pq.set_subtitle("Install and update other Proton and Wine versions, for Steam, Lutris and Heroic.");
+    let qbtn = gtk4::Button::new();
+    qbtn.set_valign(gtk4::Align::Center);
+    pq.add_suffix(&qbtn);
+    g.add(&pq);
+
+    // Installed Proton-GE versions, each with Remove; rebuilt on refresh.
+    let shown: Rc<RefCell<Vec<adw::ActionRow>>> = Rc::new(RefCell::new(Vec::new()));
+    let latest: Rc<RefCell<Option<proton::Release>>> = Rc::new(RefCell::new(None));
+    let busy = Rc::new(std::cell::Cell::new(false));
+
+    let refresh: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+    let refresh_fn: Rc<dyn Fn()> = {
+        let (g, support, sbtn, ge, gbtn, pq, qbtn, shown, latest, busy, refresh) =
+            (g.clone(), support.clone(), sbtn.clone(), ge.clone(), gbtn.clone(), pq.clone(), qbtn.clone(), shown.clone(), latest.clone(), busy.clone(), refresh.clone());
+        Rc::new(move || {
+            let ready = proton::support_ready();
+            support.set_subtitle(if ready {
+                "Ready: 32-bit libraries, Steam, Lutris and winetricks are installed."
+            } else {
+                "Not set up. Turns on 32-bit libraries and installs Steam, Lutris and winetricks. Asks for your password."
+            });
+            sbtn.set_label(if ready { "Open Steam" } else { "Set up" });
+            if ready { sbtn.remove_css_class("suggested-action") } else { sbtn.add_css_class("suggested-action") }
+            sbtn.set_sensitive(!busy.get());
+
+            let have = proton::installed();
+            let newest = latest.borrow().as_ref().map(|r| r.tag.clone());
+            let up_to_date = newest.as_ref().map(|n| have.contains(n)).unwrap_or(false);
+            ge.set_subtitle(&match (have.first(), &newest) {
+                (None, Some(n)) => format!("Not installed. Newest is {n}. It goes into Steam's compatibility list."),
+                (None, None) => "Not installed. Press Install to download the newest version (about 560 MB).".to_string(),
+                (Some(h), Some(n)) if h != n && !up_to_date => format!("{h} installed. {n} is available."),
+                (Some(h), _) => format!("{h} installed. Pick it in Steam: a game's Properties > Compatibility."),
+            });
+            gbtn.set_label(if have.is_empty() { "Install" } else if up_to_date || newest.is_none() { "Check for newer" } else { "Update" });
+            if up_to_date { gbtn.remove_css_class("suggested-action") } else { gbtn.add_css_class("suggested-action") }
+            gbtn.set_sensitive(!busy.get());
+
+            qbtn.set_label(if proton::protonup_qt_present() { "Open" } else { "Install" });
+
+            for r in shown.borrow_mut().drain(..) {
+                g.remove(&r);
+            }
+            for tag in have {
+                let row = adw::ActionRow::new();
+                row.set_title(&tag);
+                row.set_subtitle("Installed");
+                let rm = gtk4::Button::with_label("Remove");
+                rm.set_valign(gtk4::Align::Center);
+                rm.add_css_class("destructive-action");
+                let refresh = refresh.clone();
+                let t = tag.clone();
+                rm.connect_clicked(move |_| {
+                    let _ = proton::remove(&t);
+                    if let Some(f) = refresh.borrow().as_ref() { f() }
+                });
+                row.add_suffix(&rm);
+                g.add(&row);
+                shown.borrow_mut().push(row);
+            }
+        })
+    };
+    *refresh.borrow_mut() = Some(refresh_fn.clone());
+    refresh_fn();
+
+    // Support button
+    {
+        let (page, support, refresh_fn, busy) = (page.clone(), support.clone(), refresh_fn.clone(), busy.clone());
+        sbtn.connect_clicked(move |b| {
+            if proton::support_ready() {
+                let _ = Command::new("steam").spawn();
+                return;
+            }
+            busy.set(true);
+            b.set_sensitive(false);
+            support.set_subtitle("Working… this downloads a few hundred MB and can take several minutes.");
+            let (page, refresh_fn, busy) = (page.clone(), refresh_fn.clone(), busy.clone());
+            in_background(proton::run_support, move |err| {
+                busy.set(false);
+                refresh_fn();
+                if let Some(e) = err {
+                    message(&page, "Windows game support not set up", &e);
+                }
+            });
+        });
+    }
+
+    // Proton-GE button
+    {
+        let (page, ge, refresh_fn, latest, busy) = (page.clone(), ge.clone(), refresh_fn.clone(), latest.clone(), busy.clone());
+        gbtn.connect_clicked(move |b| {
+            busy.set(true);
+            b.set_sensitive(false);
+            ge.set_subtitle("Looking for the newest version…");
+            let (page, ge, refresh_fn, latest, busy) = (page.clone(), ge.clone(), refresh_fn.clone(), latest.clone(), busy.clone());
+            in_background(
+                || -> Result<proton::Release, String> { proton::latest() },
+                move |res| match res {
+                    Err(e) => {
+                        busy.set(false);
+                        refresh_fn();
+                        message(&page, "Proton-GE", &e);
+                    }
+                    Ok(rel) => {
+                        *latest.borrow_mut() = Some(rel.clone());
+                        if proton::installed().contains(&rel.tag) {
+                            busy.set(false);
+                            refresh_fn(); // already the newest
+                            return;
+                        }
+                        // Show the download's progress by watching the file grow.
+                        let path = proton::download_path(&rel.tag);
+                        let (ge2, size) = (ge.clone(), rel.size.max(1));
+                        let done = Rc::new(std::cell::Cell::new(false));
+                        let done2 = done.clone();
+                        let tag = rel.tag.clone();
+                        glib::timeout_add_local(std::time::Duration::from_millis(700), move || {
+                            if done2.get() {
+                                return glib::ControlFlow::Break;
+                            }
+                            let have = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                            ge2.set_subtitle(&if have >= size {
+                                format!("Checking and unpacking {tag}…")
+                            } else {
+                                format!("Downloading {tag}: {} of {} MB", have / 1_000_000, size / 1_000_000)
+                            });
+                            glib::ControlFlow::Continue
+                        });
+                        let rel2 = rel.clone();
+                        in_background(move || proton::install(&rel2), move |r| {
+                            done.set(true);
+                            busy.set(false);
+                            refresh_fn();
+                            if let Err(e) = r {
+                                message(&page, "Proton-GE not installed", &e);
+                            }
+                        });
+                    }
+                },
+            );
+        });
+    }
+
+    // ProtonUp-Qt button
+    {
+        let (page, refresh_fn) = (page.clone(), refresh_fn.clone());
+        qbtn.connect_clicked(move |b| {
+            if proton::protonup_qt_present() {
+                let cmd = proton::protonup_qt_command();
+                let _ = Command::new(&cmd[0]).args(&cmd[1..]).spawn();
+                return;
+            }
+            b.set_sensitive(false);
+            b.set_label("Installing…");
+            let (page, refresh_fn, b2) = (page.clone(), refresh_fn.clone(), b.clone());
+            in_background(
+                || {
+                    let pac = Command::new("pkexec").args(["pacman", "-S", "--needed", "--noconfirm", "protonup-qt"]).status().map(|s| s.success()).unwrap_or(false);
+                    pac || {
+                        ensure_flathub();
+                        Command::new("flatpak").args(["install", "-y", "--noninteractive", "flathub", "net.davidotek.pupgui2"]).status().map(|s| s.success()).unwrap_or(false)
+                    }
+                },
+                move |ok| {
+                    b2.set_sensitive(true);
+                    refresh_fn();
+                    if !ok {
+                        message(&page, "ProtonUp-Qt not installed", "Check your internet connection and try again.");
+                    }
+                },
+            );
+        });
+    }
+
+    g
+}
+
 pub fn build() -> gtk4::Widget {
     let scroll = gtk4::ScrolledWindow::builder()
         .hscrollbar_policy(gtk4::PolicyType::Never)
@@ -442,6 +651,7 @@ pub fn build() -> gtk4::Widget {
         root.append(&p);
     }
     root.append(&graphics_group());
+    root.append(&windows_group(&root));
     root.append(&stores_group(&root));
 
     scroll.set_child(Some(&root));

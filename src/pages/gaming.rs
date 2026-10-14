@@ -540,6 +540,7 @@ fn windows_group(page: &gtk4::Box) -> adw::PreferencesGroup {
         gbtn.connect_clicked(move |b| {
             busy.set(true);
             b.set_sensitive(false);
+            b.set_label("Working…");
             ge.set_subtitle("Looking for the newest version…");
             let (page, ge, refresh_fn, latest, busy) = (page.clone(), ge.clone(), refresh_fn.clone(), latest.clone(), busy.clone());
             in_background(
@@ -571,7 +572,7 @@ fn windows_group(page: &gtk4::Box) -> adw::PreferencesGroup {
                             ge2.set_subtitle(&if have >= size {
                                 format!("Checking and unpacking {tag}…")
                             } else {
-                                format!("Downloading {tag}: {} of {} MB", have / 1_000_000, size / 1_000_000)
+                                format!("Downloading {tag}: {}% ({} of {} MB)", (have * 100 / size).min(99), have / 1_000_000, size / 1_000_000)
                             });
                             glib::ControlFlow::Continue
                         });

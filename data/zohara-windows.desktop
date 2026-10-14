@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Windows program (Zohara)
+Comment=Run a Windows program with Proton-GE or Wine
+Exec=/usr/bin/zohara-settings --run-windows %f
+Icon=applications-games
+Terminal=false
+NoDisplay=true
+MimeType=application/x-ms-dos-executable;application/x-msdownload;application/x-msi;application/x-ms-shortcut;application/x-bat;application/x-mswinurl;

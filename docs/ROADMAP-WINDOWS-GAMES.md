@@ -49,7 +49,8 @@ Not yet tried on a real Steam game; Flatpak Steam hides Game Mode/MangoHud (step
 * Chip choice and Game Mode for Minecraft launchers (Flatpak override or launcher env).
 * First ask the owner for the actual error from the launcher log; do not guess.
 
-### G. On by default after install  (needs a VM test)
+### G. On by default after install  (BUILT 2026-10-14, alpha; VM test still to do)
+Shipped: `data/zohara-windows.desktop` + `data/zohara-mimeapps.list` (package puts them in `/usr/share/applications`). The switch is "on unless the person turned it off" (off writes wine.desktop into their own mimeapps.list; on removes their lines and any private copy of the handler). Checked with the real `xdg-mime`: the system default wins over wine.desktop's registration and the person's own choice wins over the system default. NOT yet seen in Dolphin on a fresh install. Missing Proton-GE: runs with Wine and the notification has an "Install Proton-GE" button (opens Gaming settings) instead of an in-place dialog.
 Today the double-click switch is off, and when turned on it writes `Exec=` with whatever binary was running (the test build in
 `/tmp` on the owner's laptop). A fresh Zohara must work without anyone finding the switch.
 * Ship `zohara-windows.desktop` in the `zohara-settings` package (`/usr/share/applications`, `Exec=/usr/bin/zohara-settings
@@ -59,7 +60,8 @@ Today the double-click switch is off, and when turned on it writes `Exec=` with 
 * Proton-GE is not preinstalled (565 MB). On first double-click without it: dialog "Install Proton-GE now?" with progress.
 * VM test (`scripts/vm/vm.py`; `~/zohara-vm` does not exist now): fresh install, double-click a harmless `.bat`, `.exe`, `.msi`.
 
-### H. Say when a game fails  (small; do with G)
+### H. Say when a game fails  (BUILT 2026-10-14, alpha)
+Per-game log `~/.cache/zohara/windows/<id|shared>.log`; a program that exits with an error within 10 s gives "did not start" with an "Open the log" button; "Show log" row in the gear window; My games > Play of a Windows program now goes through the same path. Limit: `wine start` returns 0 at once, so with plain Wine a failing game is not noticed; Proton is. Notification button tried only as plain notify-send (no press).
 * Per-game log `~/.cache/zohara/windows/<game or shared>.log`; notify "<game> closed right away. Open the log?" if the process
   exits within ~10 s with a non-zero code; "Show log" button in the gear window.
 

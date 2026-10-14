@@ -108,7 +108,7 @@ recommended / Wine), DXVK, stronger graphics chip, Game Mode, MangoHud, and "Win
   `STEAM_COMPAT_DATA_PATH=~/.local/share/zohara/windows` (one shared Windows folder, so installed programs find each other) and
   `STEAM_COMPAT_CLIENT_INSTALL_PATH=~/.local/share/Steam` (created if missing; Steam itself is not needed). Plain Wine uses its
   own folder `~/.local/share/zohara/windows-wine` (Proton's and Wine's must not be shared). If Proton-GE is chosen but not
-  installed, it falls back to Wine and says so in a notification. Output goes to `~/.cache/zohara/windows-run.log`.
+  installed, it falls back to Wine and says so in a notification. Output goes to `~/.cache/zohara/windows/<game id or shared>.log`.
 * Verified on the owner's laptop: `zohara-settings --run-windows "…/Game Folder/Run Me!.bat"` (throwaway data folder)
   created the Proton prefix with GE-Proton11-9 and the .bat wrote its result next to itself.
 * Known limits: Proton turns off Wine's start-menu shortcuts, so an installed program is found through "Windows C: drive";
@@ -119,7 +119,7 @@ recommended / Wine), DXVK, stronger graphics chip, Game Mode, MangoHud, and "Win
 whose added file is `FILE`, else the game whose folder holds `FILE` (closest folder wins). A game added from a broad folder
 (home, `/`, Downloads, Desktop, Documents, Music, Pictures, Videos, Public) matches by its exact file only. A matched game
 runs with its own gear settings and its own Windows folder (`~/.local/share/zohara/prefixes/<game>`), the same as its Play
-button; anything else uses the shared defaults and shared C: drive. The first line of `~/.cache/zohara/windows-run.log` says
+button; anything else uses the shared defaults and shared C: drive. The first line of `~/.cache/zohara/windows/<game id or shared>.log` says
 which one was used (`game "<name>"` or `shared defaults`). Verified with the real GE-Proton11-9: a different `.bat` in a
 registered game's folder ran with that game's Proton + dedicated-chip variables and its own prefix.
 

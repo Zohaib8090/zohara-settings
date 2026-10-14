@@ -131,6 +131,10 @@ package() {
   install -Dm644 "$startdir/data/zohara-settings.desktop" \
     "$pkgdir/usr/share/applications/zohara-settings.desktop"
 
+  # Windows programs open with Zohara by default (Proton-GE or Wine; the switch is in Settings > Gaming).
+  install -Dm644 "$startdir/data/zohara-windows.desktop" "$pkgdir/usr/share/applications/zohara-windows.desktop"
+  install -Dm644 "$startdir/data/zohara-mimeapps.list" "$pkgdir/usr/share/applications/mimeapps.list"
+
   # Optional systemd user service (used by some distros for dbus activation)
   if [ -f "$startdir/data/zohara-settings.service" ]; then
     install -Dm644 "$startdir/data/zohara-settings.service" \

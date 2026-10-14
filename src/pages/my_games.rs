@@ -228,15 +228,25 @@ fn fill(holder: &gtk4::Box) {
         let play = gtk4::Button::with_label("Play");
         play.add_css_class("suggested-action");
         play.set_valign(gtk4::Align::Center);
+        // Only games added from a program file have settings to change; an installed app that was marked as a game keeps
+        // its own launcher.
+        let entry = std::fs::read_to_string(&game.file).ok().and_then(|t| game_launch::parse_entry(&t));
+        // A Windows program goes through the same path as a double-click: its own settings, a log, and a notice when it
+        // closes right away.
+        let windows_file = entry.as_ref().filter(|(path, s)| game_launch::uses_wine(path, s.runner)).map(|(path, _)| path.clone());
         let f = game.file.clone();
         play.connect_clicked(move |_| {
+            if let Some(path) = &windows_file {
+                if let Ok(exe) = std::env::current_exe() {
+                    if Command::new(exe).arg("--run-windows").arg(path).spawn().is_ok() {
+                        return;
+                    }
+                }
+            }
             if let Some(info) = gio::DesktopAppInfo::from_filename(&f) {
                 let _ = info.launch(&[], None::<&gio::AppLaunchContext>);
             }
         });
-        // Only games added from a program file have settings to change; an installed app that was marked as a game keeps
-        // its own launcher.
-        let entry = std::fs::read_to_string(&game.file).ok().and_then(|t| game_launch::parse_entry(&t));
         if let Some((path, current)) = entry {
             let gear = gtk4::Button::from_icon_name("emblem-system-symbolic");
             gear.set_valign(gtk4::Align::Center);
@@ -343,6 +353,20 @@ fn settings_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box, file: &Pat
     for r in [name_row.clone().upcast::<gtk4::Widget>(), run_row.clone().upcast(), dxvk.clone().upcast(), gpu.clone().upcast(), gm.clone().upcast(), ov.clone().upcast(), options.clone().upcast(), env.clone().upcast()] {
         group.add(&r);
     }
+    let log_row = adw::ActionRow::new();
+    log_row.set_title("What happened last time");
+    log_row.set_subtitle("The game's own messages from its last start. Useful when it closes at once.");
+    log_row.set_subtitle_lines(0);
+    let show = gtk4::Button::with_label("Show log");
+    show.set_valign(gtk4::Align::Center);
+    let id = file.file_stem().map(|s| s.to_string_lossy().trim_start_matches("zohara-game-").to_string()).unwrap_or_default();
+    let log_file = crate::backend::windows_apps::log_path(Some(&id));
+    show.set_sensitive(log_file.exists());
+    show.connect_clicked(move |_| {
+        let _ = Command::new("xdg-open").arg(&log_file).spawn();
+    });
+    log_row.add_suffix(&show);
+    group.add(&log_row);
     page.add(&group);
 
     let status = gtk4::Label::new(None);

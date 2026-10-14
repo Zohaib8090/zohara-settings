@@ -1,0 +1,9 @@
+# Zohara's default: Windows programs open with Zohara (Proton-GE or Wine, chosen in Settings > Gaming).
+# A person's own choice in ~/.config/mimeapps.list wins; the switch in Settings > Gaming writes it.
+[Default Applications]
+application/x-ms-dos-executable=zohara-windows.desktop;
+application/x-msdownload=zohara-windows.desktop;
+application/x-msi=zohara-windows.desktop;
+application/x-ms-shortcut=zohara-windows.desktop;
+application/x-bat=zohara-windows.desktop;
+application/x-mswinurl=zohara-windows.desktop;

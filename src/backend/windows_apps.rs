@@ -158,6 +158,41 @@ fn notify(title: &str, body: &str) {
     let _ = Command::new("notify-send").args(["-a", "Zohara", "-i", "applications-games", title, body]).status();
 }
 
+/// A notification with one button. True = the person pressed it. Waits for the answer (up to `secs`).
+fn notify_action(title: &str, body: &str, label: &str, secs: u32) -> bool {
+    Command::new("notify-send")
+        .args(["-a", "Zohara", "-i", "applications-games", "-t", &(secs * 1000).to_string(), "-A", &format!("go={label}"), title, body])
+        .stdin(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "go")
+        .unwrap_or(false)
+}
+
+/// How long after the start a program that quits with an error still counts as "did not start".
+pub const QUICK_FAIL_SECS: u64 = 10;
+
+/// Whether a program that ended after `secs` with `code` (None = ended by a signal, for example the person closing it)
+/// should be reported as failed.
+pub fn failed_to_start(code: Option<i32>, secs: u64) -> bool {
+    matches!(code, Some(c) if c != 0) && secs < QUICK_FAIL_SECS
+}
+
+/// The file a program's output goes to: one per game, one for everything else.
+pub fn log_path(game_id: Option<&str>) -> PathBuf {
+    let dir = std::env::var("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|_| home().join(".cache")).join("zohara/windows");
+    let name: String = game_id.unwrap_or("shared").chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    dir.join(format!("{name}.log"))
+}
+
+fn open_log(path: &Path) {
+    let _ = Command::new("xdg-open").arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+}
+
+fn open_gaming_settings() {
+    let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "zohara-settings".into());
+    let _ = Command::new(exe).args(["--page", "Gaming"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+}
+
 /// The words that start `path`. `s` is the matched game's settings or the shared defaults. When Proton-GE is chosen but
 /// not installed, plain Wine is used and the second value says so.
 pub fn launch_words(path: &str, s: &GameSettings, ctx: &Context) -> Result<(Vec<String>, bool), String> {
@@ -185,7 +220,7 @@ pub fn run_file(path: &str) -> i32 {
     let (s, ctx, game) = match match_game(path, &games, &home()) {
         Some(g) => {
             let ctx = Context::here(data_home().join("zohara/prefixes").join(&g.id), PathBuf::new(), g.settings.dedicated_gpu);
-            (g.settings.clone(), ctx, Some(g.name.clone()))
+            (g.settings.clone(), ctx, Some((g.id.clone(), g.name.clone())))
         }
         None => {
             let s = load();
@@ -200,32 +235,55 @@ pub fn run_file(path: &str) -> i32 {
             return 1;
         }
     };
-    if fell_back {
-        notify("Running with Wine", "Proton-GE isn't installed yet, so plain Wine is used. Install it in Settings > Gaming > Windows games.");
-    }
     let _ = std::fs::create_dir_all(&ctx.prefix_dir);
     if !ctx.wine_prefix.as_os_str().is_empty() {
         let _ = std::fs::create_dir_all(&ctx.wine_prefix);
     }
     // Proton needs this folder to exist even when there is no Steam.
     let _ = std::fs::create_dir_all(&ctx.steam_root);
-    let log_dir = std::env::var("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|_| home().join(".cache")).join("zohara");
-    let _ = std::fs::create_dir_all(&log_dir);
-    let log = std::fs::File::create(log_dir.join("windows-run.log")).ok();
+    let log_file = log_path(game.as_ref().map(|(id, _)| id.as_str()));
+    let _ = std::fs::create_dir_all(log_file.parent().unwrap());
+    let log = std::fs::File::create(&log_file).ok();
+    let label = game.as_ref().map(|(_, n)| n.clone()).unwrap_or_else(|| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
     let mut cmd = Command::new(&words[0]);
     cmd.args(&words[1..]).current_dir(p.parent().unwrap_or(Path::new("/"))).stdin(Stdio::null());
     if let Some(mut l) = log {
         use std::io::Write;
-        let _ = writeln!(l, "Zohara: {} with {}", game.as_deref().map(|n| format!("game \"{n}\"")).unwrap_or_else(|| "shared defaults".into()), words.join(" "));
+        let _ = writeln!(l, "Zohara: {} with {}", game.as_ref().map(|(_, n)| format!("game \"{n}\"")).unwrap_or_else(|| "shared defaults".into()), words.join(" "));
         if let Ok(l2) = l.try_clone() {
             cmd.stdout(l).stderr(l2);
         }
     }
-    match cmd.spawn() {
-        Ok(_) => 0,
+    let started = std::time::Instant::now();
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
         Err(e) => {
-            notify("Can't open this Windows program", &format!("{}: {e}", words[0]));
-            1
+            let what = if words[0] == "wine" { "Windows app support (Wine) isn't installed.".to_string() } else { format!("{}: {e}", words[0]) };
+            if notify_action("Can't open this Windows program", &what, "Open Gaming settings", 20) {
+                open_gaming_settings();
+            }
+            return 1;
+        }
+    };
+    if fell_back && notify_action("Running with Wine", "Proton-GE isn't installed yet, so plain Wine is used. Many games run better with Proton-GE.", "Install Proton-GE", 15) {
+        open_gaming_settings();
+    }
+    // Watch the first seconds: a program that quits at once with an error did not start, and the person should hear why.
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if failed_to_start(status.code(), started.elapsed().as_secs()) {
+                    let body = format!("{label} closed right away (error {}).", status.code().unwrap_or(-1));
+                    if notify_action("A Windows program did not start", &body, "Open the log", 30) {
+                        open_log(&log_file);
+                    }
+                    return 1;
+                }
+                return 0;
+            }
+            Ok(None) if started.elapsed().as_secs() >= QUICK_FAIL_SECS => return 0,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(250)),
+            Err(_) => return 0,
         }
     }
 }
@@ -270,11 +328,95 @@ pub fn without_handler(text: &str, id: &str) -> String {
     t
 }
 
+/// Where the package puts the handler and the default that points the Windows file types at it.
+pub const SYSTEM_ENTRY: &str = "/usr/share/applications/zohara-windows.desktop";
+pub const SYSTEM_DEFAULTS: &str = "/usr/share/applications/mimeapps.list";
+
+/// The `[Default Applications]` value of `key` in a `mimeapps.list` text (the first program of the list).
+fn default_in(text: &str, key: &str) -> Option<String> {
+    let mut in_defaults = false;
+    for line in text.lines() {
+        let l = line.trim();
+        if l.starts_with('[') {
+            in_defaults = l == "[Default Applications]";
+        } else if in_defaults {
+            if let Some((k, v)) = l.split_once('=') {
+                if k.trim() == key {
+                    return Some(v.split(';').next().unwrap_or("").trim().to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Whether double-clicking a Windows file runs it here. The person's own choice wins; with none, the system default
+/// (shipped by the package) decides, so a fresh install works without anyone finding the switch.
+pub fn decide(user_mimeapps: &str, system_mimeapps: &str, entry_exists: bool) -> bool {
+    if !entry_exists {
+        return false;
+    }
+    let key = MIME_TYPES[0];
+    match default_in(user_mimeapps, key) {
+        Some(v) => v == DESKTOP_ID,
+        None => default_in(system_mimeapps, key).as_deref() == Some(DESKTOP_ID),
+    }
+}
+
+/// `mimeapps.list` with the six Windows file types set to `id` (None = the lines removed, so the next list decides).
+pub fn with_defaults(text: &str, id: Option<&str>) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut in_defaults = false;
+    let mut had_section = false;
+    for line in text.lines() {
+        let l = line.trim();
+        if l.starts_with('[') {
+            if in_defaults {
+                // end of [Default Applications]: the new lines go here
+                if let Some(id) = id {
+                    out.extend(MIME_TYPES.iter().map(|m| format!("{m}={id};")));
+                }
+            }
+            in_defaults = l == "[Default Applications]";
+            had_section |= in_defaults;
+            out.push(line.to_string());
+            continue;
+        }
+        if in_defaults && l.split_once('=').is_some_and(|(k, _)| MIME_TYPES.contains(&k.trim())) {
+            continue;
+        }
+        out.push(line.to_string());
+    }
+    if in_defaults {
+        if let Some(id) = id {
+            out.extend(MIME_TYPES.iter().map(|m| format!("{m}={id};")));
+        }
+    } else if !had_section {
+        if let Some(id) = id {
+            if !out.is_empty() && !out.last().unwrap().is_empty() {
+                out.push(String::new());
+            }
+            out.push("[Default Applications]".into());
+            out.extend(MIME_TYPES.iter().map(|m| format!("{m}={id};")));
+        }
+    }
+    let mut t = out.join("\n");
+    if !t.is_empty() {
+        t.push('\n');
+    }
+    t
+}
+
+fn read(p: &Path) -> String {
+    std::fs::read_to_string(p).unwrap_or_default()
+}
+
+fn system_default_text() -> String {
+    read(Path::new(SYSTEM_DEFAULTS))
+}
+
 pub fn enabled() -> bool {
-    std::fs::read_to_string(mimeapps_path())
-        .map(|t| t.lines().any(|l| l.starts_with("application/x-ms-dos-executable=") && l.split('=').nth(1).is_some_and(|v| v.split(';').next() == Some(DESKTOP_ID))))
-        .unwrap_or(false)
-        && entry_path().exists()
+    decide(&read(&mimeapps_path()), &system_default_text(), entry_path().exists() || Path::new(SYSTEM_ENTRY).exists())
 }
 
 fn refresh_menu() {
@@ -282,8 +424,22 @@ fn refresh_menu() {
     let _ = Command::new("kbuildsycoca6").stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
+fn write_user_mimeapps(id: Option<&str>) -> Result<(), String> {
+    let m = mimeapps_path();
+    std::fs::create_dir_all(m.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(&m, with_defaults(&read(&m), id)).map_err(|e| e.to_string())
+}
+
 pub fn set_enabled(on: bool) -> Result<(), String> {
     if on {
+        // The package's handler (installed program, always current) when it is there; the person's own copy would
+        // shadow it, and could point at a program that has since moved.
+        if Path::new(SYSTEM_ENTRY).exists() && default_in(&system_default_text(), MIME_TYPES[0]).as_deref() == Some(DESKTOP_ID) {
+            let _ = std::fs::remove_file(entry_path());
+            write_user_mimeapps(None)?;
+            refresh_menu();
+            return Ok(());
+        }
         let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "zohara-settings".into());
         // The installed program, not a copy that was run from somewhere else for a test.
         let exe = if Path::new("/usr/bin/zohara-settings").exists() && !exe.contains("/tmp/") { "/usr/bin/zohara-settings".to_string() } else { exe };
@@ -296,10 +452,8 @@ pub fn set_enabled(on: bool) -> Result<(), String> {
             return Err("Couldn't set the file types (xdg-mime failed).".into());
         }
     } else {
-        let m = mimeapps_path();
-        if let Ok(t) = std::fs::read_to_string(&m) {
-            std::fs::write(&m, without_handler(&t, DESKTOP_ID)).map_err(|e| e.to_string())?;
-        }
+        // Off is the person's own choice, so it has to beat the system default: Wine's handler is named for each type.
+        write_user_mimeapps(Some("wine.desktop"))?;
         let _ = std::fs::remove_file(entry_path());
         refresh_menu();
     }
@@ -420,5 +574,48 @@ mod tests {
             assert!(e.contains(m));
         }
         assert!(e.contains("NoDisplay=true"));
+    }
+
+    #[test]
+    fn the_system_default_decides_until_the_person_chooses() {
+        let sys = "[Default Applications]\napplication/x-ms-dos-executable=zohara-windows.desktop;\n";
+        assert!(decide("", sys, true), "fresh install: on");
+        assert!(!decide("", sys, false), "no handler installed: off");
+        assert!(!decide("", "", true), "no system default: off");
+        assert!(!decide("[Default Applications]\napplication/x-ms-dos-executable=wine.desktop;\n", sys, true), "turned off by the person");
+        assert!(decide("[Default Applications]\napplication/x-ms-dos-executable=zohara-windows.desktop;\n", "", true));
+    }
+
+    #[test]
+    fn the_six_types_are_set_and_removed_without_touching_the_rest() {
+        let user = "[Default Applications]\ntext/html=chrome.desktop;\napplication/x-bat=old.desktop;\n\n[Added Associations]\ntext/html=chrome.desktop;\n";
+        let off = with_defaults(user, Some("wine.desktop"));
+        assert!(off.contains("text/html=chrome.desktop;"));
+        assert!(!off.contains("old.desktop"));
+        for m in MIME_TYPES {
+            assert!(off.contains(&format!("{m}=wine.desktop;")), "{m}");
+        }
+        assert!(off.contains("[Added Associations]\ntext/html=chrome.desktop;"), "later sections kept");
+        let on = with_defaults(&off, None);
+        assert_eq!(on, "[Default Applications]\ntext/html=chrome.desktop;\n\n[Added Associations]\ntext/html=chrome.desktop;\n");
+        // no file at all, and no section yet
+        assert!(with_defaults("", Some("wine.desktop")).starts_with("[Default Applications]\n"));
+        assert_eq!(with_defaults("", None), "");
+        assert!(with_defaults("[Added Associations]\na=b;\n", Some("x.desktop")).ends_with("application/x-mswinurl=x.desktop;\n"));
+    }
+
+    #[test]
+    fn only_a_quick_error_exit_counts_as_failed() {
+        assert!(failed_to_start(Some(1), 2));
+        assert!(!failed_to_start(Some(0), 2), "a clean quick exit is normal (installers, launchers)");
+        assert!(!failed_to_start(Some(1), 60), "a crash after a long play is not 'did not start'");
+        assert!(!failed_to_start(None, 2), "the person closed it");
+    }
+
+    #[test]
+    fn each_game_has_its_own_log() {
+        assert!(log_path(Some("city-skylines")).ends_with("zohara/windows/city-skylines.log"));
+        assert!(log_path(None).ends_with("zohara/windows/shared.log"));
+        assert!(log_path(Some("../x y")).ends_with("zohara/windows/___x_y.log"));
     }
 }

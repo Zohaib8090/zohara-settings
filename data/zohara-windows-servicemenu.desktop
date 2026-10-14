@@ -1,0 +1,26 @@
+[Desktop Entry]
+Type=Service
+Name=Zohara
+MimeType=application/x-ms-dos-executable;application/x-msdownload;application/x-msi;application/x-ms-shortcut;application/x-bat;
+Actions=zohara-proton;zohara-wine;zohara-dedicated;zohara-addgame;
+X-KDE-Submenu=Zohara
+
+[Desktop Action zohara-proton]
+Name=Run with Proton-GE
+Icon=applications-games
+Exec=/usr/bin/zohara-settings --run-windows %f --layer proton
+
+[Desktop Action zohara-wine]
+Name=Run with Wine
+Icon=applications-games
+Exec=/usr/bin/zohara-settings --run-windows %f --layer wine
+
+[Desktop Action zohara-dedicated]
+Name=Run on the dedicated graphics chip
+Icon=video-display
+Exec=/usr/bin/zohara-settings --run-windows %f --dedicated
+
+[Desktop Action zohara-addgame]
+Name=Add as a game
+Icon=list-add
+Exec=/usr/bin/zohara-settings --add-game %f

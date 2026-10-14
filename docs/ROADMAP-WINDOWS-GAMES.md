@@ -65,7 +65,7 @@ Per-game log `~/.cache/zohara/windows/<id|shared>.log`; a program that exits wit
 * Per-game log `~/.cache/zohara/windows/<game or shared>.log`; notify "<game> closed right away. Open the log?" if the process
   exits within ~10 s with a non-zero code; "Show log" button in the gear window.
 
-### I. Finding installed programs and icons
+### I. Finding installed programs and icons  (PART DONE 2026-10-14: right-click menu "Run with Proton-GE / Wine / dedicated chip / Add as a game"; still to do: watching Program Files after an installer, real icons)
 * Watch `drive_c/Program Files*` after a setup `.exe`, offer "Add these to My games?"; right-click "Run with Zohara…" and
   "Add as a game"; extract real icons from the `.exe` (icoutils).
 

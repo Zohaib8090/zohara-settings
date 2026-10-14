@@ -173,6 +173,34 @@ fn add_program(name: &str, path: &str, settings: &GameSettings) -> Result<(), St
     save_game(&apps_dir().join(format!("zohara-game-{id}.desktop")), name, path, settings)
 }
 
+/// "Hades_II-setup.exe" -> "Hades II setup".
+fn name_from_file(path: &str) -> String {
+    let stem = Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    stem.replace(['_', '-', '.'], " ").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Right-click > Zohara > Add as a game: the file goes into My games with the shared Windows-program settings.
+/// Exit code for the caller; the answer is shown as a notification.
+pub fn add_from_file_manager(path: &str) -> i32 {
+    let base = name_from_file(path);
+    let mut settings = crate::backend::windows_apps::load();
+    if settings.runner == Runner::Proton && proton::installed().is_empty() {
+        settings.runner = Runner::Wine; // Proton-GE is a download away; the game can be switched to it later
+    }
+    let mut name = base.clone();
+    let mut n = 2;
+    while apps_dir().join(format!("zohara-game-{}.desktop", slug(&name))).exists() {
+        name = format!("{base} {n}");
+        n += 1;
+    }
+    let (title, body, code) = match add_program(&name, path, &settings) {
+        Ok(()) => ("Added to My games".to_string(), format!("{name} is in Settings > Gaming > My games and in the Start menu."), 0),
+        Err(e) => ("Couldn't add the game".to_string(), e, 1),
+    };
+    let _ = Command::new("notify-send").args(["-a", "Zohara", "-i", "applications-games", &title, &body]).status();
+    code
+}
+
 fn mark_installed(info: &gio::DesktopAppInfo) -> Result<(), String> {
     let src = info.filename().ok_or("This app has no desktop file")?;
     let id = src.file_name().ok_or("bad name")?.to_string_lossy().to_string();
@@ -600,6 +628,12 @@ fn pick_installed_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box, add_
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_game_name_is_made_from_the_file_name() {
+        assert_eq!(super::name_from_file("/g/Hades_II-setup.exe"), "Hades II setup");
+        assert_eq!(super::name_from_file("/g/Cities Skylines!.bat"), "Cities Skylines!");
+    }
+
     use super::*;
 
     #[test]

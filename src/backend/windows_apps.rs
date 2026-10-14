@@ -208,8 +208,29 @@ pub fn launch_words(path: &str, s: &GameSettings, ctx: &Context) -> Result<(Vec<
     Ok((game_launch::argv(path, &s, ctx)?, fell_back))
 }
 
+/// A choice for this one start only (right-click menu), over the game's or the shared settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Once {
+    pub runner: Option<Runner>,
+    pub dedicated: bool,
+}
+
+/// Reads `--layer proton|wine` and `--dedicated` from the command line.
+pub fn once_from_args(args: &[String]) -> Once {
+    let runner = args.iter().position(|a| a == "--layer").and_then(|i| args.get(i + 1)).and_then(|v| match v.as_str() {
+        "proton" => Some(Runner::Proton),
+        "wine" => Some(Runner::Wine),
+        _ => None,
+    });
+    Once { runner, dedicated: args.iter().any(|a| a == "--dedicated") }
+}
+
 /// `zohara-settings --run-windows FILE`: starts the program and returns at once (exit code for the file manager).
 pub fn run_file(path: &str) -> i32 {
+    run_file_once(path, &Once::default())
+}
+
+pub fn run_file_once(path: &str, once: &Once) -> i32 {
     let p = Path::new(path);
     if !p.is_file() {
         notify("Can't open this Windows program", &format!("{path} was not found."));
@@ -217,7 +238,7 @@ pub fn run_file(path: &str) -> i32 {
     }
     // A game from My games keeps its own settings and its own Windows folder, the same as its Play button.
     let games = known_games(&data_home().join("applications"));
-    let (s, ctx, game) = match match_game(path, &games, &home()) {
+    let (mut s, mut ctx, game) = match match_game(path, &games, &home()) {
         Some(g) => {
             let ctx = Context::here(data_home().join("zohara/prefixes").join(&g.id), PathBuf::new(), g.settings.dedicated_gpu);
             (g.settings.clone(), ctx, Some((g.id.clone(), g.name.clone())))
@@ -228,6 +249,13 @@ pub fn run_file(path: &str) -> i32 {
             (s, ctx, None)
         }
     };
+    if let Some(r) = once.runner {
+        s.runner = r;
+    }
+    if once.dedicated {
+        s.dedicated_gpu = true;
+        ctx.gpu_env = super::gpu_pref::dedicated_env();
+    }
     let (words, fell_back) = match launch_words(path, &s, &ctx) {
         Ok(w) => w,
         Err(e) => {
@@ -617,5 +645,13 @@ mod tests {
         assert!(log_path(Some("city-skylines")).ends_with("zohara/windows/city-skylines.log"));
         assert!(log_path(None).ends_with("zohara/windows/shared.log"));
         assert!(log_path(Some("../x y")).ends_with("zohara/windows/___x_y.log"));
+    }
+
+    #[test]
+    fn the_right_click_choices_are_read_from_the_command_line() {
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(once_from_args(&a(&["x", "--run-windows", "f.exe", "--layer", "wine"])), Once { runner: Some(Runner::Wine), dedicated: false });
+        assert_eq!(once_from_args(&a(&["--dedicated"])), Once { runner: None, dedicated: true });
+        assert_eq!(once_from_args(&a(&["--layer", "bogus"])).runner, None);
     }
 }

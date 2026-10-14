@@ -129,3 +129,10 @@ launch options, `config/config.vdf` Proton tool), only while Steam is closed, an
 file the first time. Launch options look like `env DRI_PRIME=1 FOO=bar gamemoderun mangohud %command% -windowed`;
 options Zohara did not write are shown and only replaced when the person saves. Tested with a fake library in the
 container (list, round trip, Save writes the file); not with a real Steam game yet.
+
+## Right-click menu (2026-10-14)
+`data/zohara-windows-servicemenu.desktop` (installed to `/usr/share/kio/servicemenus/`) adds Zohara > Run with Proton-GE /
+Run with Wine / Run on the dedicated graphics chip / Add as a game for Windows files in Dolphin. They call
+`zohara-settings --run-windows FILE [--layer proton|wine] [--dedicated]` and `--add-game FILE` (game name from the file
+name, shared Windows-program settings; Wine when Proton-GE is not installed). The command lines were run by hand; the menu
+itself has not been seen in Dolphin yet.

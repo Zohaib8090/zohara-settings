@@ -188,6 +188,32 @@ pub fn version_key(tag: &str) -> Vec<u64> {
     tag.trim_start_matches("GE-Proton").split(|c: char| !c.is_ascii_digit()).filter_map(|p| p.parse().ok()).collect()
 }
 
+/// Whether `latest` is newer than the newest of the `installed` versions (None installed = the person does not use it: no).
+pub fn is_newer(installed: &[String], latest: &str) -> bool {
+    installed.iter().map(|t| version_key(t)).max().map(|best| version_key(latest) > best).unwrap_or(false)
+}
+
+/// The daily check (notify only, never installs): when a newer Proton-GE exists than the one in use, say so once per version.
+pub fn notify_if_newer() {
+    let have = installed();
+    if have.is_empty() {
+        return;
+    }
+    let Ok(rel) = latest() else { return };
+    if !is_newer(&have, &rel.tag) {
+        return;
+    }
+    let seen = home().join(".cache/zohara/proton-notified");
+    if std::fs::read_to_string(&seen).map(|t| t.trim() == rel.tag).unwrap_or(false) {
+        return;
+    }
+    let _ = std::fs::create_dir_all(seen.parent().unwrap());
+    let _ = std::fs::write(&seen, &rel.tag);
+    let _ = Command::new("notify-send")
+        .args(["-a", "Zohara", "-i", "applications-games", "A newer Proton-GE is available", &format!("{} is out (you have {}). Update it in Settings > Gaming > Windows games.", rel.tag, have[0])])
+        .status();
+}
+
 fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default())
 }
@@ -476,5 +502,15 @@ mod tests {
         remove(&rel.tag).unwrap();
         assert!(installed().is_empty());
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_newer_proton_ge_is_noticed_only_when_one_is_in_use() {
+        let have = vec!["GE-Proton9-5".to_string(), "GE-Proton10-2".to_string()];
+        assert!(is_newer(&have, "GE-Proton10-3"));
+        assert!(is_newer(&have, "GE-Proton11-1"));
+        assert!(!is_newer(&have, "GE-Proton10-2"));
+        assert!(!is_newer(&have, "GE-Proton9-27"));
+        assert!(!is_newer(&[], "GE-Proton11-1"), "not installed: nothing to update");
     }
 }

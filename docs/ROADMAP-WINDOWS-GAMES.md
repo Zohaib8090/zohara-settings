@@ -77,7 +77,7 @@ Per-game log `~/.cache/zohara/windows/<id|shared>.log`; a program that exits wit
 ### K. Per-game tools  (BUILT 2026-10-14, alpha; "duplicate settings from another game" not done)
 Winetricks libraries, open the game's C: drive, reset its Windows folder, pick another Proton-GE version for this game.
 
-### L. Later
+### L. Later  (Proton-GE update notice DONE 2026-10-14: the daily `--check-updates` timer notes a newer Proton-GE once per version, notify only, honours the update pause. Driver management, GPU tuning, controllers NOT started: they change drivers/hardware, so VM first, never the owner's laptop first)
 Driver management (NVIDIA open vs proprietary, AMD Vulkan; VM first), GPU tuning (power limit, fans, gamescope/FSR, frame
 limit; VM first), Proton-GE update notice (notify only), controller setup, per-game MangoHud presets.
 

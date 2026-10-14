@@ -107,6 +107,8 @@ fn main() -> glib::ExitCode {
         if pages::updates::active_pause_message().is_none() {
             let found = sysupdate::updates::check_all();
             sysupdate::updates::notify_pending(&found);
+            // a newer Proton-GE than the one in use (a notice only; the person presses Update)
+            backend::proton::notify_if_newer();
         }
         std::process::exit(0);
     }

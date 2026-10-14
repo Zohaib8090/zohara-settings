@@ -22,6 +22,7 @@ const KEY_OVERLAY: &str = "X-Zohara-Overlay";
 const KEY_DEDICATED: &str = "X-Zohara-Dedicated";
 const KEY_OPTIONS: &str = "X-Zohara-Options";
 const KEY_ENV: &str = "X-Zohara-Env";
+pub const KEY_SANDBOX: &str = "X-Zohara-Sandbox";
 pub const MARK: &str = "X-Zohara-Game=true";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -319,6 +320,21 @@ fn value_of(text: &str, key: &str) -> Option<String> {
     None
 }
 
+/// Whether a game's entry asks for Safety mode (off unless the person turned it on for this game).
+pub fn sandbox_of(text: &str) -> bool {
+    value_of(text, KEY_SANDBOX).as_deref() == Some("true")
+}
+
+/// The entry with its Safety mode line set (added, or changed).
+pub fn with_sandbox(text: &str, on: bool) -> String {
+    let line = format!("{KEY_SANDBOX}={on}");
+    if value_of(text, KEY_SANDBOX).is_some() {
+        text.lines().map(|l| if l.starts_with(&format!("{KEY_SANDBOX}=")) { line.clone() } else { l.to_string() }).collect::<Vec<_>>().join("\n") + "\n"
+    } else {
+        format!("{}{line}\n", if text.ends_with('\n') { text.to_string() } else { format!("{text}\n") })
+    }
+}
+
 /// The `Name=` of a desktop entry.
 pub fn entry_name(text: &str) -> Option<String> {
     value_of(text, "Name")
@@ -462,5 +478,17 @@ mod tests {
         assert_eq!(back, s);
         // an entry that is just a marked installed app has no settings to show
         assert!(parse_entry("[Desktop Entry]\nName=Foo\nExec=foo\nX-Zohara-Game=true\n").is_none());
+    }
+
+    #[test]
+    fn safety_mode_is_kept_in_the_entry_and_is_off_by_default() {
+        let t = entry_text("G", "/g/a.exe", &GameSettings::default(), &Context::default()).unwrap();
+        assert!(!sandbox_of(&t));
+        let on = with_sandbox(&t, true);
+        assert!(sandbox_of(&on));
+        let off = with_sandbox(&on, false);
+        assert!(!sandbox_of(&off));
+        assert_eq!(off.matches(KEY_SANDBOX).count(), 1);
+        assert!(parse_entry(&on).is_some(), "the entry still reads back");
     }
 }

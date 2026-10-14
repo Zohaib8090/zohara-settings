@@ -136,3 +136,18 @@ Run with Wine / Run on the dedicated graphics chip / Add as a game for Windows f
 `zohara-settings --run-windows FILE [--layer proton|wine] [--dedicated]` and `--add-game FILE` (game name from the file
 name, shared Windows-program settings; Wine when Proton-GE is not installed). The command lines were run by hand; the menu
 itself has not been seen in Dolphin yet.
+
+## Safety mode (2026-10-14)
+`src/backend/windows_sandbox.rs`. Double-clicked Windows programs that are not one of My games start inside bubblewrap
+(the same technology Flatpak uses): read-only system, **empty home folder** (`--tmpfs $HOME`; `/run`, `/tmp`, `/mnt`, `/root`
+too), writable only the program's own Windows folder (shared Proton/Wine one, or the game's), the program's own folder
+(read-only when it is a broad one like Downloads), Proton-GE read-only, and the display/sound sockets. The session bus,
+password agents and the real Steam folder are not visible. Switch: Gaming > Windows programs > "Safety mode for unknown
+programs" (on by default, key `sandbox=` in `windows-apps.conf`); per game: switch in the gear window (`X-Zohara-Sandbox`,
+off by default); per start: right-click > Zohara > Run in / without Safety mode (`--safe`, `--unsafe`). If bubblewrap is not
+usable the person is asked before it runs unprotected.
+Proved on the laptop with a real Proton-GE run of a `.bat`: it could not read a canary file in the real home, saw only its
+own folder in `Z:\home\<user>`, and a file it "wrote" to the home never reached the real disk, while writing in its own
+folder worked. Not covered: it can use the network; no network switch yet; Game Mode does not reach in (no session bus);
+anti-cheat/DRM will not run; not tested with a heavy game, with AMD, or on a fresh install. Do **not** add
+`--die-with-parent`: the starter stops watching after 10 s and would kill the program.

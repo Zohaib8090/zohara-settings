@@ -2,7 +2,7 @@
 Type=Service
 Name=Zohara
 MimeType=application/x-ms-dos-executable;application/x-msdownload;application/x-msi;application/x-ms-shortcut;application/x-bat;
-Actions=zohara-proton;zohara-wine;zohara-dedicated;zohara-addgame;
+Actions=zohara-proton;zohara-wine;zohara-dedicated;zohara-safe;zohara-unsafe;zohara-addgame;
 X-KDE-Submenu=Zohara
 
 [Desktop Action zohara-proton]
@@ -19,6 +19,16 @@ Exec=/usr/bin/zohara-settings --run-windows %f --layer wine
 Name=Run on the dedicated graphics chip
 Icon=video-display
 Exec=/usr/bin/zohara-settings --run-windows %f --dedicated
+
+[Desktop Action zohara-safe]
+Name=Run in Safety mode
+Icon=security-high
+Exec=/usr/bin/zohara-settings --run-windows %f --safe
+
+[Desktop Action zohara-unsafe]
+Name=Run without Safety mode
+Icon=security-low
+Exec=/usr/bin/zohara-settings --run-windows %f --unsafe
 
 [Desktop Action zohara-addgame]
 Name=Add as a game

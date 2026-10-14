@@ -800,6 +800,24 @@ fn double_click_group(page: &gtk4::Box) -> adw::PreferencesGroup {
     ov.set_sensitive(has("mangohud"));
     ov.set_active(current.overlay && has("mangohud"));
 
+    let safe = adw::SwitchRow::new();
+    safe.set_title("Safety mode for unknown programs");
+    safe.set_subtitle("Programs that are not one of My games run in a protected space: they see an empty home folder, not your files, passwords or browser. It limits damage; it is not an antivirus, and anti-cheat games will not run in it.");
+    safe.set_subtitle_lines(0);
+    safe.set_active(windows_apps::sandbox_default());
+    safe.set_sensitive(crate::backend::windows_sandbox::available());
+    if !safe.is_sensitive() {
+        safe.set_subtitle("This computer can't make a protected space (bubblewrap is missing or blocked), so programs run without it.");
+    }
+    {
+        let page = page.clone();
+        safe.connect_active_notify(move |r| {
+            if let Err(e) = windows_apps::set_sandbox_default(r.is_active()) {
+                message(&page, "Couldn't save", &e);
+            }
+        });
+    }
+
     let cdrive = adw::ActionRow::new();
     cdrive.set_title("Windows C: drive");
     cdrive.set_subtitle("Where installers put programs. Open it to find an installed program and double-click it.");
@@ -861,7 +879,7 @@ fn double_click_group(page: &gtk4::Box) -> adw::PreferencesGroup {
         });
     }
 
-    for w in [on.upcast_ref::<gtk4::Widget>(), layer.upcast_ref(), dxvk.upcast_ref(), gpu.upcast_ref(), gm.upcast_ref(), ov.upcast_ref(), cdrive.upcast_ref()] {
+    for w in [on.upcast_ref::<gtk4::Widget>(), layer.upcast_ref(), dxvk.upcast_ref(), gpu.upcast_ref(), gm.upcast_ref(), ov.upcast_ref(), safe.upcast_ref(), cdrive.upcast_ref()] {
         g.add(w);
     }
     g

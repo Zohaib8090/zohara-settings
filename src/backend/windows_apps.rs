@@ -96,7 +96,27 @@ pub fn load() -> GameSettings {
 pub fn save(s: &GameSettings) -> Result<(), String> {
     let p = config_path();
     std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| e.to_string())?;
-    std::fs::write(&p, config_text(s)).map_err(|e| e.to_string())
+    // the Safety mode line is kept
+    let keep = sandbox_default();
+    std::fs::write(&p, format!("{}sandbox={keep}\n", config_text(s))).map_err(|e| e.to_string())
+}
+
+/// Safety mode for programs that are not one of My games: on unless the person turned it off.
+pub fn sandbox_in(text: &str) -> bool {
+    !text.lines().any(|l| l.trim() == "sandbox=false")
+}
+
+pub fn sandbox_default() -> bool {
+    std::fs::read_to_string(config_path()).map(|t| sandbox_in(&t)).unwrap_or(true)
+}
+
+pub fn set_sandbox_default(on: bool) -> Result<(), String> {
+    let p = config_path();
+    let text = std::fs::read_to_string(&p).unwrap_or_else(|_| config_text(&defaults()));
+    let mut lines: Vec<String> = text.lines().filter(|l| !l.trim().starts_with("sandbox=")).map(|l| l.to_string()).collect();
+    lines.push(format!("sandbox={on}"));
+    std::fs::create_dir_all(p.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(&p, lines.join("\n") + "\n").map_err(|e| e.to_string())
 }
 
 // ── Matching a double-clicked file to a game in My games ───────────────────
@@ -109,6 +129,8 @@ pub struct KnownGame {
     /// The program file that was added.
     pub path: String,
     pub settings: GameSettings,
+    /// Safety mode asked for by this game.
+    pub sandbox: bool,
 }
 
 /// The games in `dir` (the user's applications folder) that have settings.
@@ -121,7 +143,7 @@ pub fn known_games(dir: &Path) -> Vec<KnownGame> {
             let id = p.file_name()?.to_string_lossy().strip_prefix("zohara-game-")?.strip_suffix(".desktop")?.to_string();
             let text = std::fs::read_to_string(&p).ok()?;
             let (path, settings) = game_launch::parse_entry(&text)?;
-            Some(KnownGame { id, name: game_launch::entry_name(&text).unwrap_or_else(|| "this game".into()), path, settings })
+            Some(KnownGame { id, name: game_launch::entry_name(&text).unwrap_or_else(|| "this game".into()), path, settings, sandbox: game_launch::sandbox_of(&text) })
         })
         .collect();
     v.sort_by(|a, b| a.id.cmp(&b.id));
@@ -193,6 +215,33 @@ fn open_gaming_settings() {
     let _ = Command::new(exe).args(["--page", "Gaming"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
 }
 
+/// What Safety mode lets a program reach: its own Windows folders, Proton-GE, and its own program folder.
+pub fn sandbox_plan(path: &str, ctx: &Context) -> super::windows_sandbox::Plan {
+    let home = home();
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|_| {
+        use std::os::unix::fs::MetadataExt;
+        PathBuf::from(format!("/run/user/{}", std::fs::metadata("/proc/self").map(|m| m.uid()).unwrap_or(1000)))
+    });
+    let program_dir = Path::new(path).parent().unwrap_or(Path::new("/")).to_path_buf();
+    let wayland = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".into());
+    let mut writable = vec![ctx.prefix_dir.clone()];
+    if !ctx.wine_prefix.as_os_str().is_empty() {
+        writable.push(ctx.wine_prefix.clone());
+    }
+    super::windows_sandbox::Plan {
+        program_dir_writable: !too_broad(&program_dir, &home),
+        program_dir,
+        writable,
+        readable: ctx.proton_dir.iter().cloned().collect(),
+        empty_dirs: vec![ctx.steam_root.clone()],
+        no_network: false,
+        display_files: vec![std::env::var("XAUTHORITY").map(PathBuf::from).unwrap_or_else(|_| home.join(".Xauthority"))],
+        sockets: vec![runtime_dir.join(wayland), runtime_dir.join("pipewire-0"), runtime_dir.join("pulse")],
+        runtime_dir,
+        home,
+    }
+}
+
 /// The words that start `path`. `s` is the matched game's settings or the shared defaults. When Proton-GE is chosen but
 /// not installed, plain Wine is used and the second value says so.
 pub fn launch_words(path: &str, s: &GameSettings, ctx: &Context) -> Result<(Vec<String>, bool), String> {
@@ -234,6 +283,8 @@ pub fn prefixes_in(data: &Path, path: &str, game_id: &str) -> (PathBuf, PathBuf)
 pub struct Once {
     pub runner: Option<Runner>,
     pub dedicated: bool,
+    /// Safety mode for this start: Some(true) = on, Some(false) = off, None = as set.
+    pub sandbox: Option<bool>,
 }
 
 /// Reads `--layer proton|wine` and `--dedicated` from the command line.
@@ -243,7 +294,14 @@ pub fn once_from_args(args: &[String]) -> Once {
         "wine" => Some(Runner::Wine),
         _ => None,
     });
-    Once { runner, dedicated: args.iter().any(|a| a == "--dedicated") }
+    let sandbox = if args.iter().any(|a| a == "--safe") {
+        Some(true)
+    } else if args.iter().any(|a| a == "--unsafe") {
+        Some(false)
+    } else {
+        None
+    };
+    Once { runner, dedicated: args.iter().any(|a| a == "--dedicated"), sandbox }
 }
 
 /// `zohara-settings --run-windows FILE`: starts the program and returns at once (exit code for the file manager).
@@ -263,7 +321,7 @@ pub fn run_file_once(path: &str, once: &Once) -> i32 {
         Some(g) => {
             let (prefix, wine) = prefixes_for(path, &g.id);
             let ctx = Context::here(prefix, wine, g.settings.dedicated_gpu);
-            (g.settings.clone(), ctx, Some((g.id.clone(), g.name.clone())))
+            (g.settings.clone(), ctx, Some((g.id.clone(), g.name.clone(), g.sandbox)))
         }
         None => {
             let s = load();
@@ -291,15 +349,24 @@ pub fn run_file_once(path: &str, once: &Once) -> i32 {
     }
     // Proton needs this folder to exist even when there is no Steam.
     let _ = std::fs::create_dir_all(&ctx.steam_root);
-    let log_file = log_path(game.as_ref().map(|(id, _)| id.as_str()));
+    // Safety mode: a game of My games as that game chose, anything else as the shared setting says.
+    let mut sandboxed = once.sandbox.unwrap_or_else(|| game.as_ref().map(|(_, _, sb)| *sb).unwrap_or_else(sandbox_default));
+    if sandboxed && !super::windows_sandbox::available() {
+        if !notify_action("Safety mode isn't available", "This program would run inside a protected space, but this computer can't make one. Run it without protection?", "Run without it", 30) {
+            return 1;
+        }
+        sandboxed = false;
+    }
+    let words = if sandboxed { super::windows_sandbox::wrap(words, &sandbox_plan(path, &ctx)) } else { words };
+    let log_file = log_path(game.as_ref().map(|(id, _, _)| id.as_str()));
     let _ = std::fs::create_dir_all(log_file.parent().unwrap());
     let log = std::fs::File::create(&log_file).ok();
-    let label = game.as_ref().map(|(_, n)| n.clone()).unwrap_or_else(|| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+    let label = game.as_ref().map(|(_, n, _)| n.clone()).unwrap_or_else(|| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
     let mut cmd = Command::new(&words[0]);
     cmd.args(&words[1..]).current_dir(p.parent().unwrap_or(Path::new("/"))).stdin(Stdio::null());
     if let Some(mut l) = log {
         use std::io::Write;
-        let _ = writeln!(l, "Zohara: {} with {}", game.as_ref().map(|(_, n)| format!("game \"{n}\"")).unwrap_or_else(|| "shared defaults".into()), words.join(" "));
+        let _ = writeln!(l, "Zohara: {}{} with {}", game.as_ref().map(|(_, n, _)| format!("game \"{n}\"")).unwrap_or_else(|| "shared defaults".into()), if sandboxed { ", Safety mode" } else { "" }, words.join(" "));
         if let Ok(l2) = l.try_clone() {
             cmd.stdout(l).stderr(l2);
         }
@@ -323,7 +390,10 @@ pub fn run_file_once(path: &str, once: &Once) -> i32 {
         match child.try_wait() {
             Ok(Some(status)) => {
                 if failed_to_start(status.code(), started.elapsed().as_secs()) {
-                    let body = format!("{label} closed right away (error {}).", status.code().unwrap_or(-1));
+                    let mut body = format!("{label} closed right away (error {}).", status.code().unwrap_or(-1));
+                    if sandboxed {
+                        body.push_str(" Safety mode was on; some programs need it off (Settings > Gaming).");
+                    }
                     if notify_action("A Windows program did not start", &body, "Open the log", 30) {
                         open_log(&log_file);
                     }
@@ -525,7 +595,7 @@ mod tests {
     }
 
     fn game(id: &str, path: &str) -> KnownGame {
-        KnownGame { id: id.into(), name: id.into(), path: path.into(), settings: GameSettings { dedicated_gpu: true, ..defaults() } }
+        KnownGame { id: id.into(), name: id.into(), path: path.into(), settings: GameSettings { dedicated_gpu: true, ..defaults() }, sandbox: false }
     }
 
     #[test]
@@ -672,8 +742,8 @@ mod tests {
     #[test]
     fn the_right_click_choices_are_read_from_the_command_line() {
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(once_from_args(&a(&["x", "--run-windows", "f.exe", "--layer", "wine"])), Once { runner: Some(Runner::Wine), dedicated: false });
-        assert_eq!(once_from_args(&a(&["--dedicated"])), Once { runner: None, dedicated: true });
+        assert_eq!(once_from_args(&a(&["x", "--run-windows", "f.exe", "--layer", "wine"])), Once { runner: Some(Runner::Wine), dedicated: false, sandbox: None });
+        assert_eq!(once_from_args(&a(&["--dedicated"])), Once { runner: None, dedicated: true, sandbox: None });
         assert_eq!(once_from_args(&a(&["--layer", "bogus"])).runner, None);
     }
 

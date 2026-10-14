@@ -152,11 +152,14 @@ fn icon_for(file: &Path, path: &str, old_entry: &str) -> Option<String> {
 }
 
 /// Writes the game's desktop entry (new or changed) and refreshes the menu.
-fn save_game(file: &Path, name: &str, path: &str, settings: &GameSettings) -> Result<(), String> {
+fn save_game(file: &Path, name: &str, path: &str, settings: &GameSettings, sandbox: Option<bool>) -> Result<(), String> {
     let id = file.file_stem().map(|s| s.to_string_lossy().trim_start_matches("zohara-game-").to_string()).unwrap_or_default();
     let ctx = context_for(&id, path, settings);
+    let old = std::fs::read_to_string(file).unwrap_or_default();
     let mut text = game_launch::entry_text(name.trim(), path, settings, &ctx)?;
-    if let Some(icon) = icon_for(file, path, &std::fs::read_to_string(file).unwrap_or_default()) {
+    // Safety mode: what was chosen now, else what the game already had (off for a new game)
+    text = game_launch::with_sandbox(&text, sandbox.unwrap_or_else(|| game_launch::sandbox_of(&old)));
+    if let Some(icon) = icon_for(file, path, &old) {
         text = text.replacen("Icon=applications-games", &format!("Icon={icon}"), 1);
     }
     if settings.runner == Runner::Proton {
@@ -189,7 +192,7 @@ fn add_program(name: &str, path: &str, settings: &GameSettings) -> Result<(), St
     if id.is_empty() {
         return Err("Use letters or numbers in the name".into());
     }
-    save_game(&apps_dir().join(format!("zohara-game-{id}.desktop")), name, path, settings)
+    save_game(&apps_dir().join(format!("zohara-game-{id}.desktop")), name, path, settings, None)
 }
 
 /// The shared Windows-program settings for a game that is added with one click. Plain Wine until Proton-GE is installed.
@@ -489,6 +492,14 @@ fn settings_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box, file: &Pat
     for r in [name_row.clone().upcast::<gtk4::Widget>(), run_row.clone().upcast(), dxvk.clone().upcast(), gpu.clone().upcast(), gm.clone().upcast(), ov.clone().upcast(), options.clone().upcast(), env.clone().upcast()] {
         group.add(&r);
     }
+    let safe = adw::SwitchRow::new();
+    safe.set_title("Safety mode");
+    safe.set_subtitle("Run this game in a protected space: it sees an empty home folder, not your files, passwords or browser. Anti-cheat games will not run in it, and Game Mode does not reach into it.");
+    safe.set_subtitle_lines(0);
+    safe.set_active(std::fs::read_to_string(file).map(|t| game_launch::sandbox_of(&t)).unwrap_or(false));
+    safe.set_sensitive(game_launch::uses_wine(path, current.runner) && crate::backend::windows_sandbox::available());
+    group.add(&safe);
+
     let log_row = adw::ActionRow::new();
     log_row.set_title("What happened last time");
     log_row.set_subtitle("The game's own messages from its last start. Useful when it closes at once.");
@@ -517,7 +528,7 @@ fn settings_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box, file: &Pat
     c2.connect_clicked(move |_| w2.close());
     {
         let (win, holder, status, file, path) = (win.clone(), holder.clone(), status.clone(), file.to_path_buf(), path.to_string());
-        let (name_row, run_row, dxvk, gpu, gm, ov, options, env) = (name_row.clone(), run_row.clone(), dxvk.clone(), gpu.clone(), gm.clone(), ov.clone(), options.clone(), env.clone());
+        let (name_row, run_row, dxvk, gpu, gm, ov, options, env, safe) = (name_row.clone(), run_row.clone(), dxvk.clone(), gpu.clone(), gm.clone(), ov.clone(), options.clone(), env.clone(), safe.clone());
         save.connect_clicked(move |_| {
             let settings = GameSettings {
                 runner: Runner::ALL[(run_row.selected() as usize).min(Runner::ALL.len() - 1)],
@@ -534,7 +545,8 @@ fn settings_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box, file: &Pat
                 return;
             }
             let (win, holder, status) = (win.clone(), holder.clone(), status.clone());
-            in_background(move || save_game(&file, &name, &path, &settings), move |res| match res {
+            let sandbox = Some(safe.is_active());
+            in_background(move || save_game(&file, &name, &path, &settings, sandbox), move |res| match res {
                 Ok(()) => {
                     fill(&holder);
                     win.close();

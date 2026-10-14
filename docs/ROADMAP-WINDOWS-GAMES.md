@@ -74,7 +74,7 @@ Per-game log `~/.cache/zohara/windows/<id|shared>.log`; a program that exits wit
   Default ON for files that match no game. Starting point: the parked local branch `restricted-mode-wip`.
 * Honest limit: it limits damage, it is not an antivirus; anti-cheat and some DRM will not run inside it.
 
-### K. Per-game tools
+### K. Per-game tools  (BUILT 2026-10-14, alpha; "duplicate settings from another game" not done)
 Winetricks libraries, open the game's C: drive, reset its Windows folder, pick another Proton-GE version for this game.
 
 ### L. Later

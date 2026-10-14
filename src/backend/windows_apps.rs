@@ -131,6 +131,8 @@ pub struct KnownGame {
     pub settings: GameSettings,
     /// Safety mode asked for by this game.
     pub sandbox: bool,
+    /// A Proton-GE version chosen for this game (None = the newest).
+    pub proton_tag: Option<String>,
 }
 
 /// The games in `dir` (the user's applications folder) that have settings.
@@ -143,7 +145,7 @@ pub fn known_games(dir: &Path) -> Vec<KnownGame> {
             let id = p.file_name()?.to_string_lossy().strip_prefix("zohara-game-")?.strip_suffix(".desktop")?.to_string();
             let text = std::fs::read_to_string(&p).ok()?;
             let (path, settings) = game_launch::parse_entry(&text)?;
-            Some(KnownGame { id, name: game_launch::entry_name(&text).unwrap_or_else(|| "this game".into()), path, settings, sandbox: game_launch::sandbox_of(&text) })
+            Some(KnownGame { id, name: game_launch::entry_name(&text).unwrap_or_else(|| "this game".into()), path, settings, sandbox: game_launch::sandbox_of(&text), proton_tag: game_launch::proton_tag_of(&text) })
         })
         .collect();
     v.sort_by(|a, b| a.id.cmp(&b.id));
@@ -320,7 +322,10 @@ pub fn run_file_once(path: &str, once: &Once) -> i32 {
     let (mut s, mut ctx, game) = match match_game(path, &games, &home()) {
         Some(g) => {
             let (prefix, wine) = prefixes_for(path, &g.id);
-            let ctx = Context::here(prefix, wine, g.settings.dedicated_gpu);
+            let mut ctx = Context::here(prefix, wine, g.settings.dedicated_gpu);
+            if let Some(tag) = &g.proton_tag {
+                ctx.use_proton_tag(tag);
+            }
             (g.settings.clone(), ctx, Some((g.id.clone(), g.name.clone(), g.sandbox)))
         }
         None => {
@@ -595,7 +600,7 @@ mod tests {
     }
 
     fn game(id: &str, path: &str) -> KnownGame {
-        KnownGame { id: id.into(), name: id.into(), path: path.into(), settings: GameSettings { dedicated_gpu: true, ..defaults() }, sandbox: false }
+        KnownGame { id: id.into(), name: id.into(), path: path.into(), settings: GameSettings { dedicated_gpu: true, ..defaults() }, sandbox: false, proton_tag: None }
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub mod effects;
 pub mod equalizer;
 pub mod gpu;
 pub mod game_launch;
+pub mod game_tools;
 pub mod gpu_live;
 pub mod gpu_pref;
 pub mod health;

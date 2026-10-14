@@ -129,9 +129,21 @@ fn refresh_menu() {
 }
 
 /// What the launch line needs to know about this computer, for the game with this id and program file.
-fn context_for(id: &str, path: &str, settings: &GameSettings) -> Context {
+fn context_for(id: &str, path: &str, settings: &GameSettings, tag: Option<&str>) -> Context {
     let (prefix, wine) = crate::backend::windows_apps::prefixes_for(path, id);
-    Context::here(prefix, wine, settings.dedicated_gpu)
+    let mut ctx = Context::here(prefix, wine, settings.dedicated_gpu);
+    if let Some(t) = tag {
+        ctx.use_proton_tag(t);
+    }
+    ctx
+}
+
+/// Choices that live next to the game's settings in its entry. None = keep what the entry has.
+#[derive(Default)]
+struct Extras {
+    sandbox: Option<bool>,
+    /// Some(None) = back to the newest Proton-GE.
+    proton_tag: Option<Option<String>>,
 }
 
 /// The icon file for a game, when its program has one of its own. Made once, kept when the game is edited.
@@ -152,13 +164,18 @@ fn icon_for(file: &Path, path: &str, old_entry: &str) -> Option<String> {
 }
 
 /// Writes the game's desktop entry (new or changed) and refreshes the menu.
-fn save_game(file: &Path, name: &str, path: &str, settings: &GameSettings, sandbox: Option<bool>) -> Result<(), String> {
+fn save_game(file: &Path, name: &str, path: &str, settings: &GameSettings, extras: &Extras) -> Result<(), String> {
     let id = file.file_stem().map(|s| s.to_string_lossy().trim_start_matches("zohara-game-").to_string()).unwrap_or_default();
-    let ctx = context_for(&id, path, settings);
     let old = std::fs::read_to_string(file).unwrap_or_default();
+    let tag = match &extras.proton_tag {
+        Some(t) => t.clone(),
+        None => game_launch::proton_tag_of(&old),
+    };
+    let ctx = context_for(&id, path, settings, tag.as_deref());
     let mut text = game_launch::entry_text(name.trim(), path, settings, &ctx)?;
     // Safety mode: what was chosen now, else what the game already had (off for a new game)
-    text = game_launch::with_sandbox(&text, sandbox.unwrap_or_else(|| game_launch::sandbox_of(&old)));
+    text = game_launch::with_sandbox(&text, extras.sandbox.unwrap_or_else(|| game_launch::sandbox_of(&old)));
+    text = game_launch::with_proton_tag(&text, tag.as_deref());
     if let Some(icon) = icon_for(file, path, &old) {
         text = text.replacen("Icon=applications-games", &format!("Icon={icon}"), 1);
     }
@@ -192,7 +209,7 @@ fn add_program(name: &str, path: &str, settings: &GameSettings) -> Result<(), St
     if id.is_empty() {
         return Err("Use letters or numbers in the name".into());
     }
-    save_game(&apps_dir().join(format!("zohara-game-{id}.desktop")), name, path, settings, None)
+    save_game(&apps_dir().join(format!("zohara-game-{id}.desktop")), name, path, settings, &Extras::default())
 }
 
 /// The shared Windows-program settings for a game that is added with one click. Plain Wine until Proton-GE is installed.
@@ -281,6 +298,11 @@ fn found_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box) {
     );
 }
 
+/// The Proton-GE version pinned for the game with this id (read from its entry).
+fn tools_pin(id: &str) -> Option<String> {
+    std::fs::read_to_string(apps_dir().join(format!("zohara-game-{id}.desktop"))).ok().and_then(|t| game_launch::proton_tag_of(&t))
+}
+
 /// "Hades_II-setup.exe" -> "Hades II setup".
 fn name_from_file(path: &str) -> String {
     let stem = Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
@@ -363,7 +385,10 @@ fn fill(holder: &gtk4::Box) {
     for game in games {
         let r = adw::ActionRow::new();
         r.set_title(&glib::markup_escape_text(&game.name));
-        r.add_prefix(&gtk4::Image::from_icon_name(&game.icon));
+        // a game's own icon is a picture file; the others are icon names
+        let icon = if game.icon.starts_with('/') { gtk4::Image::from_file(&game.icon) } else { gtk4::Image::from_icon_name(&game.icon) };
+        icon.set_pixel_size(32);
+        r.add_prefix(&icon);
         let play = gtk4::Button::with_label("Play");
         play.add_css_class("suggested-action");
         play.set_valign(gtk4::Align::Center);
@@ -516,6 +541,152 @@ fn settings_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box, file: &Pat
     group.add(&log_row);
     page.add(&group);
 
+    // ── Tools for this game (Windows programs only) ──
+    let tools_tag: std::rc::Rc<std::cell::RefCell<Option<String>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(std::fs::read_to_string(file).ok().and_then(|t| game_launch::proton_tag_of(&t))));
+    if game_launch::uses_wine(path, current.runner) {
+        let id = file.file_stem().map(|s| s.to_string_lossy().trim_start_matches("zohara-game-").to_string()).unwrap_or_default();
+        let (prefix_dir, wine_dir) = crate::backend::windows_apps::prefixes_for(path, &id);
+        let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+        let data = std::env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|_| home.join(".local/share"));
+        let runner = if current.runner == Runner::Proton { Runner::Proton } else { Runner::Wine };
+        let wine_prefix = if runner == Runner::Proton {
+            prefix_dir.join("pfx")
+        } else if wine_dir.as_os_str().is_empty() {
+            home.join(".wine")
+        } else {
+            wine_dir.clone()
+        };
+
+        let tg = adw::PreferencesGroup::new();
+        tg.set_title("Tools for this game");
+
+        let versions = proton::installed();
+        let ver = adw::ComboRow::new();
+        ver.set_title("Proton-GE version");
+        ver.set_subtitle_lines(0);
+        let mut names: Vec<String> = vec!["Newest installed".into()];
+        names.extend(versions.iter().cloned());
+        if let Some(t) = tools_tag.borrow().as_ref().filter(|t| !versions.contains(t)) {
+            names.push(format!("{t} (not installed)"));
+        }
+        ver.set_model(Some(&gtk4::StringList::new(&names.iter().map(|s| s.as_str()).collect::<Vec<_>>())));
+        let at = tools_tag.borrow().as_ref().and_then(|t| versions.iter().position(|v| v == t).map(|i| i + 1)).unwrap_or(if tools_tag.borrow().is_some() { names.len() - 1 } else { 0 });
+        ver.set_selected(at as u32);
+        ver.set_subtitle("Some games only work with an older version. It is used the next time the game starts.");
+        ver.set_sensitive(runner == Runner::Proton && !versions.is_empty());
+        {
+            let (tools_tag, versions) = (tools_tag.clone(), versions.clone());
+            ver.connect_selected_notify(move |r| {
+                let i = r.selected() as usize;
+                if i == 0 {
+                    *tools_tag.borrow_mut() = None;
+                } else if let Some(v) = versions.get(i - 1) {
+                    *tools_tag.borrow_mut() = Some(v.clone());
+                }
+            });
+        }
+        tg.add(&ver);
+
+        let comp = adw::ComboRow::new();
+        comp.set_title("Add a Windows component");
+        comp.set_subtitle_lines(0);
+        comp.set_subtitle("For a game that asks for a missing file or shows no text or sound. Needs the internet.");
+        comp.set_model(Some(&gtk4::StringList::new(&crate::backend::game_tools::COMPONENTS.iter().map(|(_, l)| *l).collect::<Vec<_>>())));
+        let go = gtk4::Button::with_label("Install");
+        go.set_valign(gtk4::Align::Center);
+        comp.add_suffix(&go);
+        {
+            let (comp, wine_prefix, id) = (comp.clone(), wine_prefix.clone(), id.clone());
+            go.connect_clicked(move |b| {
+                let verb = crate::backend::game_tools::COMPONENTS[(comp.selected() as usize).min(crate::backend::game_tools::COMPONENTS.len() - 1)].0;
+                b.set_sensitive(false);
+                b.set_label("Installing…");
+                comp.set_subtitle("Working. This can take several minutes; the window can stay open.");
+                let proton_dir = Context::here(PathBuf::new(), PathBuf::new(), false).proton_dir;
+                let proton_dir = match tools_pin(&id) {
+                    Some(t) => {
+                        let mut c = Context::here(PathBuf::new(), PathBuf::new(), false);
+                        c.use_proton_tag(&t);
+                        c.proton_dir
+                    }
+                    None => proton_dir,
+                };
+                let log = crate::backend::windows_apps::log_path(Some(&format!("{id}-winetricks")));
+                let (wine_prefix, comp, b) = (wine_prefix.clone(), comp.clone(), b.clone());
+                in_background(
+                    move || crate::backend::game_tools::install_component(verb, runner, proton_dir.as_deref(), &wine_prefix, &log),
+                    move |res| {
+                        b.set_sensitive(true);
+                        b.set_label("Install");
+                        comp.set_subtitle(&match res {
+                            Ok(()) => format!("{verb} is installed."),
+                            Err(e) => e,
+                        });
+                    },
+                );
+            });
+        }
+        tg.add(&comp);
+
+        let cdrow = adw::ActionRow::new();
+        cdrow.set_title("Windows C: drive of this game");
+        cdrow.set_subtitle("Open it to look at saves, settings and what the game installed.");
+        let open = gtk4::Button::with_label("Open");
+        open.set_valign(gtk4::Align::Center);
+        cdrow.add_suffix(&open);
+        {
+            let wine_prefix = wine_prefix.clone();
+            open.connect_clicked(move |_| {
+                let c = wine_prefix.join("drive_c");
+                let target = if c.exists() { c } else { wine_prefix.clone() };
+                if target.exists() {
+                    let _ = Command::new("xdg-open").arg(target).spawn();
+                }
+            });
+        }
+        tg.add(&cdrow);
+
+        let private = crate::backend::game_tools::is_private_prefix(&prefix_dir, &data);
+        let reset = adw::ActionRow::new();
+        reset.set_title("Reset this game's Windows folder");
+        reset.set_subtitle(if private {
+            "Starts the game with a fresh Windows folder. Use it when a game stopped working after changes. Saves kept inside the Windows folder go to the trash with it."
+        } else {
+            "This game uses the shared Windows folder of double-clicked programs, which other programs use too, so it is not reset here."
+        });
+        reset.set_subtitle_lines(0);
+        let rbtn = gtk4::Button::with_label("Reset…");
+        rbtn.add_css_class("destructive-action");
+        rbtn.set_valign(gtk4::Align::Center);
+        rbtn.set_sensitive(private);
+        reset.add_suffix(&rbtn);
+        {
+            let (prefix_dir, data) = (prefix_dir.clone(), data.clone());
+            rbtn.connect_clicked(move |b| {
+                let d = adw::AlertDialog::new(Some("Reset this game's Windows folder?"), Some("It is moved to the trash, so it can still be taken back from there. The game itself is not touched."));
+                d.add_response("cancel", "Cancel");
+                d.add_response("reset", "Reset");
+                d.set_response_appearance("reset", adw::ResponseAppearance::Destructive);
+                let (prefix_dir, data, b2) = (prefix_dir.clone(), data.clone(), b.clone());
+                d.connect_response(None, move |_, resp| {
+                    if resp == "reset" {
+                        let (p, dd, b3) = (prefix_dir.clone(), data.clone(), b2.clone());
+                        in_background(move || crate::backend::game_tools::reset_prefix(&p, &dd), move |res| {
+                            b3.set_label(if res.is_ok() { "Done" } else { "Failed" });
+                            if let Err(e) = res {
+                                b3.set_tooltip_text(Some(&e));
+                            }
+                        });
+                    }
+                });
+                d.present(Some(b));
+            });
+        }
+        tg.add(&reset);
+        page.add(&tg);
+    }
+
     let status = gtk4::Label::new(None);
     status.set_wrap(true);
     status.set_halign(gtk4::Align::Start);
@@ -545,8 +716,8 @@ fn settings_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box, file: &Pat
                 return;
             }
             let (win, holder, status) = (win.clone(), holder.clone(), status.clone());
-            let sandbox = Some(safe.is_active());
-            in_background(move || save_game(&file, &name, &path, &settings, sandbox), move |res| match res {
+            let extras = Extras { sandbox: Some(safe.is_active()), proton_tag: Some(tools_tag.borrow().clone()) };
+            in_background(move || save_game(&file, &name, &path, &settings, &extras), move |res| match res {
                 Ok(()) => {
                     fill(&holder);
                     win.close();

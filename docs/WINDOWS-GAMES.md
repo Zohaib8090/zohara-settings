@@ -151,3 +151,11 @@ own folder in `Z:\home\<user>`, and a file it "wrote" to the home never reached 
 folder worked. Not covered: it can use the network; no network switch yet; Game Mode does not reach in (no session bus);
 anti-cheat/DRM will not run; not tested with a heavy game, with AMD, or on a fresh install. Do **not** add
 `--die-with-parent`: the starter stops watching after 10 s and would kill the program.
+
+## Tools for one game (2026-10-14)
+Gear window > "Tools for this game" (Windows programs only; `src/backend/game_tools.rs`): pick a Proton-GE version for this
+game (`X-Zohara-ProtonTag`, newest when unset); add a Windows component (vcrun2022/2019, d3dx9, corefonts, dotnet48, xact)
+with winetricks, using the **same Wine as the game** (Proton-GE's `files/bin/wine` for Proton, the system's for Wine);
+open the game's own C: drive; reset the game's own Windows folder (moved to the trash; refused for the shared one).
+Checked by hand: the exact winetricks command with GE-Proton11-9's Wine installed `corefonts` into a throwaway folder
+(exit 0). The window itself was seen in the test container; Install/Reset were not pressed there.

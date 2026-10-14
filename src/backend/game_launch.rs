@@ -23,6 +23,7 @@ const KEY_DEDICATED: &str = "X-Zohara-Dedicated";
 const KEY_OPTIONS: &str = "X-Zohara-Options";
 const KEY_ENV: &str = "X-Zohara-Env";
 pub const KEY_SANDBOX: &str = "X-Zohara-Sandbox";
+pub const KEY_PROTON_TAG: &str = "X-Zohara-ProtonTag";
 pub const MARK: &str = "X-Zohara-Game=true";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,6 +95,13 @@ pub struct Context {
 }
 
 impl Context {
+    /// Use this Proton-GE version (when it is installed) instead of the newest.
+    pub fn use_proton_tag(&mut self, tag: &str) {
+        if let Some(d) = super::proton::tool_dirs().into_iter().map(|d| d.join(tag)).find(|p| p.join("proton").exists()) {
+            self.proton_dir = Some(d);
+        }
+    }
+
     /// This computer: the newest Proton-GE installed for the repository Steam, the given Windows folder, and the
     /// stronger chip's variables when they are wanted.
     pub fn here(prefix_dir: PathBuf, wine_prefix: PathBuf, dedicated: bool) -> Context {
@@ -335,6 +343,20 @@ pub fn with_sandbox(text: &str, on: bool) -> String {
     }
 }
 
+/// The Proton-GE version this game was pinned to (None = the newest installed).
+pub fn proton_tag_of(text: &str) -> Option<String> {
+    value_of(text, KEY_PROTON_TAG).filter(|t| super::proton::valid_tag(t))
+}
+
+/// The entry with its Proton-GE line set (None = removed).
+pub fn with_proton_tag(text: &str, tag: Option<&str>) -> String {
+    let mut lines: Vec<String> = text.lines().filter(|l| !l.starts_with(&format!("{KEY_PROTON_TAG}="))).map(|l| l.to_string()).collect();
+    if let Some(t) = tag {
+        lines.push(format!("{KEY_PROTON_TAG}={t}"));
+    }
+    lines.join("\n") + "\n"
+}
+
 /// The `Name=` of a desktop entry.
 pub fn entry_name(text: &str) -> Option<String> {
     value_of(text, "Name")
@@ -490,5 +512,17 @@ mod tests {
         assert!(!sandbox_of(&off));
         assert_eq!(off.matches(KEY_SANDBOX).count(), 1);
         assert!(parse_entry(&on).is_some(), "the entry still reads back");
+    }
+
+    #[test]
+    fn a_pinned_proton_version_is_kept_in_the_entry() {
+        let t = entry_text("G", "/g/a.exe", &GameSettings::default(), &Context::default()).unwrap();
+        assert_eq!(proton_tag_of(&t), None);
+        let pinned = with_proton_tag(&t, Some("GE-Proton9-5"));
+        assert_eq!(proton_tag_of(&pinned).as_deref(), Some("GE-Proton9-5"));
+        assert_eq!(proton_tag_of(&with_proton_tag(&pinned, Some("GE-Proton10-1"))).as_deref(), Some("GE-Proton10-1"));
+        assert_eq!(proton_tag_of(&with_proton_tag(&pinned, None)), None);
+        assert_eq!(proton_tag_of("[Desktop Entry]\nX-Zohara-ProtonTag=../../x\n"), None, "only a real version name");
+        assert!(parse_entry(&pinned).is_some());
     }
 }

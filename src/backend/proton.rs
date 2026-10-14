@@ -31,9 +31,19 @@ fn pkg_installed(pkg: &str) -> bool {
     Command::new("pacman").args(["-Qq", pkg]).output().map(|o| o.status.success()).unwrap_or(false)
 }
 
-/// Steam from the repositories (not the Flatpak) is installed, which is what makes this computer ready.
+/// The 32-bit tools are installed (winetricks comes from the same setup), which is what makes this computer ready.
+/// Steam itself is not required: the double-click path never uses it.
 pub fn support_ready() -> bool {
-    multilib_on() && pkg_installed("steam")
+    multilib_on() && pkg_installed("winetricks")
+}
+
+/// How to start Steam: the repository one, else the Flatpak one, else none.
+pub fn steam_command() -> Option<(&'static str, Vec<&'static str>)> {
+    if pkg_installed("steam") {
+        return Some(("steam", vec![]));
+    }
+    let flat = Command::new("flatpak").args(["info", "com.valvesoftware.Steam"]).output().map(|o| o.status.success()).unwrap_or(false);
+    flat.then(|| ("flatpak", vec!["run", "com.valvesoftware.Steam"]))
 }
 
 /// Script for the one-click setup. Exit codes: 6 = updates are waiting (see `explain_exit`).
@@ -66,7 +76,10 @@ if [ -e /etc/lsb-release ] && ! pacman -Qo /etc/lsb-release >/dev/null 2>&1; the
   OVER="--overwrite /etc/lsb-release"
 fi
 RC=0
-pacman -S --needed --noconfirm $OVER steam lutris winetricks lib32-gamemode lib32-mangohud $LIBS || RC=$?
+# One Steam only: skip the repository Steam when the Flatpak Steam is already there.
+STEAM=steam
+if flatpak list --app --columns=application 2>/dev/null | grep -qx com.valvesoftware.Steam; then STEAM=; fi
+pacman -S --needed --noconfirm $OVER $STEAM lutris winetricks lib32-gamemode lib32-mangohud $LIBS || RC=$?
 if [ -e "$KEEP" ]; then mv -f "$KEEP" /etc/lsb-release; fi
 if [ "$RC" -ne 0 ]; then exit "$RC"; fi
 pacman -S --needed --noconfirm protonup-qt || true
@@ -388,7 +401,7 @@ mod tests {
     fn the_setup_script_is_valid_and_safe() {
         let s = support_script();
         assert!(Command::new("sh").args(["-n", "-c", &s]).status().unwrap().success());
-        assert!(s.contains("steam lutris winetricks"));
+        assert!(s.contains("lutris winetricks"));
         assert!(s.contains("--overwrite /etc/lsb-release"), "Zohara's own lsb-release must not block Lutris");
         assert!(s.contains("mv -f \"$KEEP\" /etc/lsb-release"), "and is put back");
         assert!(s.contains(&format!("exit {EXIT_UPDATES_WAITING}")));

@@ -7,7 +7,7 @@ layer, options) is managed from Settings, for NVIDIA, AMD and Intel.
 What exists today is in `WINDOWS-GAMES.md`. Everything below is **not built yet** unless it says so.
 
 ## Done (alpha only; nothing promoted to stable as of 2026-10-14)
-* Gaming > Windows games: one-click support (multilib, Steam, Lutris, winetricks, 32-bit drivers), Proton-GE download/update/
+* Gaming > Windows games: one-click support (multilib, Lutris, winetricks, 32-bit drivers), Proton-GE download/update/
   remove, ProtonUp-Qt. Gaming > Graphics in use: live load/memory/temperature per chip and which app is on which chip.
 * My games: `.bat/.cmd/.msi/.lnk`, "Run with" (Automatic / Wine / Proton-GE / file itself), gear window per game (DXVK, graphics
   chip, Game Mode, MangoHud, options, variables).
@@ -15,53 +15,66 @@ What exists today is in `WINDOWS-GAMES.md`. Everything below is **not built yet*
   and Windows folder (match by file, then folder). Verified on the owner's laptop with Cities: Skylines (log says
   `game "City Skylines"`, own prefix, NVIDIA chip, Game Mode and MangoHud on).
 
-## Next, in this order
+## Build order (re-arranged 2026-10-14, after the owner asked for Steam, Flatpak and Java games to be covered)
+Order of work: each step is small, goes to alpha only, and ends with a stated test result.
 
-### 1. On by default after install  (do first; needs a VM test)
+### A. Steam cleanup  (first; quick)
+* The setup button must not create a second Steam: install Arch `steam` only when no Flatpak Steam exists. (Owner removed
+  the Flathub Steam on 2026-10-14 and keeps the Arch one; Proton-GE goes into whichever Steam folder exists.)
+* Check that Steam lists Proton-GE in its compatibility menu (never verified).
+
+### B. Read-only check with a Flatpak/Steam game running  (no code changes)
+* "Graphics in use": are Flatpak/Steam games named correctly (sandbox names like `bwrap`)? Fix the name mapping.
+
+### C. Per-game settings for Steam games  (gear button)
+* Read installed Steam games (`libraryfolders.vdf`, `appmanifest_*.acf`) for the Arch Steam and, if present, the Flatpak Steam.
+* Show them in My games with the same gear. Saving writes the game's launch options (`localconfig.vdf`, e.g.
+  `gamemoderun mangohud %command%` plus chip variables). Steam must be closed while writing; Settings asks for that.
+
+### D. Flatpak apps
+* Chip choice per Flatpak app with `flatpak override --user --env=...`.
+* One-click install of the Flatpak MangoHud and Game Mode extensions.
+* Live view maps sandbox process names to the app name.
+
+### E. Heroic and Lutris games
+* One small adapter each (Heroic per-game JSON, Lutris `.yml`) to list games and write the same settings.
+
+### F. Java games (Minecraft, Modrinth/Prism/ATLauncher)  (new, from the owner's report)
+* Gaming > Java: list installed Javas (and the ones launchers bring themselves, e.g. Modrinth's Zulu 25), show which version
+  each Minecraft version needs (1.21+ Java 21, 1.18-1.20.4 Java 17, older Java 8), install/switch with `archlinux-java`,
+  warn when a launcher's Java is too old for the profile.
+* Chip choice and Game Mode for Minecraft launchers (Flatpak override or launcher env).
+* First ask the owner for the actual error from the launcher log; do not guess.
+
+### G. On by default after install  (needs a VM test)
 Today the double-click switch is off, and when turned on it writes `Exec=` with whatever binary was running (the test build in
 `/tmp` on the owner's laptop). A fresh Zohara must work without anyone finding the switch.
 * Ship `zohara-windows.desktop` in the `zohara-settings` package (`/usr/share/applications`, `Exec=/usr/bin/zohara-settings
-  --run-windows %f`) and make it the default for the six Windows MIME types system-wide (`/usr/share/applications/mimeapps.list`
-  or the KDE-supported defaults file; check which one Plasma 6 honours and that it beats `wine.desktop`).
-* The switch becomes "on unless the person turned it off"; turning it off still only writes the person's own `mimeapps.list`.
-* `set_enabled(true)` must prefer `/usr/bin/zohara-settings` (done only when it exists and the running binary is not in `/tmp`).
-* Proton-GE is not preinstalled (565 MB). On first double-click without it: today a notification and plain Wine. Better: a
-  dialog "Install Proton-GE now?" with progress, then run.
-* Test in the VM (`scripts/vm/vm.py`; `~/zohara-vm` does not exist now, create one): fresh install, double-click a harmless
-  `.bat`, `.exe`, `.msi`.
-* Not building an ISO unless the owner asks (rule); multilib is already on in the ISO profile.
+  --run-windows %f`) and make it the default for the six Windows MIME types system-wide (check which defaults file Plasma 6
+  honours and that it beats `wine.desktop`).
+* The switch becomes "on unless the person turned it off"; `set_enabled(true)` prefers `/usr/bin/zohara-settings`.
+* Proton-GE is not preinstalled (565 MB). On first double-click without it: dialog "Install Proton-GE now?" with progress.
+* VM test (`scripts/vm/vm.py`; `~/zohara-vm` does not exist now): fresh install, double-click a harmless `.bat`, `.exe`, `.msi`.
 
-### 2. Say when a game fails  (small; do with 1)
-* Per-game log: `~/.cache/zohara/windows/<game or shared>.log` (today one shared `windows-run.log`, overwritten each run).
-* Watch the started process: if it exits within ~10 s with a non-zero code, notify "<game> closed right away. Open the log?"
-  with an action that opens the log. Keep the first log line `Zohara: game "<name>" with …`.
-* Settings: "Show log" button in the gear window.
+### H. Say when a game fails  (small; do with G)
+* Per-game log `~/.cache/zohara/windows/<game or shared>.log`; notify "<game> closed right away. Open the log?" if the process
+  exits within ~10 s with a non-zero code; "Show log" button in the gear window.
 
-### 3. Finding installed programs and icons
-* After a setup `.exe`, Proton makes no menu entries. Watch `drive_c/Program Files*` and `drive_c/users/*/AppData` of the shared
-  and per-game Windows folders; offer "Add these to My games?" (notification action or a "New programs" row).
-* Right-click service menu on `.exe`/`.bat`: "Run with Zohara…" (pick layer/chip for this launch) and "Add as a game".
-* Real icons: extract from the `.exe` (`wrestool`/`icotool` from icoutils) into `~/.local/share/icons/hicolor/…`.
+### I. Finding installed programs and icons
+* Watch `drive_c/Program Files*` after a setup `.exe`, offer "Add these to My games?"; right-click "Run with Zohara…" and
+  "Add as a game"; extract real icons from the `.exe` (icoutils).
 
-### 4. Safety for unknown programs  (important; double-click lowers the barrier)
-Wine and Proton can read and delete everything in the person's home. The owner already ran a cracked-game archive.
-* Sandbox option (bubblewrap): program sees only its own Windows folder, the game folder and a "Windows Documents" folder;
-  no network optional. Default ON for files that match no game in My games; per-game switch for games.
-* Starting point: the parked local branch `restricted-mode-wip` in `zohara-settings` (not pushed; see
-  `zohara-os-state-2026-10-13.md` memory). Check what it already does before writing new code.
-* Honest limit to tell the person: it limits damage, it is not an antivirus; anti-cheat and some DRM will not run inside it.
+### J. Safety for unknown programs  (important; double-click lowers the barrier)
+* bubblewrap sandbox: only its own Windows folder, the game folder and a "Windows Documents" folder; no-network option.
+  Default ON for files that match no game. Starting point: the parked local branch `restricted-mode-wip`.
+* Honest limit: it limits damage, it is not an antivirus; anti-cheat and some DRM will not run inside it.
 
-### 5. Per-game tools in the gear window
-Winetricks libraries (vcredist, dotnet, corefonts), open the game's C: drive, reset its Windows folder, choose another Proton-GE
-version for this game (today: newest installed), duplicate settings from another game.
+### K. Per-game tools
+Winetricks libraries, open the game's C: drive, reset its Windows folder, pick another Proton-GE version for this game.
 
-### 6. Later
-* **Driver management** (earlier item 3): install/switch NVIDIA open vs proprietary and the AMD Vulkan drivers, with warnings;
-  VM-test first, never on the owner's laptop first.
-* **GPU tuning** (earlier item 4): power limit, fan curve, gamescope/FSR upscaling and frame limit. Riskier; VM-test.
-* Proton-GE update notice (notify only, never automatic; honour the update pause).
-* Matching a Steam/Heroic/Lutris game's own settings (today only My games has the gear).
-* Controller setup and per-game MangoHud presets.
+### L. Later
+Driver management (NVIDIA open vs proprietary, AMD Vulkan; VM first), GPU tuning (power limit, fans, gamescope/FSR, frame
+limit; VM first), Proton-GE update notice (notify only), controller setup, per-game MangoHud presets.
 
 ## Known gaps in what is built
 * The double-click switch is per user and points at one binary path (see 1).

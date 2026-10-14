@@ -560,11 +560,12 @@ fn windows_group(page: &gtk4::Box) -> adw::PreferencesGroup {
         Rc::new(move || {
             let ready = proton::support_ready();
             support.set_subtitle(if ready {
-                "Ready: 32-bit libraries, Steam, Lutris and winetricks are installed."
+                "Ready: 32-bit libraries, Lutris and winetricks are installed."
             } else {
-                "Not set up. Turns on 32-bit libraries and installs Steam, Lutris and winetricks. Asks for your password."
+                "Not set up. Turns on 32-bit libraries and installs Lutris and winetricks (and Steam, if you have none). Asks for your password."
             });
             sbtn.set_label(if ready { "Open Steam" } else { "Set up" });
+            sbtn.set_visible(!ready || proton::steam_command().is_some());
             if ready { sbtn.remove_css_class("suggested-action") } else { sbtn.add_css_class("suggested-action") }
             sbtn.set_sensitive(!busy.get());
 
@@ -613,7 +614,9 @@ fn windows_group(page: &gtk4::Box) -> adw::PreferencesGroup {
         let (page, support, refresh_fn, busy) = (page.clone(), support.clone(), refresh_fn.clone(), busy.clone());
         sbtn.connect_clicked(move |b| {
             if proton::support_ready() {
-                let _ = Command::new("steam").spawn();
+                if let Some((prog, args)) = proton::steam_command() {
+                    let _ = Command::new(prog).args(args).spawn();
+                }
                 return;
             }
             busy.set(true);

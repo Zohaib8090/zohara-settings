@@ -223,6 +223,84 @@ fn render_remote(ui: &Rc<Ui>, remote: Option<zl::Remote>, ts: Option<zl::TsInfo>
     ui.remote_btn.set_sensitive(true);
 }
 
+/// Game streaming: the video stream from this computer to the phone (see zohara-link/docs/STREAMING.md). Two buttons: install what it
+/// needs, and let the desktop share the screen with it once.
+fn streaming_group() -> adw::PreferencesGroup {
+    let g = adw::PreferencesGroup::new();
+    g.set_title("Game streaming");
+    g.set_description(Some("Watch and play this computer on the phone: live video with a game controller. A phone may only use it when you allow \"Show the screen\" and \"Control the mouse\" for it above."));
+
+    let row = adw::ActionRow::new();
+    row.set_title("Video stream");
+    row.set_subtitle_lines(0);
+    let btn = gtk4::Button::with_label("Set up game streaming");
+    btn.add_css_class("suggested-action");
+    btn.set_valign(gtk4::Align::Center);
+    row.add_suffix(&btn);
+    g.add(&row);
+
+    let share = adw::ActionRow::new();
+    share.set_title("Screen sharing");
+    share.set_subtitle("The desktop asks once whether Zohara Link may share the screen. Press Allow, then press Share in the window that appears.");
+    share.set_subtitle_lines(0);
+    let share_btn = gtk4::Button::with_label("Allow screen sharing");
+    share_btn.set_valign(gtk4::Align::Center);
+    share.add_suffix(&share_btn);
+    g.add(&share);
+
+    let refresh: Rc<dyn Fn()> = {
+        let (row, btn, share_btn) = (row.clone(), btn.clone(), share_btn.clone());
+        Rc::new(move || {
+            let st = zl::streaming_state();
+            if st.missing.is_empty() {
+                row.set_subtitle(&format!("Ready. Video encoder: {}.", st.encoders.join(", ")));
+                btn.set_visible(false);
+                share_btn.set_sensitive(true);
+            } else {
+                row.set_subtitle(&format!("Not set up. Missing: {}. Setting up installs the video parts (about 100 MB) and asks for your password.", st.missing.join(", ")));
+                btn.set_visible(true);
+                btn.set_sensitive(true);
+                share_btn.set_sensitive(false);
+            }
+        })
+    };
+    refresh();
+    {
+        let (refresh, row) = (refresh.clone(), row.clone());
+        btn.connect_clicked(move |b| {
+            b.set_sensitive(false);
+            row.set_subtitle("Installing… you may be asked for your password.");
+            let (refresh, row, b) = (refresh.clone(), row.clone(), b.clone());
+            in_background(zl::install_streaming, move |res| {
+                if let Err(e) = res {
+                    message(&b, "Game streaming could not be set up", if e.is_empty() { "Something went wrong. Try again." } else { &e });
+                }
+                let _ = &row;
+                refresh();
+            });
+        });
+    }
+    {
+        let share = share.clone();
+        share_btn.connect_clicked(move |b| {
+            b.set_sensitive(false);
+            share.set_subtitle("Waiting for you to press Share in the desktop's window…");
+            let (b, share) = (b.clone(), share.clone());
+            in_background(zl::grant_screen, move |res| {
+                b.set_sensitive(true);
+                match res {
+                    Ok(()) => share.set_subtitle("Allowed. It is remembered, so the desktop does not ask again."),
+                    Err(e) => {
+                        share.set_subtitle("The desktop asks once whether Zohara Link may share the screen. Press Allow, then press Share in the window that appears.");
+                        message(&b, "Screen sharing was not allowed", &e);
+                    }
+                }
+            });
+        });
+    }
+    g
+}
+
 fn rebuild_devices(ui: &Rc<Ui>, devices: &[zl::Device]) {
     for row in ui.device_rows.borrow_mut().drain(..) {
         ui.devices_group.remove(&row);
@@ -411,6 +489,7 @@ pub fn build() -> gtk4::Widget {
     clip_row.add_suffix(&clip_btn);
     actions_group.add(&clip_row);
     details.append(&actions_group);
+    details.append(&streaming_group());
     root.append(&details);
 
     let ui = Rc::new(Ui {

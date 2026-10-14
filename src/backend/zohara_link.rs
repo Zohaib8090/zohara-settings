@@ -261,6 +261,81 @@ pub fn remote() -> Option<Remote> {
     parse_remote(&request_within(&json!({"command": "GET_REMOTE"}), 6)?)
 }
 
+// ── Game streaming (the live video stream; see zohara-link/docs/STREAMING.md) ──
+
+/// What is installed for game streaming, judged by GStreamer's plugin files.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StreamingState {
+    /// Things that must exist and do not (empty = ready).
+    pub missing: Vec<&'static str>,
+    /// The video encoders found, best first.
+    pub encoders: Vec<&'static str>,
+}
+
+/// Plugin files in `dir` -> what is missing and which encoders exist.
+pub fn streaming_state_in(dir: &std::path::Path) -> StreamingState {
+    let has = |f: &str| dir.join(f).exists();
+    let mut missing = Vec::new();
+    if !has("libgstwebrtc.so") || !has("libgstnice.so") {
+        missing.push("WebRTC (gst-plugins-bad)");
+    }
+    if !has("libgstpipewire.so") {
+        missing.push("screen capture (gst-plugin-pipewire)");
+    }
+    if !has("libgstrtp.so") {
+        missing.push("RTP (gst-plugins-good)");
+    }
+    let mut encoders = Vec::new();
+    if has("libgstva.so") {
+        encoders.push("Intel/AMD hardware (VA-API)");
+    }
+    if has("libgstnvcodec.so") {
+        encoders.push("NVIDIA (NVENC)");
+    }
+    if has("libgstx264.so") {
+        encoders.push("software (x264)");
+    }
+    if encoders.is_empty() {
+        missing.push("a video encoder (gst-plugin-va or gst-plugins-ugly)");
+    }
+    StreamingState { missing, encoders }
+}
+
+pub fn streaming_state() -> StreamingState {
+    let mut st = streaming_state_in(std::path::Path::new("/usr/lib/gstreamer-1.0"));
+    if !std::path::Path::new("/usr/bin/zohara-linkd-stream").exists() {
+        st.missing.insert(0, "the stream program (update Zohara Link)");
+    }
+    st
+}
+
+/// The packages the "Set up game streaming" button installs.
+pub const STREAMING_PACKAGES: [&str; 6] = ["gst-plugins-base", "gst-plugins-good", "gst-plugins-bad", "gst-plugins-ugly", "gst-plugin-pipewire", "gst-plugin-va"];
+
+pub fn install_streaming() -> Result<(), String> {
+    // Uses the package lists already on the computer (a bare `pacman -Sy` is never safe on Arch).
+    let mut c = Command::new("pkexec");
+    c.args(["pacman", "-S", "--needed", "--noconfirm"]).args(STREAMING_PACKAGES);
+    run(&mut c).map_err(|e| {
+        if e.contains("target not found") {
+            "A package is not in your update channel yet. Update the system first (Settings > Zohara Update).".to_string()
+        } else {
+            e
+        }
+    })
+}
+
+/// Asks the desktop to share the screen with Zohara Link once (the desktop shows its own Share button). Remembered afterwards.
+pub fn grant_screen() -> Result<(), String> {
+    let out = Command::new("zohara-linkd-stream").arg("--grant-screen").stdin(Stdio::null()).output().map_err(|_| "The stream program is not installed. Update Zohara Link first.".to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let t = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+        Err(t.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("Screen sharing was not allowed.").trim().to_string())
+    }
+}
+
 // ── Tailscale itself (asked directly: the sign-in must not depend on the daemon's answers) ──
 
 /// What `tailscale status --json` says about this computer.
@@ -584,5 +659,22 @@ mod real_tailscale {
             assert_eq!(super::ts_login(), super::Login::SignedIn);
             println!("LOGIN while signed in: SignedIn (nothing started)");
         }
+    }
+
+    #[test]
+    fn streaming_readiness_is_read_from_the_plugin_files() {
+        let d = std::env::temp_dir().join(format!("zs-gst-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let none = streaming_state_in(&d);
+        assert_eq!(none.missing.len(), 4);
+        assert!(none.encoders.is_empty());
+        for f in ["libgstwebrtc.so", "libgstnice.so", "libgstpipewire.so", "libgstrtp.so", "libgstx264.so"] {
+            std::fs::write(d.join(f), "").unwrap();
+        }
+        let ready = streaming_state_in(&d);
+        assert!(ready.missing.is_empty(), "{:?}", ready.missing);
+        assert_eq!(ready.encoders, vec!["software (x264)"]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

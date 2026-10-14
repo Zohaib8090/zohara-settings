@@ -110,3 +110,12 @@ recommended / Wine), DXVK, stronger graphics chip, Game Mode, MangoHud, and "Win
   created the Proton prefix with GE-Proton11-9 and the .bat wrote its result next to itself.
 * Known limits: Proton turns off Wine's start-menu shortcuts, so an installed program is found through "Windows C: drive";
   anti-cheat games do not run; a game that needs Steam itself (Steam DRM) still needs Steam.
+
+### A double-click follows the game's own settings (2026-10-14)
+`--run-windows FILE` first looks for a game in My games (`known_games`, `match_game` in `backend/windows_apps.rs`): the game
+whose added file is `FILE`, else the game whose folder holds `FILE` (closest folder wins). A game added from a broad folder
+(home, `/`, Downloads, Desktop, Documents, Music, Pictures, Videos, Public) matches by its exact file only. A matched game
+runs with its own gear settings and its own Windows folder (`~/.local/share/zohara/prefixes/<game>`), the same as its Play
+button; anything else uses the shared defaults and shared C: drive. The first line of `~/.cache/zohara/windows-run.log` says
+which one was used (`game "<name>"` or `shared defaults`). Verified with the real GE-Proton11-9: a different `.bat` in a
+registered game's folder ran with that game's Proton + dedicated-chip variables and its own prefix.

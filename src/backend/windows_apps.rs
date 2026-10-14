@@ -99,14 +99,67 @@ pub fn save(s: &GameSettings) -> Result<(), String> {
     std::fs::write(&p, config_text(s)).map_err(|e| e.to_string())
 }
 
+// ── Matching a double-clicked file to a game in My games ───────────────────
+
+/// A game added in Gaming > My games, as far as matching needs it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KnownGame {
+    pub id: String,
+    pub name: String,
+    /// The program file that was added.
+    pub path: String,
+    pub settings: GameSettings,
+}
+
+/// The games in `dir` (the user's applications folder) that have settings.
+pub fn known_games(dir: &Path) -> Vec<KnownGame> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut v: Vec<KnownGame> = rd
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            let id = p.file_name()?.to_string_lossy().strip_prefix("zohara-game-")?.strip_suffix(".desktop")?.to_string();
+            let text = std::fs::read_to_string(&p).ok()?;
+            let (path, settings) = game_launch::parse_entry(&text)?;
+            Some(KnownGame { id, name: game_launch::entry_name(&text).unwrap_or_else(|| "this game".into()), path, settings })
+        })
+        .collect();
+    v.sort_by(|a, b| a.id.cmp(&b.id));
+    v
+}
+
+/// Folders that hold many unrelated programs: a game added from one of them matches by its own file only.
+fn too_broad(dir: &Path, home: &Path) -> bool {
+    dir == Path::new("/")
+        || dir == home
+        || ["Downloads", "Desktop", "Documents", "Music", "Pictures", "Videos", "Public"].iter().any(|d| dir == home.join(d))
+}
+
+/// Which game a double-clicked `file` belongs to: the game whose added file it is, else the one whose folder holds it
+/// (the closest folder wins; a broad folder like Downloads never matches by folder).
+pub fn match_game<'a>(file: &str, games: &'a [KnownGame], home: &Path) -> Option<&'a KnownGame> {
+    if let Some(g) = games.iter().find(|g| g.path == file) {
+        return Some(g);
+    }
+    let f = Path::new(file);
+    games
+        .iter()
+        .filter_map(|g| {
+            let dir = Path::new(&g.path).parent()?;
+            (!too_broad(dir, home) && f.starts_with(dir)).then_some((dir.components().count(), g))
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, g)| g)
+}
+
 // ── Running a double-clicked program ───────────────────────────────────────
 
 fn notify(title: &str, body: &str) {
     let _ = Command::new("notify-send").args(["-a", "Zohara", "-i", "applications-games", title, body]).status();
 }
 
-/// The words that start `path` with the chosen defaults. When Proton-GE is chosen but not installed, plain Wine is used
-/// and the second value says so.
+/// The words that start `path`. `s` is the matched game's settings or the shared defaults. When Proton-GE is chosen but
+/// not installed, plain Wine is used and the second value says so.
 pub fn launch_words(path: &str, s: &GameSettings, ctx: &Context) -> Result<(Vec<String>, bool), String> {
     let mut s = s.clone();
     let mut fell_back = false;
@@ -114,7 +167,7 @@ pub fn launch_words(path: &str, s: &GameSettings, ctx: &Context) -> Result<(Vec<
         s.runner = Runner::Wine;
         fell_back = true;
     }
-    if s.runner != Runner::Proton {
+    if s.runner == Runner::Auto {
         s.runner = Runner::Wine; // a double-clicked Windows file always goes to a Windows layer
     }
     Ok((game_launch::argv(path, &s, ctx)?, fell_back))
@@ -127,8 +180,19 @@ pub fn run_file(path: &str) -> i32 {
         notify("Can't open this Windows program", &format!("{path} was not found."));
         return 1;
     }
-    let s = load();
-    let ctx = Context::here(proton_folder(), wine_folder(), s.dedicated_gpu);
+    // A game from My games keeps its own settings and its own Windows folder, the same as its Play button.
+    let games = known_games(&data_home().join("applications"));
+    let (s, ctx, game) = match match_game(path, &games, &home()) {
+        Some(g) => {
+            let ctx = Context::here(data_home().join("zohara/prefixes").join(&g.id), PathBuf::new(), g.settings.dedicated_gpu);
+            (g.settings.clone(), ctx, Some(g.name.clone()))
+        }
+        None => {
+            let s = load();
+            let ctx = Context::here(proton_folder(), wine_folder(), s.dedicated_gpu);
+            (s, ctx, None)
+        }
+    };
     let (words, fell_back) = match launch_words(path, &s, &ctx) {
         Ok(w) => w,
         Err(e) => {
@@ -139,8 +203,10 @@ pub fn run_file(path: &str) -> i32 {
     if fell_back {
         notify("Running with Wine", "Proton-GE isn't installed yet, so plain Wine is used. Install it in Settings > Gaming > Windows games.");
     }
-    let _ = std::fs::create_dir_all(proton_folder());
-    let _ = std::fs::create_dir_all(wine_folder());
+    let _ = std::fs::create_dir_all(&ctx.prefix_dir);
+    if !ctx.wine_prefix.as_os_str().is_empty() {
+        let _ = std::fs::create_dir_all(&ctx.wine_prefix);
+    }
     // Proton needs this folder to exist even when there is no Steam.
     let _ = std::fs::create_dir_all(&ctx.steam_root);
     let log_dir = std::env::var("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|_| home().join(".cache")).join("zohara");
@@ -148,7 +214,9 @@ pub fn run_file(path: &str) -> i32 {
     let log = std::fs::File::create(log_dir.join("windows-run.log")).ok();
     let mut cmd = Command::new(&words[0]);
     cmd.args(&words[1..]).current_dir(p.parent().unwrap_or(Path::new("/"))).stdin(Stdio::null());
-    if let Some(l) = log {
+    if let Some(mut l) = log {
+        use std::io::Write;
+        let _ = writeln!(l, "Zohara: {} with {}", game.as_deref().map(|n| format!("game \"{n}\"")).unwrap_or_else(|| "shared defaults".into()), words.join(" "));
         if let Ok(l2) = l.try_clone() {
             cmd.stdout(l).stderr(l2);
         }
@@ -250,6 +318,61 @@ mod tests {
             gpu_env: Vec::new(),
             wine_prefix: PathBuf::from("/h/.local/share/zohara/windows-wine"),
         }
+    }
+
+    fn game(id: &str, path: &str) -> KnownGame {
+        KnownGame { id: id.into(), name: id.into(), path: path.into(), settings: GameSettings { dedicated_gpu: true, ..defaults() } }
+    }
+
+    #[test]
+    fn a_double_clicked_file_finds_its_game_by_file_then_by_folder() {
+        let home = Path::new("/home/me");
+        let games = vec![
+            game("city", "/home/me/Games/City/Run Me!.bat"),
+            game("city-mod", "/home/me/Games/City/Mods/Tool.bat"),
+            game("dl", "/home/me/Downloads/setup.exe"),
+        ];
+        // the exact file that was added
+        assert_eq!(match_game("/home/me/Games/City/Run Me!.bat", &games, home).unwrap().id, "city");
+        // another program in the game's folder
+        assert_eq!(match_game("/home/me/Games/City/Cities_Skylines/Cities.exe", &games, home).unwrap().id, "city");
+        // the closest folder wins
+        assert_eq!(match_game("/home/me/Games/City/Mods/x/y.exe", &games, home).unwrap().id, "city-mod");
+        // a folder like Downloads only matches the exact file
+        assert_eq!(match_game("/home/me/Downloads/setup.exe", &games, home).unwrap().id, "dl");
+        assert!(match_game("/home/me/Downloads/other.exe", &games, home).is_none());
+        // a different game's folder with a similar name does not match
+        assert!(match_game("/home/me/Games/City2/a.exe", &games, home).is_none());
+        assert!(match_game("/anywhere/a.exe", &[], home).is_none());
+    }
+
+    #[test]
+    fn games_are_read_from_their_desktop_entries() {
+        let dir = std::env::temp_dir().join(format!("zs-known-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let s = GameSettings { runner: Runner::Proton, dedicated_gpu: true, ..defaults() };
+        let text = game_launch::entry_text("City Skylines", "/g/City/Run Me!.bat", &s, &Context::default());
+        std::fs::write(dir.join("zohara-game-city-skylines.desktop"), text.unwrap_or_else(|_| {
+            // Proton is not installed in the test: build the entry with Wine, then mark it as Proton
+            let t = game_launch::entry_text("City Skylines", "/g/City/Run Me!.bat", &GameSettings { runner: Runner::Wine, dedicated_gpu: true, ..defaults() }, &Context::default()).unwrap();
+            t.replace("X-Zohara-Runner=wine", "X-Zohara-Runner=proton")
+        })).unwrap();
+        std::fs::write(dir.join("other.desktop"), "[Desktop Entry]\nName=Other\nX-Zohara-Game=true\n").unwrap(); // marked app: no settings
+        let g = known_games(&dir);
+        assert_eq!(g.len(), 1);
+        assert_eq!((g[0].id.as_str(), g[0].name.as_str(), g[0].path.as_str()), ("city-skylines", "City Skylines", "/g/City/Run Me!.bat"));
+        assert!(g[0].settings.dedicated_gpu && g[0].settings.runner == Runner::Proton);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_matched_game_uses_its_own_windows_folder_and_chip() {
+        let g = game("city", "/g/City/Run Me!.bat");
+        let c = Context { prefix_dir: PathBuf::from("/h/.local/share/zohara/prefixes/city"), gpu_env: vec![("__NV_PRIME_RENDER_OFFLOAD".into(), "1".into())], ..ctx(true) };
+        let (w, _) = launch_words("/g/City/Cities.exe", &g.settings, &c).unwrap();
+        assert!(w.contains(&"STEAM_COMPAT_DATA_PATH=/h/.local/share/zohara/prefixes/city".to_string()));
+        assert!(w.contains(&"__NV_PRIME_RENDER_OFFLOAD=1".to_string()));
     }
 
     #[test]

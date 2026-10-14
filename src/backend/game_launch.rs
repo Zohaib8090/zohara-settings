@@ -311,6 +311,11 @@ fn value_of(text: &str, key: &str) -> Option<String> {
     None
 }
 
+/// The `Name=` of a desktop entry.
+pub fn entry_name(text: &str) -> Option<String> {
+    value_of(text, "Name")
+}
+
 /// The program file and settings of a game this page wrote. None for an installed app that was only marked as a game.
 pub fn parse_entry(text: &str) -> Option<(String, GameSettings)> {
     let file = unesc(&value_of(text, KEY_FILE)?);

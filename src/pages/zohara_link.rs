@@ -39,7 +39,9 @@ struct Ui {
     first_address: RefCell<String>,
     remote_row: adw::ActionRow,
     remote_btn: gtk4::Button,
-    /// What the remote button does now: 0 nothing, 1 set up Tailscale, 2 sign in.
+    /// The sign-in page of a login that is waiting, so the button can open it again without starting another.
+    auth_url: RefCell<String>,
+    /// What the remote button does now: 0 nothing, 1 set up Tailscale, 2 sign in, 3 sign out, 4 turn on.
     remote_action: Cell<u8>,
     pair_row: adw::ActionRow,
     pair_btn: gtk4::Button,
@@ -78,12 +80,13 @@ fn refresh(ui: &Rc<Ui>) {
             let identity = if status.is_some() { zl::identity() } else { None };
             let addresses = if status.is_some() { zl::local_addresses() } else { Vec::new() };
             let remote = if status.is_some() { zl::remote() } else { None };
-            (installed, status, identity, addresses, remote)
+            let ts = if status.is_some() { zl::ts_status() } else { None };
+            (installed, status, identity, addresses, remote, ts)
         },
-        move |(installed, status, identity, addresses, remote)| {
+        move |(installed, status, identity, addresses, remote, ts)| {
             ui2.refreshing.set(false);
             render(&ui2, installed, status, identity, addresses);
-            render_remote(&ui2, remote);
+            render_remote(&ui2, remote, ts);
         },
     );
 }
@@ -169,26 +172,47 @@ fn render(ui: &Rc<Ui>, installed: bool, status: Option<zl::Status>, identity: Op
 
 /// "Away from home": shows the overlay addresses (Tailscale and the like) the phone can use outside the home Wi-Fi, or the one button
 /// that gets the person there.
-fn render_remote(ui: &Rc<Ui>, remote: Option<zl::Remote>) {
+fn render_remote(ui: &Rc<Ui>, remote: Option<zl::Remote>, ts: Option<zl::TsInfo>) {
     let Some(r) = remote else { return };
-    if !r.overlays.is_empty() {
+    // Tailscale's own answer is trusted over the daemon's: it comes from the same moment.
+    let state = ts.as_ref().map(|t| t.state.clone()).unwrap_or_else(|| r.tailscale_state.clone());
+    *ui.auth_url.borrow_mut() = ts.as_ref().map(|t| t.auth_url.clone()).unwrap_or_default();
+    let tailscale_up = state == "Running";
+    if !r.overlays.is_empty() || tailscale_up {
         let lines: Vec<String> = r
             .overlays
             .iter()
             .map(|o| if o.dns_name.is_empty() { format!("{} · {}", o.address, o.provider) } else { format!("{} · {} ({})", o.address, o.provider, o.dns_name) })
             .collect();
         ui.remote_row.set_title("Away from home: ready");
+        let provider = r.overlays.first().map(|o| o.provider.clone()).unwrap_or_else(|| "Tailscale".into());
         ui.remote_row.set_subtitle(&format!(
-            "{}\nA phone you paired at home reaches this computer through this address when it is on the same {} account, with no extra steps.",
+            "{}{}A phone you paired at home reaches this computer through this address when it is on the same {} account, with no extra steps.",
             lines.join("\n"),
-            r.overlays[0].provider
+            if lines.is_empty() { "" } else { "\n" },
+            provider
         ));
-        ui.remote_action.set(0);
+        if tailscale_up {
+            ui.remote_btn.set_label("Sign out");
+            ui.remote_action.set(3);
+        } else {
+            ui.remote_action.set(0);
+        }
     } else if !r.tailscale_installed {
         ui.remote_row.set_title("Away from home: not set up");
         ui.remote_row.set_subtitle("Install Tailscale here, and the Tailscale app on the phone with the same account, and Zohara Link works from any network. ZeroTier, NetBird and WireGuard are found automatically if you already use them.");
         ui.remote_btn.set_label("Set up Tailscale");
         ui.remote_action.set(1);
+    } else if state == "Stopped" {
+        ui.remote_row.set_title("Away from home: turned off");
+        ui.remote_row.set_subtitle("You are signed in to Tailscale, but it is switched off on this computer.");
+        ui.remote_btn.set_label("Turn on");
+        ui.remote_action.set(4);
+    } else if !ui.auth_url.borrow().is_empty() {
+        ui.remote_row.set_title("Away from home: finish signing in");
+        ui.remote_row.set_subtitle("Waiting for you to sign in in the browser. This page updates by itself when you are done. If the page did not open, press the button.");
+        ui.remote_btn.set_label("Open the sign-in page");
+        ui.remote_action.set(2);
     } else {
         ui.remote_row.set_title("Away from home: sign in");
         ui.remote_row.set_subtitle("Tailscale is installed but not connected. Sign in with the same account the phone uses.");
@@ -400,6 +424,7 @@ pub fn build() -> gtk4::Widget {
         first_address: RefCell::new(String::new()),
         remote_row,
         remote_btn: remote_btn.clone(),
+        auth_url: RefCell::new(String::new()),
         remote_action: Cell::new(0),
         pair_row,
         pair_btn: pair_btn.clone(),
@@ -440,28 +465,78 @@ pub fn build() -> gtk4::Widget {
         remote_btn.connect_clicked(move |b| {
             b.set_sensitive(false);
             let ui3 = ui2.clone();
-            if ui2.remote_action.get() == 1 {
-                ui2.remote_row.set_subtitle("Installing Tailscale… you may be asked for your password.");
-                in_background(zl::install_tailscale, move |res| {
-                    if let Err(e) = res {
-                        tell(&ui3, "Tailscale could not be set up", if e.is_empty() { "Something went wrong. Try again." } else { &e });
-                    }
-                    ui3.remote_btn.set_sensitive(true);
-                    refresh(&ui3);
-                });
-            } else {
-                ui2.remote_row.set_subtitle("Asking Tailscale for the sign-in page…");
-                in_background(zl::remote_login, move |url| {
-                    match url {
-                        Some(u) => {
-                            let _ = gtk4::gio::AppInfo::launch_default_for_uri(&u, None::<&gtk4::gio::AppLaunchContext>);
-                            tell(&ui3, "Sign in to Tailscale", "The sign-in page opened in your browser. This page updates by itself once you are signed in.");
+            match ui2.remote_action.get() {
+                1 => {
+                    ui2.remote_row.set_subtitle("Installing Tailscale… you may be asked for your password.");
+                    in_background(zl::install_tailscale, move |res| {
+                        if let Err(e) = res {
+                            tell(&ui3, "Tailscale could not be set up", if e.is_empty() { "Something went wrong. Try again." } else { &e });
                         }
-                        None => tell(&ui3, "No sign-in page", "Tailscale did not give a sign-in link. It may already be signed in; wait a moment, or try again."),
+                        ui3.remote_btn.set_sensitive(true);
+                        refresh(&ui3);
+                    });
+                }
+                2 => {
+                    // a sign-in that is already waiting is opened again, not restarted
+                    let waiting = ui2.auth_url.borrow().clone();
+                    if waiting.starts_with("https://") {
+                        let _ = gtk4::gio::AppInfo::launch_default_for_uri(&waiting, None::<&gtk4::gio::AppLaunchContext>);
+                        ui2.remote_btn.set_sensitive(true);
+                        return;
                     }
-                    ui3.remote_btn.set_sensitive(true);
-                    refresh(&ui3);
-                });
+                    ui2.remote_row.set_subtitle("Asking Tailscale for the sign-in page…");
+                    in_background(zl::ts_login, move |res| {
+                        match res {
+                            zl::Login::Url(u) => {
+                                let _ = gtk4::gio::AppInfo::launch_default_for_uri(&u, None::<&gtk4::gio::AppLaunchContext>);
+                            }
+                            zl::Login::SignedIn => {}
+                            zl::Login::Failed(e) => tell(&ui3, "Couldn't sign in", &e),
+                        }
+                        ui3.remote_btn.set_sensitive(true);
+                        refresh(&ui3);
+                    });
+                }
+                3 => {
+                    // signing out stops phones reaching this computer from outside, so it is asked first
+                    let d = adw::AlertDialog::new(
+                        Some("Sign out of Tailscale?"),
+                        Some("This computer leaves your Tailscale account. A phone can then only reach it on the home Wi-Fi until you sign in again. Tailscale stays installed."),
+                    );
+                    d.add_response("cancel", "Cancel");
+                    d.add_response("out", "Sign out");
+                    d.set_response_appearance("out", adw::ResponseAppearance::Destructive);
+                    let ui4 = ui3.clone();
+                    d.connect_response(None, move |_, resp| {
+                        if resp != "out" {
+                            ui4.remote_btn.set_sensitive(true);
+                            return;
+                        }
+                        ui4.remote_row.set_subtitle("Signing out…");
+                        let ui5 = ui4.clone();
+                        in_background(zl::ts_logout, move |res| {
+                            if let Err(e) = res {
+                                tell(&ui5, "Couldn't sign out", &e);
+                            }
+                            ui5.remote_btn.set_sensitive(true);
+                            refresh(&ui5);
+                        });
+                    });
+                    if let Some(page) = ui3.page.upgrade() {
+                        d.present(Some(&page));
+                    }
+                }
+                4 => {
+                    ui2.remote_row.set_subtitle("Turning on…");
+                    in_background(zl::ts_up, move |res| {
+                        if let Err(e) = res {
+                            tell(&ui3, "Couldn't turn Tailscale on", &e);
+                        }
+                        ui3.remote_btn.set_sensitive(true);
+                        refresh(&ui3);
+                    });
+                }
+                _ => b.set_sensitive(true),
             }
         });
     }

@@ -261,11 +261,118 @@ pub fn remote() -> Option<Remote> {
     parse_remote(&request_within(&json!({"command": "GET_REMOTE"}), 6)?)
 }
 
-/// Asks Tailscale for its sign-in link (it can take several seconds). `None` when it printed none.
-pub fn remote_login() -> Option<String> {
-    let v = request_within(&json!({"command": "REMOTE_LOGIN"}), 25)?;
-    let url = text(&v, "loginUrl");
-    if url.starts_with("https://") { Some(url) } else { None }
+// ── Tailscale itself (asked directly: the sign-in must not depend on the daemon's answers) ──
+
+/// What `tailscale status --json` says about this computer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TsInfo {
+    /// `Running`, `NeedsLogin`, `Stopped`, `Starting`, `NoState` …
+    pub state: String,
+    /// The sign-in page of a login that is in progress (empty when none).
+    pub auth_url: String,
+}
+
+pub fn parse_ts_status(json_text: &str) -> Option<TsInfo> {
+    let v: Value = serde_json::from_str(json_text).ok()?;
+    Some(TsInfo { state: text(&v, "BackendState"), auth_url: text(&v, "AuthURL") })
+}
+
+/// None = Tailscale is not installed or its service is not running.
+pub fn ts_status() -> Option<TsInfo> {
+    let out = Command::new("tailscale").args(["status", "--json"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    // `status` exits non-zero while signed out but still prints the JSON
+    parse_ts_status(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// How a sign-in request ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Login {
+    /// Open this page in the browser.
+    Url(String),
+    SignedIn,
+    Failed(String),
+}
+
+fn tailscale_up_running() -> bool {
+    std::fs::read_dir("/proc")
+        .map(|rd| {
+            rd.flatten().any(|e| {
+                std::fs::read(e.path().join("cmdline"))
+                    .map(|c| {
+                        let words: Vec<String> = c.split(|b| *b == 0).map(|w| String::from_utf8_lossy(w).to_string()).collect();
+                        words.first().map(|w| w.ends_with("tailscale")).unwrap_or(false) && words.get(1).map(|w| w == "up" || w == "login").unwrap_or(false)
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Gets the sign-in page. A sign-in that is already waiting is reused: starting a second one makes Tailscale throw the
+/// first page away ("auth path not found"), which is what happened when the button was pressed twice.
+pub fn ts_login() -> Login {
+    let mut error_file: Option<PathBuf> = None;
+    let mut started = false;
+    for _ in 0..50 {
+        match ts_status() {
+            Some(t) if t.state == "Running" => return Login::SignedIn,
+            Some(t) if !t.auth_url.is_empty() => return Login::Url(t.auth_url),
+            None if started => {}
+            None => return Login::Failed("Tailscale is not running. Turn it on first: the Tailscale service (tailscaled) is stopped.".into()),
+            _ => {}
+        }
+        if !started && !tailscale_up_running() {
+            let path = std::env::temp_dir().join(format!("zohara-tailscale-up-{}.txt", std::process::id()));
+            let err = std::fs::File::create(&path).ok();
+            let mut cmd = Command::new("tailscale");
+            cmd.args(["up", "--timeout=300s"]).stdin(Stdio::null()).stdout(Stdio::null());
+            match err {
+                Some(f) => cmd.stderr(f),
+                None => cmd.stderr(Stdio::null()),
+            };
+            match cmd.spawn() {
+                Ok(mut child) => {
+                    std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                    error_file = Some(path);
+                }
+                Err(e) => return Login::Failed(format!("Couldn't start Tailscale ({e}).")),
+            }
+        }
+        started = true;
+        std::thread::sleep(Duration::from_millis(500));
+        // it stopped with an error and no page: say why
+        if let Some(path) = &error_file {
+            if !tailscale_up_running() {
+                let t = std::fs::read_to_string(path).unwrap_or_default();
+                if let Some(u) = t.split_whitespace().find(|w| w.starts_with("https://")) {
+                    return Login::Url(u.to_string());
+                }
+                if let Some(t2) = ts_status() {
+                    if t2.state == "Running" {
+                        return Login::SignedIn;
+                    }
+                }
+                let msg = t.trim();
+                if !msg.is_empty() {
+                    let _ = std::fs::remove_file(path);
+                    return Login::Failed(msg.lines().last().unwrap_or(msg).to_string());
+                }
+            }
+        }
+    }
+    Login::Failed("Tailscale did not give a sign-in page in time. Press Sign in again.".into())
+}
+
+/// Signs this computer out of its Tailscale account (it stays installed).
+pub fn ts_logout() -> Result<(), String> {
+    run(Command::new("tailscale").arg("logout")).map_err(|e| if e.is_empty() { "Tailscale did not sign out.".into() } else { e })
+}
+
+/// Turns Tailscale on again when it is signed in but switched off.
+pub fn ts_up() -> Result<(), String> {
+    run(Command::new("tailscale").args(["up", "--timeout=20s"])).map_err(|e| if e.is_empty() { "Tailscale did not turn on.".into() } else { e })
 }
 
 /// Installs Tailscale (administrator prompt), starts it, and lets this user control it so the sign-in button needs no password.
@@ -333,6 +440,15 @@ mod tests {
         assert_eq!(s.devices[1].name, "Unknown phone");
         assert!(s.pairing_open);
         assert_eq!(s.pending, vec![Pending { name: "New phone".into(), pin: "123456".into() }]);
+    }
+
+    #[test]
+    fn tailscale_status_is_read() {
+        let t = parse_ts_status(r#"{"BackendState":"NeedsLogin","AuthURL":"https://login.tailscale.com/a/abc"}"#).unwrap();
+        assert_eq!((t.state.as_str(), t.auth_url.as_str()), ("NeedsLogin", "https://login.tailscale.com/a/abc"));
+        let r = parse_ts_status(r#"{"BackendState":"Running","AuthURL":""}"#).unwrap();
+        assert_eq!((r.state.as_str(), r.auth_url.as_str()), ("Running", ""));
+        assert!(parse_ts_status("not json").is_none());
     }
 
     #[test]
@@ -453,5 +569,20 @@ mod tests {
         assert!(status().is_none());
         assert!(!command_ok(json!({"command": "OPEN_PAIRING"})));
         std::env::remove_var("ZOHARA_LINK_SOCKET");
+    }
+}
+
+#[cfg(test)]
+mod real_tailscale {
+    /// `cargo test real_tailscale -- --ignored --nocapture` on a computer with Tailscale: reads only (no sign-in is started when signed in).
+    #[test]
+    #[ignore]
+    fn real_tailscale_state() {
+        let t = super::ts_status();
+        println!("STATUS {t:?}");
+        if t.as_ref().map(|t| t.state == "Running").unwrap_or(false) {
+            assert_eq!(super::ts_login(), super::Login::SignedIn);
+            println!("LOGIN while signed in: SignedIn (nothing started)");
+        }
     }
 }

@@ -45,3 +45,19 @@ connected ids, `pairing_open`, `pending_pairings`), `GET_IDENTITY` (name, port, 
 * Compile-checked in a container with libadwaita 1.5 by lowering the feature to `v1_5` in a scratch copy (see `GOTCHA.md` in the `zohara` repo).
 * Run against the real daemon in Xvfb and screenshotted through a whole pairing (PIN shown, phone listed as connected, mouse switch off).
 * **Not tested:** the Set up button (needs `zohara-linkd` on the update channel and a password prompt), the page on a real Plasma desktop.
+
+## Tailscale sign-in and sign-out (2026-10-14 fix)
+Bug report: "Sign in" showed "No sign-in page", the browser opened, and after signing in the page still asked to sign in.
+Cause found in the owner's `tailscaled` log: the first request timed out after 15 s, so the button was pressed again; a second
+`tailscale up` makes Tailscale discard the first sign-in page (`register request: http 410: auth path not found`). The page
+also only trusted the daemon's overlay list, not Tailscale's own state.
+Now (`backend/zohara_link.rs`, `pages/zohara_link.rs`), Settings talks to `tailscale` itself:
+* the state comes from `tailscale status --json` (`Running` / `NeedsLogin` / `Stopped`);
+* a sign-in that is waiting is **reused** (the `AuthURL` in the status, or an already running `tailscale up`); a second one is
+  never started; the page is polled for up to 25 s;
+* while a sign-in is waiting the row says so and the button opens that same page again;
+* **Sign out** button when signed in (asks first; `tailscale logout`), and **Turn on** when signed in but switched off;
+* real errors from `tailscale up` are shown instead of a generic message.
+Checked on the owner's laptop (already signed in): the state is read and a sign-in request returns "signed in" without
+starting anything. NOT exercised: a real sign-in and a real sign-out (that would have signed the owner out of their own
+Tailscale).

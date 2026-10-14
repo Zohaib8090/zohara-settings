@@ -1,5 +1,7 @@
 # Windows games (Settings > Gaming > Windows games), 2026-10-14
 
+> What comes next: `ROADMAP-WINDOWS-GAMES.md`. Everything here is on the **alpha** channel only.
+
 Owner's ask: Windows games that work out of the box, with Proton-GE and ProtonUp-Qt built into the OS, inside the
 existing Gaming page (not a page of its own).
 

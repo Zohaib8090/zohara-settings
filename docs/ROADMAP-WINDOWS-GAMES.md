@@ -18,7 +18,7 @@ What exists today is in `WINDOWS-GAMES.md`. Everything below is **not built yet*
 ## Build order (re-arranged 2026-10-14, after the owner asked for Steam, Flatpak and Java games to be covered)
 Order of work: each step is small, goes to alpha only, and ends with a stated test result.
 
-### A. Steam cleanup  (first; quick)
+### A. Steam cleanup  (DONE 2026-10-14, alpha)
 * The setup button must not create a second Steam: install Arch `steam` only when no Flatpak Steam exists. (Owner removed
   the Flathub Steam on 2026-10-14 and keeps the Arch one; Proton-GE goes into whichever Steam folder exists.)
 * Check that Steam lists Proton-GE in its compatibility menu (never verified).
@@ -26,7 +26,10 @@ Order of work: each step is small, goes to alpha only, and ends with a stated te
 ### B. Read-only check with a Flatpak/Steam game running  (no code changes)
 * "Graphics in use": are Flatpak/Steam games named correctly (sandbox names like `bwrap`)? Fix the name mapping.
 
-### C. Per-game settings for Steam games  (gear button)
+### C. Per-game settings for Steam games  (gear button)  (BUILT 2026-10-14, alpha; tested on a fake library only)
+Code: `src/backend/steam_games.rs` (VDF parser/writer, game list, launch options, Proton-GE per game, backup
+`*.zohara-backup`, refuses while Steam runs), `src/pages/steam_settings.rs` (window), gear on Gaming > Your games > Steam.
+Not yet tried on a real Steam game; Flatpak Steam hides Game Mode/MangoHud (step D). Original plan:
 * Read installed Steam games (`libraryfolders.vdf`, `appmanifest_*.acf`) for the Arch Steam and, if present, the Flatpak Steam.
 * Show them in My games with the same gear. Saving writes the game's launch options (`localconfig.vdf`, e.g.
   `gamemoderun mangohud %command%` plus chip variables). Steam must be closed while writing; Settings asks for that.

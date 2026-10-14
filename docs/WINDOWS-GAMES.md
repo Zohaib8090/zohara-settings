@@ -122,3 +122,10 @@ runs with its own gear settings and its own Windows folder (`~/.local/share/zoha
 button; anything else uses the shared defaults and shared C: drive. The first line of `~/.cache/zohara/windows-run.log` says
 which one was used (`game "<name>"` or `shared defaults`). Verified with the real GE-Proton11-9: a different `.bat` in a
 registered game's folder ran with that game's Proton + dedicated-chip variables and its own prefix.
+
+## Steam games (2026-10-14)
+Gaming > Your games > Steam: each game has a gear. It edits Steam's own files (`userdata/<id>/config/localconfig.vdf`
+launch options, `config/config.vdf` Proton tool), only while Steam is closed, and keeps a `.zohara-backup` copy of each
+file the first time. Launch options look like `env DRI_PRIME=1 FOO=bar gamemoderun mangohud %command% -windowed`;
+options Zohara did not write are shown and only replaced when the person saves. Tested with a fake library in the
+container (list, round trip, Save writes the file); not with a real Steam game yet.

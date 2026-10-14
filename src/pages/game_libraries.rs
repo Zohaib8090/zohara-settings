@@ -16,6 +16,8 @@ pub struct Game {
     pub name: String,
     /// The command that starts it.
     pub launch: Vec<String>,
+    /// Steam games only: what the settings window needs to change their launch options.
+    pub steam: Option<crate::backend::steam_games::SteamGame>,
 }
 
 fn home() -> PathBuf {
@@ -70,19 +72,19 @@ fn steam_roots() -> Vec<PathBuf> {
 }
 
 fn steam_games() -> Vec<Game> {
-    let mut libs: Vec<PathBuf> = Vec::new();
+    let mut libs: Vec<(PathBuf, PathBuf)> = Vec::new();
     let mut flatpak_only = true;
     for root in steam_roots() {
         let Ok(text) = std::fs::read_to_string(root.join("steamapps/libraryfolders.vdf")) else { continue };
         if !root.to_string_lossy().contains(".var/app") {
             flatpak_only = false;
         }
-        libs.push(root.clone());
-        libs.extend(library_paths(&text).into_iter().map(PathBuf::from));
+        libs.push((root.clone(), root.clone()));
+        libs.extend(library_paths(&text).into_iter().map(|l| (PathBuf::from(l), root.clone())));
     }
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for lib in libs {
+    for (lib, root) in libs {
         let Ok(rd) = std::fs::read_dir(lib.join("steamapps")) else { continue };
         for e in rd.flatten() {
             let f = e.file_name().to_string_lossy().to_string();
@@ -99,7 +101,9 @@ fn steam_games() -> Vec<Game> {
             } else {
                 vec!["xdg-open".into(), url]
             };
-            out.push(Game { launcher: "Steam", name, launch });
+            let flatpak = root.to_string_lossy().contains(".var/app");
+            let steam = Some(crate::backend::steam_games::SteamGame { appid: id.clone(), name: name.clone(), root: crate::backend::steam_games::SteamRoot { path: root.clone(), flatpak } });
+            out.push(Game { launcher: "Steam", name, launch, steam });
         }
     }
     out
@@ -177,7 +181,7 @@ fn lutris_games() -> Vec<Game> {
             let mut launch = start.clone();
             launch.push(format!("lutris:rungame/{slug}"));
             if !out.iter().any(|g: &Game| g.launcher == "Lutris" && g.name == name) {
-                out.push(Game { launcher: "Lutris", name, launch });
+                out.push(Game { launcher: "Lutris", name, launch, steam: None });
             }
         }
     }
@@ -223,7 +227,7 @@ fn heroic_games() -> Vec<Game> {
         let mut add = |runner: &str, list: Vec<(String, String)>| {
             for (app, title) in list {
                 if !out.iter().any(|g: &Game| g.launcher == "Heroic" && g.name == title) {
-                    out.push(Game { launcher: "Heroic", name: title, launch: vec!["xdg-open".into(), format!("heroic://launch/{runner}/{app}")] });
+                    out.push(Game { launcher: "Heroic", name: title, launch: vec!["xdg-open".into(), format!("heroic://launch/{runner}/{app}")], steam: None });
                 }
             }
         };
@@ -310,6 +314,14 @@ fn show(holder: &gtk4::Box, games: Vec<Game>) {
                     let _ = Command::new(prog).args(args).spawn();
                 }
             });
+            if let Some(sg) = game.steam.clone() {
+                let gear = gtk4::Button::from_icon_name("emblem-system-symbolic");
+                gear.set_valign(gtk4::Align::Center);
+                gear.set_tooltip_text(Some("Settings for this game"));
+                gear.update_property(&[gtk4::accessible::Property::Label("Settings for this game")]);
+                gear.connect_clicked(move |b| super::steam_settings::open(b, sg.clone()));
+                r.add_suffix(&gear);
+            }
             r.add_suffix(&play);
             g.add(&r);
         }

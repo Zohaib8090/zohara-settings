@@ -23,6 +23,7 @@ pub mod troubleshoot;
 pub mod gaming;
 pub mod game_libraries;
 pub mod my_games;
+pub mod steam_settings;
 pub mod accessibility;
 pub mod app_details;
 pub mod app_overview;

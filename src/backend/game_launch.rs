@@ -127,6 +127,14 @@ pub fn exec_quote(p: &str) -> String {
     s
 }
 
+/// One word for a shell line (Steam's launch options run through a shell): bare when plain, else in single quotes.
+pub fn exec_quote_shell(v: &str) -> String {
+    if !v.is_empty() && v.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-./:=+,@".contains(&b)) {
+        return v.to_string();
+    }
+    format!("'{}'", v.replace('\'', "'\\''"))
+}
+
 fn is_windows_program(path: &str) -> bool {
     let p = path.to_lowercase();
     [".exe", ".bat", ".cmd", ".msi", ".lnk"].iter().any(|e| p.ends_with(e))

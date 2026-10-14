@@ -25,6 +25,7 @@ pub mod network;
 pub mod privacy_indicator;
 pub mod process;
 pub mod proton;
+pub mod steam_games;
 pub mod system;
 pub mod branding;
 pub mod touch_keyboard;

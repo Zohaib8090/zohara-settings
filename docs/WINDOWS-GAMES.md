@@ -7,8 +7,9 @@ existing Gaming page (not a page of its own).
 
 ## What the person sees
 Three rows in a "Windows games" group on the Gaming page:
-1. **Windows game support** (button "Set up", then "Open Steam"). One administrator prompt. Turns on `[multilib]`, installs
-   `steam lutris winetricks lib32-gamemode lib32-mangohud lib32-mesa` plus the 32-bit driver for the graphics chip found
+1. **Windows game support** (button "Set up", then "Open Steam" only if a Steam exists). One administrator prompt. Turns on `[multilib]`, installs
+   `lutris winetricks lib32-gamemode lib32-mangohud lib32-mesa` plus the 32-bit driver for the graphics chip found
+   Steam is installed only when no Flatpak Steam exists (one Steam only, 2026-10-14).
    (`lib32-nvidia-utils`, `lib32-vulkan-radeon`, `lib32-vulkan-intel`; if none is recognised, both Vulkan drivers), then
    ProtonUp-Qt (from Chaotic-AUR, allowed to fail).
    It **refuses while updates are waiting** (exit 6, "Update the computer first"), because `pacman -Sy` on a computer that is

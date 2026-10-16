@@ -51,6 +51,8 @@ pub struct Status {
     pub devices: Vec<Device>,
     pub pairing_open: bool,
     pub pending: Vec<Pending>,
+    /// Whether files, folders and pictures that are copied here are offered to the phones.
+    pub clipboard_files: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,7 +158,12 @@ pub fn parse_status(v: &Value) -> Option<Status> {
         .and_then(Value::as_array)
         .map(|a| a.iter().map(|p| Pending { name: text(p, "name"), pin: text(p, "pin") }).collect())
         .unwrap_or_default();
-    Some(Status { devices, pairing_open: v.get("pairing_open").and_then(Value::as_bool).unwrap_or(false), pending })
+    Some(Status {
+        devices,
+        pairing_open: v.get("pairing_open").and_then(Value::as_bool).unwrap_or(false),
+        pending,
+        clipboard_files: v.get("clipboard_files").and_then(Value::as_bool).unwrap_or(false),
+    })
 }
 
 /// The answer to `GET_IDENTITY`.
@@ -223,6 +230,30 @@ pub fn send_file(device_id: &str, path: &str) -> String {
     match request(&json!({"command": "SEND_FILE", "deviceId": device_id, "path": path})) {
         Some(v) => v.get("status").and_then(Value::as_str).unwrap_or("NO_DAEMON").to_string(),
         None => "NO_DAEMON".to_string(),
+    }
+}
+
+/// Switches "offer copied files, folders and pictures to the phone" on or off in the daemon.
+pub fn set_clipboard_files(on: bool) -> bool {
+    command_ok(json!({"command": "SET_OPTION", "clipboardFiles": on}))
+}
+
+/// One message for a whole choice of files and folders: `results` is (name, status of [`send_file`]) for each one.
+pub fn send_summary(results: &[(String, String)], phone: &str) -> (String, String) {
+    let offered = results.iter().filter(|(_, st)| st == "OFFERED").count();
+    match results.iter().find(|(_, st)| st != "OFFERED") {
+        None if results.len() == 1 => send_file_message("OFFERED", phone, &results[0].0),
+        None => (
+            format!("Waiting for {phone}"),
+            format!("{offered} items were offered. Open Zohara Link on the phone and press Accept (or Accept all); they are saved in its Downloads/ZoharaLink folder."),
+        ),
+        Some((name, status)) => {
+            let (title, mut body) = send_file_message(status, phone, name);
+            if offered > 0 {
+                body.push_str(&format!(" The other {offered} were offered."));
+            }
+            (title, body)
+        }
     }
 }
 
@@ -703,6 +734,23 @@ mod real_tailscale {
         assert!(ready.missing.is_empty(), "{:?}", ready.missing);
         assert_eq!(ready.encoders, vec!["software (x264)"]);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_choice_of_several_files_gets_one_message() {
+        let ok = |n: &str| (n.to_string(), "OFFERED".to_string());
+        let (t, b) = send_summary(&[ok("a"), ok("b"), ok("c")], "Samsung");
+        assert!(t.contains("Samsung") && b.contains("3 items") && b.contains("Accept all"));
+        let (_, b) = send_summary(&[ok("a")], "Samsung");
+        assert!(b.contains("\"a\""));
+        let (t, b) = send_summary(&[ok("a"), ("big".into(), "TOO_BIG".into()), ok("c")], "Samsung");
+        assert!(t.contains("too big") && b.contains("The other 2 were offered"));
+    }
+
+    #[test]
+    fn the_clipboard_option_is_read_from_the_status() {
+        assert!(parse_status(&json!({"paired_devices": [], "clipboard_files": true})).unwrap().clipboard_files);
+        assert!(!parse_status(&json!({"paired_devices": []})).unwrap().clipboard_files);
     }
 
     #[test]

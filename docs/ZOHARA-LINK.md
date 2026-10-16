@@ -78,3 +78,7 @@ Each paired phone's row has a **send** button (`pages/zohara_link.rs::rebuild_de
 file chooser, then `backend/zohara_link.rs::send_file` asks the daemon (`SEND_FILE`). The phone must press **Accept** before anything is
 sent; the words for each answer are in `send_file_message` (tested). The protocol is in `zohara-link/docs/FILES.md`.
 
+Each phone's row has two buttons: **send files** (choose one or many) and **send a folder** (zipped first). Under Quick actions, the switch
+**Offer copied files, folders and pictures** (off until chosen) offers whatever is copied on this computer to the connected phones; the
+phone still has to press Accept. Pure parts are tested (`send_summary`, the option in `parse_status`).
+

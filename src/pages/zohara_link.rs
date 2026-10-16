@@ -46,6 +46,9 @@ struct Ui {
     pair_row: adw::ActionRow,
     pair_btn: gtk4::Button,
     pin_row: adw::ActionRow,
+    clip_files: adw::SwitchRow,
+    /// True while the page itself sets the switch (from the daemon's answer), so that is not taken for a click.
+    syncing: Cell<bool>,
     devices_group: adw::PreferencesGroup,
     device_rows: RefCell<Vec<adw::ActionRow>>,
     signature: RefCell<String>,
@@ -142,6 +145,9 @@ fn render(ui: &Rc<Ui>, installed: bool, status: Option<zl::Status>, identity: Op
                 ui.address_row.set_subtitle(&format!("{}\nIf the phone does not find this computer, type this address in the app.", lines.join("\n")));
             }
 
+            ui.syncing.set(true);
+            ui.clip_files.set_active(status.clipboard_files);
+            ui.syncing.set(false);
             ui.pairing_open.set(status.pairing_open);
             ui.pair_btn.set_label(if status.pairing_open { "Stop pairing" } else { "Pair a phone" });
             ui.pair_row.set_subtitle(if status.pairing_open {
@@ -351,31 +357,67 @@ fn rebuild_devices(ui: &Rc<Ui>, devices: &[zl::Device]) {
         row.add_suffix(&input_label);
         row.add_suffix(&input);
 
-        // laptop to phone: the phone has to accept before anything is sent
+        // laptop to phone: files or a folder; the phone has to accept before anything is sent
         let send = gtk4::Button::from_icon_name("document-send-symbolic");
-        send.add_css_class("flat");
-        send.set_valign(gtk4::Align::Center);
-        send.set_sensitive(d.connected);
-        send.set_tooltip_text(Some(if d.connected { "Send a file to this phone" } else { "Connect the phone first" }));
-        let (ui2, id, name) = (ui.clone(), d.id.clone(), d.name.clone());
-        send.connect_clicked(move |b| {
-            let dialog = gtk4::FileDialog::new();
-            dialog.set_title("Choose a file to send to the phone");
-            let (ui3, id, name) = (ui2.clone(), id.clone(), name.clone());
-            dialog.open(b.root().and_downcast_ref::<gtk4::Window>(), None::<&gtk4::gio::Cancellable>, move |res| {
-                let Some(path) = res.ok().and_then(|f| f.path()) else { return };
-                let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                let (ui4, name, shown) = (ui3.clone(), name.clone(), file_name.clone());
-                let (id, path) = (id.clone(), path.to_string_lossy().to_string());
+        let send_folder = gtk4::Button::from_icon_name("folder-symbolic");
+        for (btn, tip) in [(&send, "Send files to this phone"), (&send_folder, "Send a folder to this phone")] {
+            btn.add_css_class("flat");
+            btn.set_valign(gtk4::Align::Center);
+            btn.set_sensitive(d.connected);
+            btn.set_tooltip_text(Some(if d.connected { tip } else { "Connect the phone first" }));
+        }
+        // sends every chosen path in the background and tells the person once
+        let offer = {
+            let (ui, id, name) = (ui.clone(), d.id.clone(), d.name.clone());
+            Rc::new(move |paths: Vec<std::path::PathBuf>| {
+                if paths.is_empty() {
+                    return;
+                }
+                let (ui2, name2, id2) = (ui.clone(), name.clone(), id.clone());
                 in_background(
-                    move || zl::send_file(&id, &path),
-                    move |status| {
-                        let (title, body) = zl::send_file_message(&status, &name, &shown);
-                        tell(&ui4, &title, &body);
+                    move || {
+                        paths
+                            .iter()
+                            .map(|p| {
+                                let shown = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                                (shown, zl::send_file(&id2, &p.to_string_lossy()))
+                            })
+                            .collect::<Vec<_>>()
+                    },
+                    move |results| {
+                        let (title, body) = zl::send_summary(&results, &name2);
+                        tell(&ui2, &title, &body);
                     },
                 );
+            })
+        };
+        {
+            let offer = offer.clone();
+            send.connect_clicked(move |b| {
+                let dialog = gtk4::FileDialog::new();
+                dialog.set_title("Choose files to send to the phone");
+                let offer = offer.clone();
+                dialog.open_multiple(b.root().and_downcast_ref::<gtk4::Window>(), None::<&gtk4::gio::Cancellable>, move |res| {
+                    let Ok(files) = res else { return };
+                    let paths: Vec<std::path::PathBuf> = (0..files.n_items()).filter_map(|i| files.item(i).and_downcast::<gtk4::gio::File>()).filter_map(|f| f.path()).collect();
+                    offer(paths);
+                });
             });
-        });
+        }
+        {
+            let offer = offer.clone();
+            send_folder.connect_clicked(move |b| {
+                let dialog = gtk4::FileDialog::new();
+                dialog.set_title("Choose a folder to send to the phone");
+                let offer = offer.clone();
+                dialog.select_folder(b.root().and_downcast_ref::<gtk4::Window>(), None::<&gtk4::gio::Cancellable>, move |res| {
+                    if let Some(path) = res.ok().and_then(|f| f.path()) {
+                        offer(vec![path]);
+                    }
+                });
+            });
+        }
+        row.add_suffix(&send_folder);
         row.add_suffix(&send);
 
         let unpair = gtk4::Button::from_icon_name("user-trash-symbolic");
@@ -515,6 +557,11 @@ pub fn build() -> gtk4::Widget {
     clip_btn.set_valign(gtk4::Align::Center);
     clip_row.add_suffix(&clip_btn);
     actions_group.add(&clip_row);
+    let clip_files = adw::SwitchRow::new();
+    clip_files.set_title("Offer copied files, folders and pictures");
+    clip_files.set_subtitle("Copy a file, a folder or a picture here and every connected phone is asked if it wants it. Nothing is saved on the phone until its owner presses Accept.");
+    clip_files.set_subtitle_lines(0);
+    actions_group.add(&clip_files);
     details.append(&actions_group);
     details.append(&streaming_group());
     root.append(&details);
@@ -535,6 +582,8 @@ pub fn build() -> gtk4::Widget {
         pair_row,
         pair_btn: pair_btn.clone(),
         pin_row,
+        clip_files: clip_files.clone(),
+        syncing: Cell::new(false),
         devices_group,
         device_rows: RefCell::new(Vec::new()),
         signature: RefCell::new(String::new()),
@@ -543,6 +592,25 @@ pub fn build() -> gtk4::Widget {
         busy: Cell::new(false),
         refreshing: Cell::new(false),
     });
+
+    {
+        let ui2 = ui.clone();
+        clip_files.connect_active_notify(move |row| {
+            if ui2.syncing.get() {
+                return;
+            }
+            let (on, ui3, row) = (row.is_active(), ui2.clone(), row.clone());
+            in_background(move || zl::set_clipboard_files(on), move |ok| {
+                if !ok {
+                    // the daemon did not take it: put the switch back
+                    ui3.syncing.set(true);
+                    row.set_active(!on);
+                    ui3.syncing.set(false);
+                    tell(&ui3, "Zohara Link did not answer", "Make sure Zohara Link is turned on, then try again.");
+                }
+            });
+        });
+    }
 
     {
         let ui2 = ui.clone();

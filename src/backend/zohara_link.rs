@@ -217,6 +217,31 @@ pub fn command_ok(cmd: Value) -> bool {
     request(&cmd).map(|v| v.get("status").and_then(Value::as_str) == Some("OK")).unwrap_or(false)
 }
 
+/// Offers a file to a paired phone. The phone's owner must accept before anything is sent. Returns the daemon's status word
+/// (`OFFERED`, `NOT_CONNECTED`, `NO_FILE`, `EMPTY`, `TOO_BIG`, `BUSY`), or `NO_DAEMON` when it does not answer.
+pub fn send_file(device_id: &str, path: &str) -> String {
+    match request(&json!({"command": "SEND_FILE", "deviceId": device_id, "path": path})) {
+        Some(v) => v.get("status").and_then(Value::as_str).unwrap_or("NO_DAEMON").to_string(),
+        None => "NO_DAEMON".to_string(),
+    }
+}
+
+/// What to tell the person for each answer of [`send_file`]: (title, body).
+pub fn send_file_message(status: &str, phone: &str, file: &str) -> (String, String) {
+    match status {
+        "OFFERED" => (
+            format!("Waiting for {phone}"),
+            format!("\"{file}\" was offered. Open Zohara Link on the phone and press Accept; the file is saved in its Downloads/ZoharaLink folder."),
+        ),
+        "NOT_CONNECTED" => ("The phone is not connected".to_string(), format!("Open Zohara Link on {phone} and wait until it says Connected, then try again.")),
+        "NO_FILE" => ("That file cannot be read".to_string(), "Choose a regular file, not a folder.".to_string()),
+        "EMPTY" => ("That file is empty".to_string(), "There is nothing to send.".to_string()),
+        "TOO_BIG" => ("That file is too big".to_string(), "Zohara Link sends files up to 4 GB.".to_string()),
+        "BUSY" => ("Too many files at once".to_string(), "Wait for the files being sent to finish, then try again.".to_string()),
+        _ => ("Zohara Link did not answer".to_string(), "Make sure Zohara Link is turned on, then try again.".to_string()),
+    }
+}
+
 fn run(cmd: &mut Command) -> Result<(), String> {
     let out = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().map_err(|e| e.to_string())?;
     match out.status.code() {
@@ -649,6 +674,8 @@ mod tests {
 
 #[cfg(test)]
 mod real_tailscale {
+    use super::*;
+
     /// `cargo test real_tailscale -- --ignored --nocapture` on a computer with Tailscale: reads only (no sign-in is started when signed in).
     #[test]
     #[ignore]
@@ -676,5 +703,15 @@ mod real_tailscale {
         assert!(ready.missing.is_empty(), "{:?}", ready.missing);
         assert_eq!(ready.encoders, vec!["software (x264)"]);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn every_answer_of_send_file_has_words_for_the_person() {
+        let (t, b) = send_file_message("OFFERED", "Samsung", "a.apk");
+        assert!(t.contains("Samsung") && b.contains("a.apk") && b.contains("Accept"));
+        for status in ["NOT_CONNECTED", "NO_FILE", "EMPTY", "TOO_BIG", "BUSY", "NO_DAEMON", "anything else"] {
+            let (t, b) = send_file_message(status, "Samsung", "a.apk");
+            assert!(!t.is_empty() && !b.is_empty(), "{status}");
+        }
     }
 }

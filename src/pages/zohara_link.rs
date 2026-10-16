@@ -351,6 +351,33 @@ fn rebuild_devices(ui: &Rc<Ui>, devices: &[zl::Device]) {
         row.add_suffix(&input_label);
         row.add_suffix(&input);
 
+        // laptop to phone: the phone has to accept before anything is sent
+        let send = gtk4::Button::from_icon_name("document-send-symbolic");
+        send.add_css_class("flat");
+        send.set_valign(gtk4::Align::Center);
+        send.set_sensitive(d.connected);
+        send.set_tooltip_text(Some(if d.connected { "Send a file to this phone" } else { "Connect the phone first" }));
+        let (ui2, id, name) = (ui.clone(), d.id.clone(), d.name.clone());
+        send.connect_clicked(move |b| {
+            let dialog = gtk4::FileDialog::new();
+            dialog.set_title("Choose a file to send to the phone");
+            let (ui3, id, name) = (ui2.clone(), id.clone(), name.clone());
+            dialog.open(b.root().and_downcast_ref::<gtk4::Window>(), None::<&gtk4::gio::Cancellable>, move |res| {
+                let Some(path) = res.ok().and_then(|f| f.path()) else { return };
+                let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let (ui4, name, shown) = (ui3.clone(), name.clone(), file_name.clone());
+                let (id, path) = (id.clone(), path.to_string_lossy().to_string());
+                in_background(
+                    move || zl::send_file(&id, &path),
+                    move |status| {
+                        let (title, body) = zl::send_file_message(&status, &name, &shown);
+                        tell(&ui4, &title, &body);
+                    },
+                );
+            });
+        });
+        row.add_suffix(&send);
+
         let unpair = gtk4::Button::from_icon_name("user-trash-symbolic");
         unpair.add_css_class("flat");
         unpair.set_valign(gtk4::Align::Center);

@@ -72,3 +72,9 @@ Zohara Link page > **Game streaming** (`pages/zohara_link.rs::streaming_group`, 
   (see `zohara-link/docs/STREAMING.md`, 2026-10-16).
 * The phone needs "Show the screen" and "Control the mouse" switched on for it in the same page.
 Everything about the stream itself (design, protocol, status, traps) is in the `zohara-link` repo, `docs/STREAMING.md`.
+
+## Send a file to the phone (2026-10-16)
+Each paired phone's row has a **send** button (`pages/zohara_link.rs::rebuild_devices`, enabled while the phone is connected). It opens a
+file chooser, then `backend/zohara_link.rs::send_file` asks the daemon (`SEND_FILE`). The phone must press **Accept** before anything is
+sent; the words for each answer are in `send_file_message` (tested). The protocol is in `zohara-link/docs/FILES.md`.
+

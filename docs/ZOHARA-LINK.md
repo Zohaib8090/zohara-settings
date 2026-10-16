@@ -61,3 +61,14 @@ Now (`backend/zohara_link.rs`, `pages/zohara_link.rs`), Settings talks to `tails
 Checked on the owner's laptop (already signed in): the state is read and a sign-in request returns "signed in" without
 starting anything. NOT exercised: a real sign-in and a real sign-out (that would have signed the owner out of their own
 Tailscale).
+
+## Game streaming buttons (2026-10-15)
+Zohara Link page > **Game streaming** (`pages/zohara_link.rs::streaming_group`, `backend/zohara_link.rs`):
+* **Set up game streaming** installs `gst-plugins-base/good/bad/ugly`, `gst-plugin-pipewire`, `gst-plugin-va` with one password prompt
+  (`pkexec pacman -S --needed --noconfirm`, no `-Sy`). Readiness is read from the plugin files in `/usr/lib/gstreamer-1.0`
+  (`streaming_state_in`, tested): WebRTC + nice, pipewire, rtp, and at least one encoder (va, nvcodec, x264).
+* **Allow screen sharing** runs `zohara-linkd-stream --grant-screen`: the desktop shows its own Share window once and the token is
+  kept in `~/.config/zohara-link/screencast-token`. **Choose the real screen, not a virtual one**, or the video is black
+  (see `zohara-link/docs/STREAMING.md`, 2026-10-16).
+* The phone needs "Show the screen" and "Control the mouse" switched on for it in the same page.
+Everything about the stream itself (design, protocol, status, traps) is in the `zohara-link` repo, `docs/STREAMING.md`.

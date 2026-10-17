@@ -15,6 +15,7 @@ pub mod game_launch;
 pub mod game_tools;
 pub mod gpu_live;
 pub mod gpu_pref;
+pub mod night_light;
 pub mod health;
 pub mod hibernate;
 pub mod kconfig;

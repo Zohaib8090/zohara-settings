@@ -457,32 +457,88 @@ fn kreadconfig(file: &str, group: &str, key: &str) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-fn build_night_light() -> adw::SwitchRow {
+/// Night light: the switch, when it warms, and how warm. The line under the switch is what KWin says it is doing right now, so the
+/// switch is never a silent file edit again (see `backend/night_light.rs`).
+fn build_night_light() -> gtk4::Widget {
+    use crate::backend::night_light as nl;
+    use crate::backend::worker::in_background;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let group = adw::PreferencesGroup::new();
+    group.set_title("Night light");
+
     let night = adw::SwitchRow::new();
     night.set_title("Night light");
     night.add_prefix(&gtk4::Image::from_icon_name("night-light-symbolic"));
+    group.add(&night);
 
-    if !command_exists("kwriteconfig6") {
-        night.set_subtitle("Requires Plasma's Night Color");
+    if !nl::available() {
+        night.set_subtitle("Requires Plasma's Night Light");
         night.set_sensitive(false);
-        return night;
+        return group.upcast();
     }
 
-    night.set_subtitle("Warmer colours to reduce blue light at night");
-    night.set_active(kreadconfig("kwinrc", "NightColor", "Active").as_deref() == Some("true"));
-    night.connect_active_notify(|row| {
-        let on = row.is_active();
-        std::thread::spawn(move || {
-            let _ = Command::new("kwriteconfig6")
-                .args(["--file", "kwinrc", "--group", "NightColor", "--key", "Active", if on { "true" } else { "false" }])
-                .status();
-            // KWin only rereads kwinrc when asked.
-            let _ = Command::new("dbus-send")
-                .args(["--session", "--type=method_call", "--dest=org.kde.KWin", "/KWin", "org.kde.KWin.reconfigure"])
-                .status();
-        });
+    let schedule = adw::ComboRow::new();
+    schedule.set_title("When");
+    schedule.set_model(Some(&gtk4::StringList::new(&["When it gets dark", "All the time"])));
+    group.add(&schedule);
+
+    let warmth = adw::SpinRow::with_range(nl::MIN_TEMPERATURE as f64, nl::MAX_TEMPERATURE as f64, 100.0);
+    warmth.set_title("Warmth");
+    warmth.set_subtitle("Lower is warmer. 6500 K is the normal screen colour");
+    group.add(&warmth);
+
+    let current = nl::read();
+    let loading = Rc::new(Cell::new(true));
+    night.set_active(current.active);
+    schedule.set_selected(if current.schedule == nl::Schedule::Always { 1 } else { 0 });
+    warmth.set_value(current.temperature as f64);
+    night.set_subtitle(&nl::status_text(&current, None));
+    loading.set(false);
+
+    let settings = Rc::new(RefCell::new(current));
+    // Saves what the controls show and tells KWin; the status line below follows within a second or two.
+    let save: Rc<dyn Fn()> = {
+        let (night, schedule, warmth, settings, loading) = (night.clone(), schedule.clone(), warmth.clone(), settings.clone(), loading.clone());
+        Rc::new(move || {
+            if loading.get() {
+                return;
+            }
+            let s = nl::Settings {
+                active: night.is_active(),
+                schedule: if schedule.selected() == 1 { nl::Schedule::Always } else { nl::Schedule::DayNight },
+                temperature: nl::clamp_temperature(warmth.value() as u32),
+            };
+            *settings.borrow_mut() = s.clone();
+            std::thread::spawn(move || {
+                nl::write(&s);
+            });
+        })
+    };
+    {
+        let save = save.clone();
+        night.connect_active_notify(move |_| save());
+    }
+    {
+        let save = save.clone();
+        schedule.connect_selected_notify(move |_| save());
+    }
+    {
+        let save = save.clone();
+        warmth.connect_value_notify(move |_| save());
+    }
+
+    // What KWin is doing, every two seconds while the page exists.
+    let (night_weak, settings2) = (night.downgrade(), settings.clone());
+    glib::timeout_add_seconds_local(2, move || {
+        let Some(row) = night_weak.upgrade() else { return glib::ControlFlow::Break };
+        let (row2, s) = (row.clone(), settings2.borrow().clone());
+        in_background(nl::status, move |st| row2.set_subtitle(&nl::status_text(&s, st.as_ref())));
+        glib::ControlFlow::Continue
     });
-    night
+
+    group.upcast()
 }
 
 pub fn build() -> gtk4::Widget {
@@ -527,10 +583,7 @@ pub fn build() -> gtk4::Widget {
         }
     }
 
-    let extras = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-    extras.set_css_classes(&["win11-card-group"]);
-    extras.append(&build_night_light());
-    root.append(&extras);
+    root.append(&build_night_light());
 
     scroll.set_child(Some(&root));
     scroll.upcast()

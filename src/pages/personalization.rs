@@ -199,6 +199,22 @@ pub fn build() -> gtk4::Widget {
     }
     colors_exp.add_row(&trans_row);
 
+    // Round title-bar buttons (the Zohara window decoration, see backend/window_style.rs)
+    let round_row = adw::SwitchRow::new();
+    round_row.set_title("Round window buttons");
+    if crate::backend::window_style::installed() {
+        round_row.set_subtitle("Minimize, maximize and close drawn as round buttons, like Zohara's own apps. Applies to every window");
+        round_row.set_active(crate::backend::window_style::is_round());
+        round_row.connect_active_notify(move |row| {
+            let on = row.is_active();
+            std::thread::spawn(move || crate::backend::window_style::set_round(on));
+        });
+    } else {
+        round_row.set_subtitle("Not installed yet. Update Zohara in Zohara Update");
+        round_row.set_sensitive(false);
+    }
+    colors_exp.add_row(&round_row);
+
     rows_box.append(&colors_exp);
 
     // 3. Themes

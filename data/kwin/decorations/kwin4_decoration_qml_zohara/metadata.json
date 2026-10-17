@@ -1,0 +1,15 @@
+{
+    "KPackageStructure": "KWin/Decoration",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "zohaibbaig144@gmail.com",
+                "Name": "Zohaib Baig"
+            }
+        ],
+        "Description": "Round window buttons, the way Zohara's own apps draw them",
+        "Id": "kwin4_decoration_qml_zohara",
+        "License": "GPL-2.0-or-later",
+        "Name": "Zohara"
+    }
+}

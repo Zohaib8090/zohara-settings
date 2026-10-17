@@ -98,6 +98,11 @@ package() {
   install -Dm644 "$startdir/data/icons/scalable/apps/zohara-start.svg" \
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/zohara-start.svg"
   install -Dm644 "$startdir/data/zohara-branding.desktop" "$pkgdir/etc/xdg/autostart/zohara-branding.desktop"
+  # the round-button window decoration
+  (cd "$startdir/data/kwin/decorations/kwin4_decoration_qml_zohara" && find . -type f -print0) | while IFS= read -r -d '' f; do
+    install -Dm644 "$startdir/data/kwin/decorations/kwin4_decoration_qml_zohara/$f" "$pkgdir/usr/share/kwin/decorations/kwin4_decoration_qml_zohara/${f#./}"
+  done
+
   # Zohara Cube: the 3D desktop cube, a QML-only KWin effect (no compiling). KDE's own layout: metadata.json at the root.
   # The same files live in ~/Documents/zohara-cube (the development home); this is the copy that ships.
   (cd "$startdir/data/cube-effect" && find . -type f -print0) | while IFS= read -r -d '' f; do

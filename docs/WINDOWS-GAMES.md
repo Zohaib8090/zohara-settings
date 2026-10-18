@@ -219,7 +219,7 @@ Unit-tested on the real Minecraft log; the notice buttons and a real failing pro
 **Testing Windows programs without touching the owner's screen:** a nested hidden desktop works: `dbus-run-session -- kwin_wayland --virtual --xwayland --no-lockscreen --exit-with-session ./script.sh`
 (sets `DISPLAY=:2`, `WAYLAND_DISPLAY=wayland-1`; the real session is untouched; wrap in `nice -n 19`). Do not `pkill -f` a pattern that appears in your own command line.
 
-**Hermes Desktop** (Nous Research) is an Electron app with a **native Linux build**: install the CLI and run `hermes desktop`; the Windows installer is not needed (the owner's WebView error came from running `Hermes-Setup.exe`).
+**Hermes Desktop** (Nous Research) is an Electron app with a **native Linux build**: install the CLI and run `hermes desktop`; the Windows installer is not needed (the owner's WebView error came from running `Hermes-Setup.exe`). After WebView2 was installed (2026-10-18) the same installer got one step further and failed on `install.ps1 -Manifest produced no parseable JSON payload`: it downloads and runs a PowerShell script, which Wine does not have. The log doctor now says so (rule before the web view rule, no fix button).
 
 ## Windows programs out of the box (2026-10-18)
 Goal (owner): on a fresh Zohara, download any `.exe` and double-click it; nothing to set up first.

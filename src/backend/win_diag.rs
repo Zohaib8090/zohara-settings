@@ -42,6 +42,14 @@ pub fn diagnose(log: &str) -> Option<Diagnosis> {
             fix: None,
         });
     }
+    // The program's installer runs a PowerShell script (Hermes' installer does); Wine has no PowerShell. Checked before the web
+    // view rule: a log can hold an old web view error from before that part was installed.
+    if has_any(log, &["install.ps1", "powershell.exe", "-Manifest produced no parseable", "powershell is not recognized", "pwsh.exe"]) {
+        return Some(Diagnosis {
+            text: "This installer works by running a PowerShell script, and Wine and Proton do not come with PowerShell, so it stops at that step. Look for a Linux version of the program instead: many apps have one (Hermes does: run `hermes desktop`).".into(),
+            fix: None,
+        });
+    }
     if has_any(log, &["webview2", "msedgewebview2", "EdgeWebView"]) && has_any(log, &["not found", "not installed", "missing", "failed", "could not", "cannot", "unable", "error", "0x80070002", "0x80004005"]) {
         return Some(Diagnosis {
             text: "This program shows web pages inside its window using Microsoft's WebView2 runtime, which is not installed in this Windows folder yet.".into(),
@@ -125,5 +133,14 @@ mod tests {
             let c = diagnose(log).unwrap().fix.unwrap().component;
             assert!(super::super::game_tools::valid_component(c), "{c}");
         }
+    }
+
+    #[test]
+    fn the_hermes_installer_log_is_a_powershell_step_not_a_missing_web_view() {
+        let log = "ERROR tauri_runtime_wry: Could not find the webview runtime, make sure it is installed\n\
+ERROR hermes_bootstrap_lib::bootstrap: bootstrap FAILED stage=None error=install.ps1 -Manifest produced no parseable JSON payload";
+        let d = diagnose(log).unwrap();
+        assert!(d.text.contains("PowerShell"));
+        assert!(d.fix.is_none(), "installing a web view again would not help");
     }
 }

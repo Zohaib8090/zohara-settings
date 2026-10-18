@@ -31,6 +31,10 @@ struct Mode {
     /// Value passed back to the backend when this mode is chosen.
     id: String,
     label: String,
+    /// Size and refresh rate (0 when the backend does not say), so resolution and refresh rate can be two pickers.
+    w: i64,
+    h: i64,
+    hz: f64,
 }
 
 #[derive(Default)]
@@ -126,6 +130,9 @@ fn parse_kscreen(v: &serde_json::Value) -> Vec<DisplayOutput> {
                         Mode {
                             id: m["id"].as_str()?.to_string(),
                             label: format!("{w} × {h}  ·  {hz:.2} Hz"),
+                            w,
+                            h,
+                            hz,
                         },
                     ))
                 })
@@ -196,7 +203,7 @@ fn parse_wlr(v: &serde_json::Value) -> Vec<DisplayOutput> {
                 if m["current"].as_bool().unwrap_or(false) {
                     current = modes.len();
                 }
-                modes.push(Mode { id: format!("{w}x{h}@{hz:.3}Hz"), label });
+                modes.push(Mode { id: format!("{w}x{h}@{hz:.3}Hz"), label, w, h, hz });
             }
             let rotation = match o["transform"].as_str().unwrap_or("normal") {
                 "90" => 1,
@@ -254,7 +261,8 @@ fn parse_xrandr(raw: &str) -> Vec<DisplayOutput> {
                 if trimmed.contains("*current") {
                     o.current = o.modes.len();
                 }
-                o.modes.push(Mode { id: res.to_string(), label: res.replace('x', " × ") });
+                let (w, h) = res.split_once('x').map(|(a, b)| (a.parse().unwrap_or(0), b.parse().unwrap_or(0))).unwrap_or((0, 0));
+                o.modes.push(Mode { id: res.to_string(), label: res.replace('x', " × "), w, h, hz: 0.0 });
             }
         }
     }
@@ -403,6 +411,129 @@ struct Others {
     refresh: Rc<dyn Fn()>,
 }
 
+/// "165 Hz", or "59.96 Hz" when the rate is not a whole number.
+fn hz_label(hz: f64) -> String {
+    if (hz - hz.round()).abs() < 0.005 {
+        format!("{} Hz", hz.round() as i64)
+    } else {
+        format!("{hz:.2} Hz")
+    }
+}
+
+/// The mode with the same size as `modes[of]` whose refresh rate is closest to `want` (indexes into `modes`).
+fn closest_rate(modes: &[Mode], size: (i64, i64), want: f64) -> Option<usize> {
+    (0..modes.len())
+        .filter(|&i| (modes[i].w, modes[i].h) == size)
+        .min_by(|&a, &b| (modes[a].hz - want).abs().total_cmp(&(modes[b].hz - want).abs()))
+}
+
+/// Resolution and refresh rate as two short pickers instead of one long list of every combination (the long list was cut
+/// off and hard to scroll). Choosing either applies a mode and asks "Keep these display settings?"; reverting puts the old
+/// mode back in both pickers.
+fn build_mode_rows(backend: Backend, name: &str, modes: &[Mode], current: usize) -> Vec<adw::ComboRow> {
+    let res = adw::ComboRow::new();
+    res.set_use_markup(false);
+    res.set_title("Resolution");
+    let hz = adw::ComboRow::new();
+    hz.set_use_markup(false);
+    hz.set_title("Refresh rate");
+    if modes.is_empty() {
+        res.set_sensitive(false);
+        return vec![res];
+    }
+
+    let modes: Rc<Vec<Mode>> = Rc::new(modes.iter().map(|m| Mode { id: m.id.clone(), label: m.label.clone(), w: m.w, h: m.h, hz: m.hz }).collect());
+    let mut sizes: Vec<(i64, i64)> = Vec::new();
+    for m in modes.iter() {
+        if !sizes.contains(&(m.w, m.h)) {
+            sizes.push((m.w, m.h));
+        }
+    }
+    let size_labels: Vec<String> = sizes
+        .iter()
+        .zip(modes.iter())
+        .map(|((w, h), m)| if *w > 0 { format!("{w} × {h}") } else { m.label.clone() })
+        .collect();
+    let size_refs: Vec<&str> = size_labels.iter().map(String::as_str).collect();
+    res.set_model(Some(&gtk4::StringList::new(&size_refs)));
+    let sizes = Rc::new(sizes);
+
+    let committed = Rc::new(Cell::new(current.min(modes.len() - 1)));
+    // The mode whose resolution the two pickers show right now (differs from `committed` while the question is open).
+    let shown = Rc::new(Cell::new(committed.get()));
+    let silent = Rc::new(Cell::new(false));
+
+    let show = {
+        let (modes, sizes, res, hz, shown, silent) = (modes.clone(), sizes.clone(), res.clone(), hz.clone(), shown.clone(), silent.clone());
+        Rc::new(move |idx: usize| {
+            silent.set(true);
+            shown.set(idx);
+            let size = (modes[idx].w, modes[idx].h);
+            let rates: Vec<usize> = (0..modes.len()).filter(|&i| (modes[i].w, modes[i].h) == size).collect();
+            let labels: Vec<String> = rates.iter().map(|&i| hz_label(modes[i].hz)).collect();
+            let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+            hz.set_model(Some(&gtk4::StringList::new(&refs)));
+            hz.set_selected(rates.iter().position(|&i| i == idx).unwrap_or(0) as u32);
+            res.set_selected(sizes.iter().position(|s| *s == size).unwrap_or(0) as u32);
+            silent.set(false);
+        })
+    };
+    show(committed.get());
+    if modes.iter().all(|m| m.hz <= 0.0) {
+        hz.set_visible(false);
+    }
+
+    let name = name.to_string();
+    let change: Rc<dyn Fn(usize, &adw::ComboRow)> = {
+        let (modes, committed, show) = (modes.clone(), committed.clone(), show.clone());
+        Rc::new(move |target, row| {
+            let old = committed.get();
+            if target == old {
+                return;
+            }
+            apply_mode(backend, &name, &modes[target].id, row);
+            show(target);
+            let (committed2, show2, modes2, name2, row2) = (committed.clone(), show.clone(), modes.clone(), name.clone(), row.clone());
+            confirm_keep(
+                row,
+                move || committed2.set(target),
+                move || {
+                    apply_mode(backend, &name2, &modes2[old].id, &row2);
+                    show2(old);
+                },
+            );
+        })
+    };
+
+    {
+        let (modes, sizes, committed, silent, change) = (modes.clone(), sizes.clone(), committed.clone(), silent.clone(), change.clone());
+        res.connect_selected_notify(move |r| {
+            if silent.get() {
+                return;
+            }
+            let Some(size) = sizes.get(r.selected() as usize) else { return };
+            // Keep the refresh rate if the new size has it, else the closest one.
+            if let Some(t) = closest_rate(&modes, *size, modes[committed.get()].hz) {
+                change(t, r);
+            }
+        });
+    }
+    {
+        let (modes, shown, silent, change) = (modes.clone(), shown.clone(), silent.clone(), change.clone());
+        hz.connect_selected_notify(move |r| {
+            if silent.get() {
+                return;
+            }
+            let size = (modes[shown.get()].w, modes[shown.get()].h);
+            let rates: Vec<usize> = (0..modes.len()).filter(|&i| (modes[i].w, modes[i].h) == size).collect();
+            if let Some(&t) = rates.get(r.selected() as usize) {
+                change(t, r);
+            }
+        });
+    }
+    vec![res, hz]
+}
+
 fn build_output_group(backend: Backend, out: &DisplayOutput, others: &Others, extras: &ex::Extras) -> gtk4::Box {
     let group = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
     group.set_css_classes(&["win11-card-group"]);
@@ -460,24 +591,9 @@ fn build_output_group(backend: Backend, out: &DisplayOutput, others: &Others, ex
         group.append(&main);
     }
 
-    let res = adw::ComboRow::new();
-    res.set_use_markup(false);
-    res.set_title("Resolution & refresh rate");
-    let labels: Vec<&str> = out.modes.iter().map(|m| m.label.as_str()).collect();
-    res.set_model(Some(&gtk4::StringList::new(&labels)));
-    if out.modes.is_empty() {
-        res.set_sensitive(false);
-    } else {
-        res.set_selected(out.current as u32);
-        let ids: Vec<String> = out.modes.iter().map(|m| m.id.clone()).collect();
-        let n = name.clone();
-        guard_change(&res, move |i, r| {
-            if let Some(id) = ids.get(i as usize) {
-                apply_mode(backend, &n, id, r);
-            }
-        });
+    for row in build_mode_rows(backend, &name, &out.modes, out.current) {
+        group.append(&row);
     }
-    group.append(&res);
 
     let scale = adw::ComboRow::new();
     scale.set_title("Scale");
@@ -1134,5 +1250,25 @@ mod tests {
         assert_eq!(o[1].mirror_of.as_deref(), Some("eDP-1"));
         assert!(o[0].mirror_of.is_none());
         assert!(!o[2].enabled, "a switched-off screen still shows so it can be switched on");
+    }
+
+    fn m(id: &str, w: i64, h: i64, hz: f64) -> Mode {
+        Mode { id: id.into(), label: String::new(), w, h, hz }
+    }
+
+    #[test]
+    fn refresh_rates_read_short() {
+        assert_eq!(hz_label(165.0), "165 Hz");
+        assert_eq!(hz_label(165.004), "165 Hz");
+        assert_eq!(hz_label(59.96), "59.96 Hz");
+    }
+
+    #[test]
+    fn a_new_resolution_keeps_the_refresh_rate_when_it_can() {
+        let modes = vec![m("1", 1920, 1200, 165.0), m("2", 1920, 1200, 60.0), m("3", 1600, 900, 164.77), m("4", 1600, 900, 59.95)];
+        assert_eq!(closest_rate(&modes, (1600, 900), 165.0), Some(2));
+        assert_eq!(closest_rate(&modes, (1600, 900), 60.0), Some(3));
+        assert_eq!(closest_rate(&modes, (1920, 1200), 60.0), Some(1));
+        assert_eq!(closest_rate(&modes, (800, 600), 60.0), None);
     }
 }

@@ -182,3 +182,14 @@ Mojang's published one for 8/16/17/21; "26.x needs Java 25" is inferred from Mod
 (not from a Mojang statement). A Flatpak launcher cannot see the system Java, which the page says. On the owner's laptop it
 finds Modrinth's Zulu 25. Install/Make default were not pressed (they need a password).
 The owner's actual Modrinth problem is still unknown: its log from 2026-10-12 shows Minecraft 26.3 running fine with its own Java 25.
+
+## Safety mode and Game Mode (2026-10-18)
+Safety mode hides the session's message bus (`/run/user/<uid>/bus`) on purpose. `gamemoderun` needs that bus, so inside Safety mode it printed "Could not connect to bus"
+dozens of times and did nothing. The launcher now leaves `gamemoderun` out of the command when Safety mode is on (`windows_apps::without_gamemode`, tested); Game Mode
+works for programs started with Safety mode off.
+
+## Failures explained in plain words (2026-10-18)
+When a program closes right away, the notice reads the end of its log (`explain_failure`, `log_tail`) and says why when it is a known cause:
+* `UniversalApiContract` / `Windows.UI.Xaml` / `Windows.ApplicationModel`: a Microsoft Store (WinRT) program. **Microsoft's `MinecraftInstaller.exe` is one**; Wine and Proton
+  have no WinRT, so it cannot run (owner's log, 2026-10-18; not caused by Safety mode). Use Java Edition (Modrinth / Prism Launcher, Gaming > Java) or Bedrock (mcpelauncher).
+* "Could not load file or assembly": a .NET program missing a Windows part (Tools can add .NET). `vcruntime` missing: Tools can add the Visual C++ runtimes.

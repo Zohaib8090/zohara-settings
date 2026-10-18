@@ -201,6 +201,44 @@ pub fn failed_to_start(code: Option<i32>, secs: u64) -> bool {
     matches!(code, Some(c) if c != 0) && secs < QUICK_FAIL_SECS
 }
 
+/// Game Mode talks to the session's message bus, which Safety mode hides on purpose, so inside Safety mode it only fills the log with
+/// "Could not connect to bus" and does nothing. Leave it out of the command there.
+pub fn without_gamemode(words: Vec<String>) -> Vec<String> {
+    let mut removed = false;
+    words
+        .into_iter()
+        .filter(|w| {
+            if !removed && w == "gamemoderun" {
+                removed = true;
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
+/// Why a program that closed right away could not run, in plain words, when the log shows a known cause. `None` when it is not known.
+pub fn explain_failure(log: &str) -> Option<&'static str> {
+    if log.contains("UniversalApiContract") || log.contains("Windows.UI.Xaml") || log.contains("Windows.ApplicationModel") {
+        return Some("This program is built on Windows' own app platform (the Microsoft Store kind, called WinRT), which Wine and Proton do not have. That is why Microsoft's Minecraft Launcher installer cannot run here. For Minecraft, use the Java Edition with Modrinth or Prism Launcher (Gaming > Java), or Bedrock with mcpelauncher.");
+    }
+    if log.contains("Could not load file or assembly") {
+        return Some("This .NET program needs a Windows part that is missing. Gaming > My games > Tools can add .NET to this program's Windows folder.");
+    }
+    if log.contains("vcruntime") && (log.contains("not found") || log.contains("err:module")) {
+        return Some("A Windows runtime library is missing. Gaming > My games > Tools can add the Visual C++ runtimes.");
+    }
+    None
+}
+
+/// The last lines of a program's log (the end is where the reason is).
+fn log_tail(path: &Path) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(200)..].join("\n")
+}
+
 /// The file a program's output goes to: one per game, one for everything else.
 pub fn log_path(game_id: Option<&str>) -> PathBuf {
     let dir = std::env::var("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|_| home().join(".cache")).join("zohara/windows");
@@ -362,7 +400,7 @@ pub fn run_file_once(path: &str, once: &Once) -> i32 {
         }
         sandboxed = false;
     }
-    let words = if sandboxed { super::windows_sandbox::wrap(words, &sandbox_plan(path, &ctx)) } else { words };
+    let words = if sandboxed { super::windows_sandbox::wrap(without_gamemode(words), &sandbox_plan(path, &ctx)) } else { words };
     let log_file = log_path(game.as_ref().map(|(id, _, _)| id.as_str()));
     let _ = std::fs::create_dir_all(log_file.parent().unwrap());
     let log = std::fs::File::create(&log_file).ok();
@@ -396,8 +434,13 @@ pub fn run_file_once(path: &str, once: &Once) -> i32 {
             Ok(Some(status)) => {
                 if failed_to_start(status.code(), started.elapsed().as_secs()) {
                     let mut body = format!("{label} closed right away (error {}).", status.code().unwrap_or(-1));
-                    if sandboxed {
-                        body.push_str(" Safety mode was on; some programs need it off (Settings > Gaming).");
+                    match explain_failure(&log_tail(&log_file)) {
+                        Some(why) => {
+                            body.push(' ');
+                            body.push_str(why);
+                        }
+                        None if sandboxed => body.push_str(" Safety mode was on; some programs need it off (Settings > Gaming)."),
+                        None => {}
                     }
                     if notify_action("A Windows program did not start", &body, "Open the log", 30) {
                         open_log(&log_file);
@@ -761,5 +804,23 @@ mod tests {
         assert_eq!((p, w), (PathBuf::from("/d/zohara/prefixes/game"), PathBuf::from("/d/zohara/windows-wine")));
         let (p, w) = prefixes_in(d, "/home/me/Games/g.exe", "game");
         assert_eq!((p, w), (PathBuf::from("/d/zohara/prefixes/game"), PathBuf::new()));
+    }
+
+    #[test]
+    fn game_mode_is_left_out_of_safety_mode() {
+        let w = |t: &[&str]| t.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(without_gamemode(w(&["env", "A=b", "gamemoderun", "mangohud", "proton", "run", "x.exe"])), w(&["env", "A=b", "mangohud", "proton", "run", "x.exe"]));
+        assert_eq!(without_gamemode(w(&["wine", "x.exe"])), w(&["wine", "x.exe"]));
+        // only the wrapper: a game that happens to take this as its own option keeps it
+        assert_eq!(without_gamemode(w(&["gamemoderun", "wine", "x.exe", "gamemoderun"])), w(&["wine", "x.exe", "gamemoderun"]));
+    }
+
+    #[test]
+    fn known_failures_are_explained_in_plain_words() {
+        let minecraft = "Unhandled Exception:\nSystem.IO.FileNotFoundException: Could not load file or assembly 'Windows.Foundation.UniversalApiContract, Version=7.0.0.0'";
+        let why = explain_failure(minecraft).unwrap();
+        assert!(why.contains("WinRT") && why.contains("Minecraft") && why.contains("Modrinth"));
+        assert!(explain_failure("Could not load file or assembly 'Some.Library'").unwrap().contains(".NET"));
+        assert!(explain_failure("everything is fine").is_none());
     }
 }

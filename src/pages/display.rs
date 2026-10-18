@@ -14,7 +14,8 @@
 use adw::prelude::*;
 use gtk4::prelude::*;
 use libadwaita as adw;
-use std::cell::Cell;
+use crate::backend::display_extras as ex;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::process::Command;
 use std::rc::Rc;
@@ -402,7 +403,7 @@ struct Others {
     refresh: Rc<dyn Fn()>,
 }
 
-fn build_output_group(backend: Backend, out: &DisplayOutput, others: &Others) -> gtk4::Box {
+fn build_output_group(backend: Backend, out: &DisplayOutput, others: &Others, extras: &ex::Extras) -> gtk4::Box {
     let group = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
     group.set_css_classes(&["win11-card-group"]);
 
@@ -512,6 +513,224 @@ fn build_output_group(backend: Backend, out: &DisplayOutput, others: &Others) ->
     guard_change(&rot, move |i, r| apply_rotation(backend, &n, i, r));
     group.append(&rot);
 
+    if kscreen {
+        append_extra_rows(&group, out, extras, others);
+    }
+
+    group
+}
+
+// ── Brightness, VRR, HDR, colour (what the screen says it can do) ───────────────────────────────────────────────
+
+/// A row with a slider. `on_change(value)` runs once the slider has rested for a moment, so dragging does not fire a command
+/// per pixel.
+fn slider_row(title: &str, min: u32, max: u32, value: u32, suffix: &'static str, on_change: impl Fn(u32, &adw::ActionRow) + 'static) -> adw::ActionRow {
+    let row = adw::ActionRow::new();
+    row.set_use_markup(false);
+    row.set_title(title);
+    row.set_activatable(false);
+    let scale = gtk4::Scale::with_range(gtk4::Orientation::Horizontal, min as f64, max as f64, 1.0);
+    scale.set_value(value.clamp(min, max) as f64);
+    scale.set_hexpand(true);
+    scale.set_width_request(240);
+    scale.set_valign(gtk4::Align::Center);
+    scale.set_draw_value(true);
+    scale.set_margin_end(12);
+    scale.set_value_pos(gtk4::PositionType::Right);
+    scale.set_format_value_func(move |_, v| format!("{}{suffix}", v.round() as i64));
+    row.add_suffix(&scale);
+    let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+    let on_change = Rc::new(on_change);
+    let weak = row.downgrade();
+    // Connected after the value is set, so opening the page never applies anything.
+    scale.connect_value_changed(move |sc| {
+        if let Some(id) = pending.borrow_mut().take() {
+            id.remove();
+        }
+        let v = sc.value().round() as u32;
+        let (pending2, on_change, weak) = (pending.clone(), on_change.clone(), weak.clone());
+        let id = glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+            pending2.borrow_mut().take();
+            if let Some(r) = weak.upgrade() {
+                on_change(v, &r);
+            }
+        });
+        *pending.borrow_mut() = Some(id);
+    });
+    row
+}
+
+/// A picker that applies its choice at once. Set to the real state first, connected after, so nothing is applied on open.
+fn picker_row(title: &str, choices: &[&str], selected: u32, apply: impl Fn(u32, &adw::ComboRow) + 'static) -> adw::ComboRow {
+    let row = adw::ComboRow::new();
+    row.set_use_markup(false);
+    row.set_title(title);
+    row.set_model(Some(&gtk4::StringList::new(choices)));
+    row.set_selected(selected);
+    let last = Cell::new(selected);
+    row.connect_selected_notify(move |r| {
+        if r.selected() != last.replace(r.selected()) {
+            apply(r.selected(), r);
+        }
+    });
+    row
+}
+
+fn append_extra_rows(group: &gtk4::Box, out: &DisplayOutput, e: &ex::Extras, others: &Others) {
+    let name = out.name.clone();
+
+    if let Some(b) = e.brightness {
+        let n = name.clone();
+        group.append(&slider_row("Brightness", ex::MIN_BRIGHTNESS, 100, b, "%", move |v, r| {
+            run_checked("kscreen-doctor", ex::brightness_args(&n, v), r)
+        }));
+    }
+
+    if let Some(v) = e.vrr {
+        let n = name.clone();
+        let cur = match v {
+            ex::Vrr::Never => 0,
+            ex::Vrr::Automatic => 1,
+            ex::Vrr::Always => 2,
+        };
+        group.append(&picker_row("Adaptive sync (VRR)", &["Never", "Automatic", "Always"], cur, move |i, r| {
+            let v = [ex::Vrr::Never, ex::Vrr::Automatic, ex::Vrr::Always][i.min(2) as usize];
+            run_checked("kscreen-doctor", ex::vrr_args(&n, v), r)
+        }));
+    }
+
+    if let Some(hdr) = e.hdr {
+        let on = adw::SwitchRow::new();
+        on.set_use_markup(false);
+        on.set_title("High dynamic range (HDR)");
+        on.set_active(hdr);
+        let n = name.clone();
+        let refresh = others.refresh.clone();
+        guard_toggle(&on, move |a, r| run_checked("kscreen-doctor", ex::hdr_args(&n, a), r), move || refresh());
+        group.append(&on);
+        if hdr {
+            let n = name.clone();
+            // KWin's own default for how bright ordinary (non-HDR) content is shown on an HDR screen.
+            group.append(&slider_row("Brightness of normal content", 100, 1000, 200, " nits", move |v, r| {
+                run_checked("kscreen-doctor", vec![format!("output.{n}.sdr-brightness.{v}")], r)
+            }));
+        }
+    }
+    if let Some(wcg) = e.wide_gamut {
+        let on = adw::SwitchRow::new();
+        on.set_use_markup(false);
+        on.set_title("Wide colour gamut");
+        on.set_active(wcg);
+        let n = name.clone();
+        let refresh = others.refresh.clone();
+        guard_toggle(&on, move |a, r| run_checked("kscreen-doctor", ex::wide_gamut_args(&n, a), r), move || refresh());
+        group.append(&on);
+    }
+
+    if let Some(range) = e.rgb_range {
+        let cur = match range {
+            ex::RgbRange::Automatic => 0,
+            ex::RgbRange::Full => 1,
+            ex::RgbRange::Limited => 2,
+        };
+        let row = adw::ComboRow::new();
+        row.set_use_markup(false);
+        row.set_title("RGB range");
+        row.set_model(Some(&gtk4::StringList::new(&["Automatic", "Full", "Limited"])));
+        row.set_selected(cur);
+        let n = name.clone();
+        // A wrong range makes colours washed out or crushed, so it asks like a resolution change does.
+        guard_change(&row, move |i, r| {
+            let v = [ex::RgbRange::Automatic, ex::RgbRange::Full, ex::RgbRange::Limited][i.min(2) as usize];
+            run_checked("kscreen-doctor", ex::rgb_range_args(&n, v), r)
+        });
+        group.append(&row);
+    }
+
+    if let Some(src) = e.color_source {
+        let cur = match src {
+            ex::ColorSource::Srgb => 0,
+            ex::ColorSource::Edid => 1,
+            ex::ColorSource::Icc => 2,
+        };
+        let n = name.clone();
+        let row = picker_row("Colour profile", &["sRGB (standard)", "The monitor's own", "ICC file…"], cur, move |i, r| match i {
+            0 => run_checked("kscreen-doctor", ex::color_source_args(&n, ex::ColorSource::Srgb, None), r),
+            1 => run_checked("kscreen-doctor", ex::color_source_args(&n, ex::ColorSource::Edid, None), r),
+            _ => choose_icc_file(&n, r),
+        });
+        group.append(&row);
+    }
+
+    if let Some(t) = e.tradeoff {
+        let n = name.clone();
+        let cur = if t == ex::Tradeoff::Accuracy { 0 } else { 1 };
+        group.append(&picker_row("Colour accuracy", &["Prefer accuracy", "Prefer power saving"], cur, move |i, r| {
+            let t = if i == 0 { ex::Tradeoff::Accuracy } else { ex::Tradeoff::Efficiency };
+            run_checked("kscreen-doctor", ex::tradeoff_args(&n, t), r)
+        }));
+    }
+
+    // Overscan is for TVs that cut off the edge of the picture; a laptop panel never needs it.
+    if !is_builtin(&out.name) && e.overscan <= 100 {
+        let n = name;
+        group.append(&slider_row("Overscan (for TVs)", 0, 20, e.overscan.min(20), "%", move |v, r| {
+            run_checked("kscreen-doctor", ex::overscan_args(&n, v), r)
+        }));
+    }
+}
+
+/// Asks for an ICC profile file and applies it; closing the dialog leaves the old profile in place (the picker is put back
+/// when the page redraws on the next change).
+fn choose_icc_file(name: &str, row: &adw::ComboRow) {
+    let filter = gtk4::FileFilter::new();
+    filter.set_name(Some("ICC colour profiles"));
+    for pat in ["*.icc", "*.icm", "*.ICC", "*.ICM"] {
+        filter.add_pattern(pat);
+    }
+    let filters = gtk4::gio::ListStore::new::<gtk4::FileFilter>();
+    filters.append(&filter);
+    let dialog = gtk4::FileDialog::builder().title("Choose a colour profile").filters(&filters).build();
+    let (name, row) = (name.to_string(), row.clone());
+    let window = row.root().and_then(|r| r.downcast::<gtk4::Window>().ok());
+    dialog.open(window.as_ref(), gtk4::gio::Cancellable::NONE, move |res| {
+        if let Some(path) = res.ok().and_then(|f| f.path()) {
+            run_checked("kscreen-doctor", ex::color_source_args(&name, ex::ColorSource::Icc, Some(&path.to_string_lossy())), &row);
+        } else {
+            // Nothing chosen: back to the first profile in the list without applying anything new.
+            row.set_selected(0);
+        }
+    });
+}
+
+/// "Games and older programs": the two global switches that matter for games.
+fn build_games_group() -> gtk4::Box {
+    let group = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+    group.set_css_classes(&["win11-card-group"]);
+
+    let tearing = adw::SwitchRow::new();
+    tearing.set_use_markup(false);
+    tearing.set_title("Allow screen tearing in fullscreen games");
+    tearing.set_subtitle("Less delay between your mouse and the picture; the image can tear now and then");
+    tearing.set_active(ex::tearing_allowed());
+    tearing.connect_active_notify(|r| {
+        ex::set_tearing(r.is_active());
+    });
+    group.append(&tearing);
+
+    let x11 = adw::ComboRow::new();
+    x11.set_use_markup(false);
+    x11.set_title("Older X11 programs");
+    x11.set_subtitle("Applies after you sign out and in again");
+    x11.set_model(Some(&gtk4::StringList::new(&["Scale themselves (sharp)", "Scaled by the system (works everywhere)"])));
+    x11.set_selected(if ex::x11_scale_themselves() { 0 } else { 1 });
+    let last = Cell::new(x11.selected());
+    x11.connect_selected_notify(move |r| {
+        if r.selected() != last.replace(r.selected()) {
+            ex::set_x11_scale_themselves(r.selected() == 0);
+        }
+    });
+    group.append(&x11);
     group
 }
 
@@ -784,13 +1003,16 @@ fn fill_screens(screens: &gtk4::Box) {
                 primary: outputs.iter().find(|o| o.primary).map(|o| o.name.clone()),
                 refresh: refresh.clone(),
             };
+            let extras = if backend == Backend::Kscreen { ex::load() } else { Default::default() };
+            let none = ex::Extras::default();
             for out in &outputs {
-                screens.append(&build_output_group(backend, out, &others));
+                screens.append(&build_output_group(backend, out, &others, extras.get(&out.name).unwrap_or(&none)));
             }
             if backend == Backend::Kscreen {
                 if let Some(g) = build_multi_group(&outputs, refresh) {
                     screens.append(&g);
                 }
+                screens.append(&build_games_group());
             }
         }
         None => {

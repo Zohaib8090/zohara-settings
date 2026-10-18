@@ -220,3 +220,16 @@ Unit-tested on the real Minecraft log; the notice buttons and a real failing pro
 (sets `DISPLAY=:2`, `WAYLAND_DISPLAY=wayland-1`; the real session is untouched; wrap in `nice -n 19`). Do not `pkill -f` a pattern that appears in your own command line.
 
 **Hermes Desktop** (Nous Research) is an Electron app with a **native Linux build**: install the CLI and run `hermes desktop`; the Windows installer is not needed (the owner's WebView error came from running `Hermes-Setup.exe`).
+
+## Windows programs out of the box (2026-10-18)
+Goal (owner): on a fresh Zohara, download any `.exe` and double-click it; nothing to set up first.
+* **Double-click is the default.** The package ships `zohara-windows.desktop` and a system `mimeapps.list` (`/usr/share/applications/`) that make Zohara open Windows file types;
+  a person's own `~/.config/mimeapps.list` still wins, and the Settings switch turns it off. (Nothing to add: this existed since 2026-10-14.)
+* **The Windows layer is installed with the system.** `zohara-settings` now depends on `wine winetricks wine-mono wine-gecko cabextract` (all Arch `extra`), so a machine gets them
+  with the next update; the ISO list (`zohara-profile/packages.x86_64`, commit `5ca1ba4`, `[skip ci]`, no ISO was built) names them too. wine-mono and wine-gecko matter: without
+  them Wine stops to download them whenever it makes a Windows folder.
+* **Proton-GE (about 560 MB) is downloaded on first use**, not shipped: when a double-click falls back to Wine because it is missing, the notice has **Install Proton-GE now**
+  (`zohara-settings --install-proton`, own process, a notice at the start and at the end).
+* **Not verified:** the notice buttons on a real laptop, and a fresh-install run from the ISO (no ISO was built).
+* **Other places that use Wine:** the Store's own Windows-installer flow makes `~/.wine_zohara_<app_id>` per app (see `zohara/docs/zohara_store_packages_guide.md`); it is separate from these folders.
+* Trade-off: Wine (hundreds of MB) is now a hard dependency of Settings. If someone wants it removable, split a `zohara-windows-support` package later (it would need to exist in every channel first).

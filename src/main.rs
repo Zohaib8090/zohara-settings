@@ -37,6 +37,9 @@ fn main() -> glib::ExitCode {
     let args: Vec<String> = std::env::args().collect();
 
     // A double-clicked Windows program (Gaming > Windows games > "Open Windows programs with a double-click").
+    if args.iter().any(|a| a == "--install-proton") {
+        std::process::exit(backend::windows_apps::install_proton_with_notices());
+    }
     if let Some(i) = args.iter().position(|a| a == "--run-windows") {
         let file = args.get(i + 1).cloned().unwrap_or_default();
         let once = backend::windows_apps::once_from_args(&args);

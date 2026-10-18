@@ -29,6 +29,12 @@ depends=(
   'udisks2'        # USB drives, SD cards and external disks: list, format, rename, check, write an image
   'curl'           # downloads the signed update approval list
   'fakeroot'       # lets the update check use a private copy of the package lists
+  # Windows programs (Gaming > Windows programs): the Windows layer and what it needs on first use, so a double-click works out of the box
+  'wine'           # runs .exe files; Proton-GE (downloaded on first use) is used for games
+  'winetricks'     # adds Windows parts (runtimes, fonts) to a program's Windows folder
+  'wine-mono'      # Wine's own .NET: without it Wine stops to download it when a Windows folder is made
+  'wine-gecko'     # Wine's own web view for old installers, for the same reason
+  'cabextract'     # winetricks unpacks Microsoft downloads with it
   'libinput-tools' # the Mouse page's "Which one am I using?" listens to input devices with `libinput debug-events`
 )
 makedepends=(

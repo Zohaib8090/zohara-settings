@@ -192,6 +192,23 @@ fn notify_action(title: &str, body: &str, label: &str, secs: u32) -> bool {
         .unwrap_or(false)
 }
 
+/// `--install-proton`: downloads and installs the newest Proton-GE, telling the person at the start and the end.
+pub fn install_proton_with_notices() -> i32 {
+    notify("Installing Proton-GE", "About 560 MB. You can keep using the computer; you will be told when it is ready.");
+    match super::proton::latest().and_then(|rel| super::proton::install(&rel).map(|_| rel.tag)) {
+        Ok(tag) => {
+            notify("Proton-GE is ready", &format!("{tag} is installed. Windows programs you open from now on use it."));
+            0
+        }
+        Err(e) => {
+            if notify_action("Couldn't install Proton-GE", &e, "Open Gaming settings", 30) {
+                open_gaming_settings();
+            }
+            1
+        }
+    }
+}
+
 /// How long after the start a program that quits with an error still counts as "did not start".
 pub const QUICK_FAIL_SECS: u64 = 10;
 
@@ -417,8 +434,11 @@ pub fn run_file_once(path: &str, once: &Once) -> i32 {
             return 1;
         }
     };
-    if fell_back && notify_action("Running with Wine", "Proton-GE isn't installed yet, so plain Wine is used. Many games run better with Proton-GE.", "Install Proton-GE", 15) {
-        open_gaming_settings();
+    if fell_back && notify_action("Running with Wine", "Proton-GE isn't installed yet, so plain Wine is used. Many games and programs run better with Proton-GE (a download of about 560 MB, once).", "Install Proton-GE now", 15) {
+        // in its own process, so this one can end when the program has started
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = Command::new(exe).arg("--install-proton").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+        }
     }
     // Watch the first seconds: a program that quits at once with an error did not start, and the person should hear why.
     loop {

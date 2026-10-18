@@ -181,6 +181,8 @@ fn save_game(file: &Path, name: &str, path: &str, settings: &GameSettings, extra
     }
     if settings.runner == Runner::Proton {
         std::fs::create_dir_all(&ctx.prefix_dir).map_err(|e| format!("Couldn't make the game's Windows folder: {e}"))?;
+    } else if !ctx.wine_prefix.as_os_str().is_empty() {
+        std::fs::create_dir_all(&ctx.wine_prefix).map_err(|e| format!("Couldn't make the game's Windows folder: {e}"))?;
     }
     std::fs::write(file, text).map_err(|e| e.to_string())?;
     refresh_menu();
@@ -647,7 +649,9 @@ fn settings_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box, file: &Pat
         }
         tg.add(&cdrow);
 
-        let private = crate::backend::game_tools::is_private_prefix(&prefix_dir, &data);
+        // the folder this game's runner uses: Proton's, or plain Wine's own
+        let reset_target = if runner == Runner::Proton { prefix_dir.clone() } else { wine_prefix.clone() };
+        let private = crate::backend::game_tools::is_private_prefix(&reset_target, &data);
         let reset = adw::ActionRow::new();
         reset.set_title("Reset this game's Windows folder");
         reset.set_subtitle(if private {
@@ -662,7 +666,7 @@ fn settings_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box, file: &Pat
         rbtn.set_sensitive(private);
         reset.add_suffix(&rbtn);
         {
-            let (prefix_dir, data) = (prefix_dir.clone(), data.clone());
+            let (prefix_dir, data) = (reset_target.clone(), data.clone());
             rbtn.connect_clicked(move |b| {
                 let d = adw::AlertDialog::new(Some("Reset this game's Windows folder?"), Some("It is moved to the trash, so it can still be taken back from there. The game itself is not touched."));
                 d.add_response("cancel", "Cancel");

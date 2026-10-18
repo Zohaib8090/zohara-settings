@@ -227,6 +227,9 @@ pub fn parse_env(s: &str) -> Result<Vec<(String, String)>, String> {
 
 /// The words that start a game: `env NAME=value … [gamemoderun] [mangohud] <runner> <file> <options>`.
 /// Err = what to tell the person (a typed field that doesn't parse, Proton not installed).
+/// The variable WebView2 reads extra browser options from.
+const WEBVIEW2_ARGS: &str = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+
 pub fn argv(path: &str, s: &GameSettings, ctx: &Context) -> Result<Vec<String>, String> {
     let options = split_words(&s.options).ok_or("A quote in the game options is not closed.")?;
     let extra_env = parse_env(&s.env)?;
@@ -235,6 +238,11 @@ pub fn argv(path: &str, s: &GameSettings, ctx: &Context) -> Result<Vec<String>, 
         env.extend(ctx.gpu_env.iter().cloned());
     }
     env.extend(extra_env);
+    // WebView2 (the web part many Windows programs embed) cannot use Chromium's own sandbox under Wine; programs that do not use WebView2
+    // ignore this. The person's own value for it wins.
+    if (s.runner == Runner::Proton || uses_wine(path, s.runner)) && !env.iter().any(|(k, _)| k == WEBVIEW2_ARGS) {
+        env.push((WEBVIEW2_ARGS.into(), "--no-sandbox".into()));
+    }
 
     let mut parts: Vec<String> = Vec::new();
     let is_exe = path.to_lowercase().ends_with(".exe");
@@ -394,8 +402,32 @@ mod tests {
         }
     }
 
+    /// The words without the WebView2 variable every Windows launch carries (it has its own test below).
+    fn plain(words: Vec<String>) -> Vec<String> {
+        let mut w: Vec<String> = words.into_iter().filter(|x| !x.starts_with("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=")).collect();
+        if w.first().map(|x| x == "env").unwrap_or(false) && !w.get(1).map(|x| x.contains('=')).unwrap_or(false) {
+            w.remove(0);
+        }
+        w
+    }
+
     fn cmd(path: &str, s: &GameSettings) -> String {
-        argv(path, s, &ctx()).unwrap().join(" ")
+        plain(argv(path, s, &ctx()).unwrap()).join(" ")
+    }
+
+    #[test]
+    fn webview2_gets_no_sandbox_unless_the_person_sets_it_and_native_programs_are_left_alone() {
+        let s = GameSettings::default();
+        assert!(argv("/g/Game.exe", &s, &ctx()).unwrap().contains(&"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--no-sandbox".to_string()));
+        let proton = GameSettings { runner: Runner::Proton, ..GameSettings::default() };
+        assert!(argv("/g/Game.exe", &proton, &ctx()).unwrap().contains(&"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--no-sandbox".to_string()));
+        let own = GameSettings { env: "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--disable-gpu".into(), ..GameSettings::default() };
+        let w = argv("/g/Game.exe", &own, &ctx()).unwrap();
+        assert_eq!(w.iter().filter(|x| x.starts_with("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=")).count(), 1);
+        assert!(w.contains(&"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--disable-gpu".to_string()));
+        // a Linux program started directly is not a Windows launch
+        let direct = GameSettings { runner: Runner::Direct, ..GameSettings::default() };
+        assert_eq!(argv("/g/native", &direct, &ctx()).unwrap(), vec!["/g/native"]);
     }
 
     #[test]
@@ -404,7 +436,7 @@ mod tests {
         assert_eq!(cmd("/g/Game.EXE", &s), "wine /g/Game.EXE");
         s.gamemode = true;
         assert_eq!(cmd("/g/run", &s), "gamemoderun /g/run");
-        assert_eq!(command("/g/My Game.exe", &GameSettings::default(), &ctx()).unwrap(), "\"wine\" \"/g/My Game.exe\"");
+        assert_eq!(command("/g/My Game.exe", &GameSettings::default(), &ctx()).unwrap(), "\"env\" \"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--no-sandbox\" \"wine\" \"/g/My Game.exe\"");
     }
 
     #[test]
@@ -413,7 +445,7 @@ mod tests {
         assert_eq!(cmd("/g/Run Me!.bat", &s), "wine start /unix /g/Run Me!.bat");
         assert_eq!(cmd("/g/setup.MSI", &s), "wine start /unix /g/setup.MSI");
         let with_prefix = Context { wine_prefix: PathBuf::from("/h/win"), ..ctx() };
-        assert_eq!(argv("/g/a.exe", &s, &with_prefix).unwrap(), vec!["env", "WINEPREFIX=/h/win", "wine", "/g/a.exe"]);
+        assert_eq!(plain(argv("/g/a.exe", &s, &with_prefix).unwrap()), vec!["env", "WINEPREFIX=/h/win", "wine", "/g/a.exe"]);
     }
 
     #[test]
@@ -429,7 +461,7 @@ mod tests {
     #[test]
     fn proton_gets_its_own_folder_and_dxvk_can_be_switched_off() {
         let mut s = GameSettings { runner: Runner::Proton, ..GameSettings::default() };
-        let a = argv("/g/Game.exe", &s, &ctx()).unwrap();
+        let a = plain(argv("/g/Game.exe", &s, &ctx()).unwrap());
         assert_eq!(
             a,
             vec![
@@ -453,7 +485,7 @@ mod tests {
     fn graphics_chip_overlay_and_options_are_added_in_order() {
         let s = GameSettings { dedicated_gpu: true, gamemode: true, overlay: true, options: "-windowed -w \"1280 720\"".into(), env: "FOO=bar".into(), ..GameSettings::default() };
         assert_eq!(
-            argv("/g/Game.exe", &s, &ctx()).unwrap(),
+            plain(argv("/g/Game.exe", &s, &ctx()).unwrap()),
             vec!["env", "__NV_PRIME_RENDER_OFFLOAD=1", "__GLX_VENDOR_LIBRARY_NAME=nvidia", "FOO=bar", "gamemoderun", "mangohud", "wine", "/g/Game.exe", "-windowed", "-w", "1280 720"]
         );
         // the stronger chip is only used when asked for

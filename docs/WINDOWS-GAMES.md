@@ -193,3 +193,30 @@ When a program closes right away, the notice reads the end of its log (`explain_
 * `UniversalApiContract` / `Windows.UI.Xaml` / `Windows.ApplicationModel`: a Microsoft Store (WinRT) program. **Microsoft's `MinecraftInstaller.exe` is one**; Wine and Proton
   have no WinRT, so it cannot run (owner's log, 2026-10-18; not caused by Safety mode). Use Java Edition (Modrinth / Prism Launcher, Gaming > Java) or Bedrock (mcpelauncher).
 * "Could not load file or assembly": a .NET program missing a Windows part (Tools can add .NET). `vcruntime` missing: Tools can add the Visual C++ runtimes.
+
+## Folders per game, Windows parts, and the log doctor (2026-10-18)
+**Where the Windows folders ("C: drives") are.** Proton-GE and plain Wine cannot share one, so each has its own:
+* shared, for double-clicked programs that are not registered games: Proton `~/.local/share/zohara/windows` (C: is `pfx/drive_c`), Wine `~/.local/share/zohara/windows-wine`;
+* one folder **per game** (a game in My games, or a file inside a registered game's folder): Proton `~/.local/share/zohara/prefixes/<game>`, Wine
+  `~/.local/share/zohara/prefixes-wine/<game>`. The Play button and a double-click of the game's file use the same folder. A program an installer put into a shared
+  folder keeps using that shared folder.
+* Before 2026-10-18 plain Wine had no per-game folder: it fell back to `~/.wine` for everything (and inside Safety mode that folder was lost on close). Games already
+  saved keep the old line until their gear window is saved again.
+
+**Windows parts** (`game_tools::COMPONENTS`, Gaming > Windows programs > "Windows parts", and the game's Tools): WebView2, Visual C++ runtimes, DirectX files, fonts,
+.NET. Most are winetricks verbs run with the game's own Wine. **WebView2 has no winetricks verb**: Microsoft's Evergreen installer
+(`https://go.microsoft.com/fwlink/p/?LinkId=2124703`, 1.8 MB, downloads the runtime itself) is run silently with `proton run … /silent /install` (or `wine`).
+Verified 2026-10-18 with the real GE-Proton11-9 in a throwaway folder: exit 0, `Program Files (x86)/Microsoft/EdgeWebView/Application/155.0.4283.62/msedgewebview2.exe`
+and the registry key `…\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}` with `pv` (`game_tools::component_installed` reads it; tested on the real folder).
+Every Windows launch also carries `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--no-sandbox` (the person's own value wins): known to be needed under Wine, **not yet verified with a
+real WebView2 program**.
+
+**The log doctor** (`backend/win_diag.rs`, `windows_apps::run_file_once`): when a program closes right away, the end of its log is matched against rules: WinRT / Microsoft Store programs
+(no fix: the Minecraft Launcher installer), WebView2 missing, Visual C++ DLLs, d3dcompiler, .NET assemblies, Game Mode noise. The notice says why in plain words and, when a part fixes it,
+offers a button ("Install WebView2 and try again"): it installs the part into the folder the program used and starts the program again **once** (`Once::fixed`, no loop).
+Unit-tested on the real Minecraft log; the notice buttons and a real failing program were not exercised end to end.
+
+**Testing Windows programs without touching the owner's screen:** a nested hidden desktop works: `dbus-run-session -- kwin_wayland --virtual --xwayland --no-lockscreen --exit-with-session ./script.sh`
+(sets `DISPLAY=:2`, `WAYLAND_DISPLAY=wayland-1`; the real session is untouched; wrap in `nice -n 19`). Do not `pkill -f` a pattern that appears in your own command line.
+
+**Hermes Desktop** (Nous Research) is an Electron app with a **native Linux build**: install the CLI and run `hermes desktop`; the Windows installer is not needed (the owner's WebView error came from running `Hermes-Setup.exe`).

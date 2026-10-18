@@ -16,6 +16,7 @@ pub mod game_tools;
 pub mod gpu_live;
 pub mod gpu_pref;
 pub mod night_light;
+pub mod win_diag;
 pub mod window_style;
 pub mod health;
 pub mod hibernate;

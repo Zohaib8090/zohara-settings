@@ -218,20 +218,6 @@ pub fn without_gamemode(words: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// Why a program that closed right away could not run, in plain words, when the log shows a known cause. `None` when it is not known.
-pub fn explain_failure(log: &str) -> Option<&'static str> {
-    if log.contains("UniversalApiContract") || log.contains("Windows.UI.Xaml") || log.contains("Windows.ApplicationModel") {
-        return Some("This program is built on Windows' own app platform (the Microsoft Store kind, called WinRT), which Wine and Proton do not have. That is why Microsoft's Minecraft Launcher installer cannot run here. For Minecraft, use the Java Edition with Modrinth or Prism Launcher (Gaming > Java), or Bedrock with mcpelauncher.");
-    }
-    if log.contains("Could not load file or assembly") {
-        return Some("This .NET program needs a Windows part that is missing. Gaming > My games > Tools can add .NET to this program's Windows folder.");
-    }
-    if log.contains("vcruntime") && (log.contains("not found") || log.contains("err:module")) {
-        return Some("A Windows runtime library is missing. Gaming > My games > Tools can add the Visual C++ runtimes.");
-    }
-    None
-}
-
 /// The last lines of a program's log (the end is where the reason is).
 fn log_tail(path: &Path) -> String {
     let text = std::fs::read_to_string(path).unwrap_or_default();
@@ -307,6 +293,9 @@ pub fn prefixes_in(data: &Path, path: &str, game_id: &str) -> (PathBuf, PathBuf)
     let shared_proton = data.join("zohara/windows");
     let shared_wine = data.join("zohara/windows-wine");
     let own = data.join("zohara/prefixes").join(game_id);
+    // plain Wine gets a folder of its own per game too: without one it falls back to ~/.wine, which every such program would share
+    // (and inside Safety mode, where the home folder is hidden, that default folder would be lost when the program closes)
+    let own_wine = data.join("zohara/prefixes-wine").join(game_id);
     if Path::new(path).starts_with(&shared_proton) {
         // plain Wine (when Proton-GE is missing) can open Proton's folder too: its `pfx` is an ordinary Wine prefix
         let wine = shared_proton.join("pfx");
@@ -314,7 +303,7 @@ pub fn prefixes_in(data: &Path, path: &str, game_id: &str) -> (PathBuf, PathBuf)
     } else if Path::new(path).starts_with(&shared_wine) {
         (own, shared_wine)
     } else {
-        (own, PathBuf::new())
+        (own, own_wine)
     }
 }
 
@@ -325,6 +314,9 @@ pub struct Once {
     pub dedicated: bool,
     /// Safety mode for this start: Some(true) = on, Some(false) = off, None = as set.
     pub sandbox: Option<bool>,
+    /// A missing Windows part was already installed for this start: do not offer to install again, so a program that still fails
+    /// does not loop.
+    pub fixed: bool,
 }
 
 /// Reads `--layer proton|wine` and `--dedicated` from the command line.
@@ -341,7 +333,7 @@ pub fn once_from_args(args: &[String]) -> Once {
     } else {
         None
     };
-    Once { runner, dedicated: args.iter().any(|a| a == "--dedicated"), sandbox }
+    Once { runner, dedicated: args.iter().any(|a| a == "--dedicated"), sandbox, fixed: false }
 }
 
 /// `zohara-settings --run-windows FILE`: starts the program and returns at once (exit code for the file manager).
@@ -434,13 +426,42 @@ pub fn run_file_once(path: &str, once: &Once) -> i32 {
             Ok(Some(status)) => {
                 if failed_to_start(status.code(), started.elapsed().as_secs()) {
                     let mut body = format!("{label} closed right away (error {}).", status.code().unwrap_or(-1));
-                    match explain_failure(&log_tail(&log_file)) {
-                        Some(why) => {
+                    let diagnosis = super::win_diag::diagnose(&log_tail(&log_file));
+                    match &diagnosis {
+                        Some(d) => {
                             body.push(' ');
-                            body.push_str(why);
+                            body.push_str(&d.text);
                         }
                         None if sandboxed => body.push_str(" Safety mode was on; some programs need it off (Settings > Gaming)."),
                         None => {}
+                    }
+                    // a missing Windows part Zohara can add: offer it once, then start the program again
+                    if let Some(fix) = diagnosis.and_then(|d| d.fix).filter(|_| !once.fixed) {
+                        if notify_action("A Windows program did not start", &body, &fix.label, 45) {
+                            let runner = if s.runner == Runner::Proton && !fell_back { Runner::Proton } else { Runner::Wine };
+                            let wine_dir = if runner == Runner::Proton {
+                                ctx.prefix_dir.join("pfx")
+                            } else if ctx.wine_prefix.as_os_str().is_empty() {
+                                home().join(".wine")
+                            } else {
+                                ctx.wine_prefix.clone()
+                            };
+                            notify("Installing a Windows part", "This can take a few minutes. The program starts again when it is done.");
+                            let fix_log = log_path(Some(&format!("{}-part-{}", game.as_ref().map(|(id, _, _)| id.as_str()).unwrap_or("shared"), fix.component)));
+                            match super::game_tools::install_component(fix.component, runner, ctx.proton_dir.as_deref(), &wine_dir, &fix_log) {
+                                Ok(()) => {
+                                    notify("Installed", &format!("Starting {label} again."));
+                                    return run_file_once(path, &Once { fixed: true, ..once.clone() });
+                                }
+                                Err(e) => {
+                                    if notify_action("Couldn't install the Windows part", &e, "Open the log", 30) {
+                                        open_log(&fix_log);
+                                    }
+                                    return 1;
+                                }
+                            }
+                        }
+                        return 1;
                     }
                     if notify_action("A Windows program did not start", &body, "Open the log", 30) {
                         open_log(&log_file);
@@ -720,7 +741,7 @@ mod tests {
     fn without_proton_it_falls_back_to_wine_in_its_own_folder() {
         let (w, fell) = launch_words("/d/a.exe", &defaults(), &ctx(false)).unwrap();
         assert!(fell);
-        assert_eq!(w, vec!["env", "WINEPREFIX=/h/.local/share/zohara/windows-wine", "wine", "/d/a.exe"]);
+        assert_eq!(w, vec!["env", "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--no-sandbox", "WINEPREFIX=/h/.local/share/zohara/windows-wine", "wine", "/d/a.exe"]);
         // Wine chosen on purpose: no warning
         let wine = GameSettings { runner: Runner::Wine, ..defaults() };
         assert!(!launch_words("/d/a.exe", &wine, &ctx(true)).unwrap().1);
@@ -790,8 +811,8 @@ mod tests {
     #[test]
     fn the_right_click_choices_are_read_from_the_command_line() {
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(once_from_args(&a(&["x", "--run-windows", "f.exe", "--layer", "wine"])), Once { runner: Some(Runner::Wine), dedicated: false, sandbox: None });
-        assert_eq!(once_from_args(&a(&["--dedicated"])), Once { runner: None, dedicated: true, sandbox: None });
+        assert_eq!(once_from_args(&a(&["x", "--run-windows", "f.exe", "--layer", "wine"])), Once { runner: Some(Runner::Wine), dedicated: false, sandbox: None, fixed: false });
+        assert_eq!(once_from_args(&a(&["--dedicated"])), Once { runner: None, dedicated: true, sandbox: None, fixed: false });
         assert_eq!(once_from_args(&a(&["--layer", "bogus"])).runner, None);
     }
 
@@ -803,7 +824,7 @@ mod tests {
         let (p, w) = prefixes_in(d, "/d/zohara/windows-wine/drive_c/Game/g.exe", "game");
         assert_eq!((p, w), (PathBuf::from("/d/zohara/prefixes/game"), PathBuf::from("/d/zohara/windows-wine")));
         let (p, w) = prefixes_in(d, "/home/me/Games/g.exe", "game");
-        assert_eq!((p, w), (PathBuf::from("/d/zohara/prefixes/game"), PathBuf::new()));
+        assert_eq!((p, w), (PathBuf::from("/d/zohara/prefixes/game"), PathBuf::from("/d/zohara/prefixes-wine/game")), "plain Wine has its own folder per game too");
     }
 
     #[test]
@@ -815,12 +836,14 @@ mod tests {
         assert_eq!(without_gamemode(w(&["gamemoderun", "wine", "x.exe", "gamemoderun"])), w(&["wine", "x.exe", "gamemoderun"]));
     }
 
+
     #[test]
-    fn known_failures_are_explained_in_plain_words() {
-        let minecraft = "Unhandled Exception:\nSystem.IO.FileNotFoundException: Could not load file or assembly 'Windows.Foundation.UniversalApiContract, Version=7.0.0.0'";
-        let why = explain_failure(minecraft).unwrap();
-        assert!(why.contains("WinRT") && why.contains("Minecraft") && why.contains("Modrinth"));
-        assert!(explain_failure("Could not load file or assembly 'Some.Library'").unwrap().contains(".NET"));
-        assert!(explain_failure("everything is fine").is_none());
+    fn safety_mode_lets_a_per_game_wine_folder_be_written() {
+        // the folder plain Wine uses for this game must be writable inside Safety mode, or everything it saves is lost on close
+        let (prefix, wine) = prefixes_in(Path::new("/d"), "/home/me/Games/g.exe", "game");
+        let c = Context { prefix_dir: prefix, wine_prefix: wine.clone(), ..ctx(false) };
+        let plan = sandbox_plan("/home/me/Games/g.exe", &c);
+        assert!(plan.writable.contains(&wine), "{:?}", plan.writable);
+        assert_eq!(wine, PathBuf::from("/d/zohara/prefixes-wine/game"));
     }
 }

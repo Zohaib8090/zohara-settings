@@ -826,6 +826,65 @@ fn double_click_group(page: &gtk4::Box) -> adw::PreferencesGroup {
     open_c.set_valign(gtk4::Align::Center);
     cdrive.add_suffix(&open_c);
 
+    // Windows parts: runtimes and the web view that installers and many apps need (the shared Windows folder).
+    let parts = adw::ComboRow::new();
+    parts.set_title("Windows parts");
+    parts.set_subtitle_lines(0);
+    parts.set_model(Some(&gtk4::StringList::new(&crate::backend::game_tools::COMPONENTS.iter().map(|(_, l)| *l).collect::<Vec<_>>())));
+    let install_part = gtk4::Button::with_label("Install");
+    install_part.set_valign(gtk4::Align::Center);
+    parts.add_suffix(&install_part);
+    // where the parts go: the Windows folder of the chosen layer
+    let part_target = {
+        let layer = layer.clone();
+        Rc::new(move || {
+            if layer.selected() == 1 { (Runner::Wine, windows_apps::wine_folder()) } else { (Runner::Proton, windows_apps::proton_folder().join("pfx")) }
+        })
+    };
+    let part_status: Rc<dyn Fn()> = {
+        let (parts, part_target) = (parts.clone(), part_target.clone());
+        Rc::new(move || {
+            let verb = crate::backend::game_tools::COMPONENTS[(parts.selected() as usize).min(crate::backend::game_tools::COMPONENTS.len() - 1)].0;
+            let (_, wine_prefix) = part_target();
+            parts.set_subtitle(if crate::backend::game_tools::component_installed(verb, &wine_prefix) {
+                "Already in the Windows folder that double-clicked programs share."
+            } else {
+                "Adds it to the Windows folder that double-clicked programs share. Needs the internet. An installer or app that closes right away usually needs one of these."
+            });
+        })
+    };
+    part_status();
+    {
+        let status_a = part_status.clone();
+        parts.connect_selected_notify(move |_| status_a());
+        let status_b = part_status.clone();
+        layer.connect_selected_notify(move |_| status_b());
+    }
+    {
+        let (parts, part_target, part_status) = (parts.clone(), part_target.clone(), part_status.clone());
+        install_part.connect_clicked(move |b| {
+            let verb = crate::backend::game_tools::COMPONENTS[(parts.selected() as usize).min(crate::backend::game_tools::COMPONENTS.len() - 1)].0;
+            let (runner, wine_prefix) = part_target();
+            b.set_sensitive(false);
+            b.set_label("Installing…");
+            parts.set_subtitle("Working. This can take several minutes; the window can stay open.");
+            let proton_dir = crate::backend::game_launch::Context::here(std::path::PathBuf::new(), std::path::PathBuf::new(), false).proton_dir;
+            let log = windows_apps::log_path(Some(&format!("shared-part-{verb}")));
+            let (b, parts, part_status) = (b.clone(), parts.clone(), part_status.clone());
+            crate::backend::worker::in_background(
+                move || crate::backend::game_tools::install_component(verb, runner, proton_dir.as_deref(), &wine_prefix, &log),
+                move |res| {
+                    b.set_sensitive(true);
+                    b.set_label("Install");
+                    match res {
+                        Ok(()) => part_status(),
+                        Err(e) => parts.set_subtitle(&e),
+                    }
+                },
+            );
+        });
+    }
+
     // Every change is saved at once.
     let save: Rc<dyn Fn()> = {
         let (layer, dxvk, gpu, gm, ov, page) = (layer.clone(), dxvk.clone(), gpu.clone(), gm.clone(), ov.clone(), page.clone());
@@ -879,7 +938,7 @@ fn double_click_group(page: &gtk4::Box) -> adw::PreferencesGroup {
         });
     }
 
-    for w in [on.upcast_ref::<gtk4::Widget>(), layer.upcast_ref(), dxvk.upcast_ref(), gpu.upcast_ref(), gm.upcast_ref(), ov.upcast_ref(), safe.upcast_ref(), cdrive.upcast_ref()] {
+    for w in [on.upcast_ref::<gtk4::Widget>(), layer.upcast_ref(), dxvk.upcast_ref(), gpu.upcast_ref(), gm.upcast_ref(), ov.upcast_ref(), safe.upcast_ref(), cdrive.upcast_ref(), parts.upcast_ref()] {
         g.add(w);
     }
     g

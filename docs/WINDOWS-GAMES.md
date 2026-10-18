@@ -233,3 +233,10 @@ Goal (owner): on a fresh Zohara, download any `.exe` and double-click it; nothin
 * **Not verified:** the notice buttons on a real laptop, and a fresh-install run from the ISO (no ISO was built).
 * **Other places that use Wine:** the Store's own Windows-installer flow makes `~/.wine_zohara_<app_id>` per app (see `zohara/docs/zohara_store_packages_guide.md`); it is separate from these folders.
 * Trade-off: Wine (hundreds of MB) is now a hard dependency of Settings. If someone wants it removable, split a `zohara-windows-support` package later (it would need to exist in every channel first).
+
+## PowerShell under Wine (tested 2026-10-19, nothing built yet)
+Installers that run a PowerShell script (Hermes' installer does) fail under Wine: Wine's own `powershell.exe` is an empty stub. With GE-Proton11-9 in a throwaway folder:
+`winetricks -q powershell_core` installs PowerShell 7.4.11; `winetricks -q powershell` installs a real `powershell.exe` wrapper; `pwsh` needs
+`DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` (else an ICU error) and **a terminal**: with no terminal it crashes in `ConsoleHost.Start` or silently does nothing, run under a
+pseudo-terminal (`script -qec "wine pwsh.exe …"`) it worked. Not tested: the real Hermes installer with these, double-click launches. Full notes and the idea for a "PowerShell" Windows part:
+`zohara/docs/RUN-ANYTHING-MACOS-IOS-2026-10-19.md` section 6. Never run the system `wineboot` before Proton's `wine` (wrong Wine server, `version mismatch`).

@@ -57,7 +57,7 @@ The outputs are named `Virtual-0` and `Virtual-1`. Maximise the window for a scr
 
 * Clicking the switches (no safe way to send input to the hidden session; the commands themselves were run by hand there).
 * A real second monitor, real EDID names (the parser is tested with a built EDID block), 3+ screens.
-* HDR, wide gamut, VRR and SDR brightness against a real capable monitor (the laptop panel reports none of them): only the parser and the
+* HDR, wide gamut, VRR and SDR brightness against a real capable monitor (the laptop panel reports none of them): the parser, the command spellings and the rendering (with `scripts/fake-kscreen`, two pretend screens that can do everything) are tested; clicking them is tested only in the VM (see below if done); real hardware is not.
   command spellings are tested. The ICC file path (`iccprofile.PATH`, a path with dots) is untested.
 * Moving the brightness slider on the real laptop: the slider was only rendered (with the laptop's real `-o` text replayed into the hidden desktop), and
   `brightness.100` (the current value) was accepted by the real `kscreen-doctor`.

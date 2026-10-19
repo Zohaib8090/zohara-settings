@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Stand-in for kscreen-doctor with two screens that CAN do VRR, HDR, brightness. Keeps its state in state.json, logs every command in calls.log."""
+import json, os, sys
+D = os.path.dirname(os.path.abspath(__file__))
+SF = os.path.join(D, "state.json")
+def default():
+    modes = [{"id": "1", "size": {"width": 2560, "height": 1440}, "refreshRate": 165.0}, {"id": "2", "size": {"width": 2560, "height": 1440}, "refreshRate": 60.0},
+             {"id": "3", "size": {"width": 1920, "height": 1080}, "refreshRate": 144.0}, {"id": "4", "size": {"width": 1920, "height": 1080}, "refreshRate": 60.0}]
+    def o(i, name, x, prio):
+        return dict(id=i, name=name, enabled=True, connected=True, priority=prio, replicationSource=0, currentModeId="1", modes=modes, scale=1.0, rotation=1,
+                    pos={"x": x, "y": 0}, brightness=80, vrr="Automatic", hdr="disabled", wcg="disabled", sdr=300, rgb="Full", src="sRGB", tradeoff="prefer accuracy", overscan=0)
+    return {"outputs": [o(1, "eDP-1", 0, 1), o(2, "DP-2", 2560, 2)]}
+st = json.load(open(SF)) if os.path.exists(SF) else default()
+def save(): json.dump(st, open(SF, "w"), indent=1)
+def find(n): return next((o for o in st["outputs"] if o["name"] == n), None)
+a = sys.argv[1:]
+if a[:1] == ["-j"]:
+    out = []
+    for o in st["outputs"]:
+        m = next(x for x in o["modes"] if x["id"] == o["currentModeId"])
+        out.append(dict(id=o["id"], name=o["name"], enabled=o["enabled"], connected=True, priority=o["priority"], replicationSource=o["replicationSource"], currentModeId=o["currentModeId"],
+                        modes=o["modes"], scale=o["scale"], rotation=o["rotation"], pos=o["pos"], size=m["size"]))
+    print(json.dumps({"outputs": out})); sys.exit(0)
+if a[:1] == ["-o"]:
+    for o in st["outputs"]:
+        print(f"Output: {o['id']} {o['name']} uuid-{o['id']}")
+        print("\tenabled" if o["enabled"] else "\tdisabled"); print("\tconnected"); print(f"\tpriority {o['priority']}")
+        print(f"\treplication source:{o['replicationSource']}")
+        print(f"\tOverscan: {o['overscan']}"); print(f"\tVrr: {o['vrr']}"); print(f"\tRgbRange: {o['rgb']}")
+        print(f"\tHDR: {o['hdr']}"); print(f"\t\tSDR brightness: {o['sdr']}")
+        print(f"\tWide Color Gamut: {o['wcg']}"); print(f"\tColor profile source: {o['src']}"); print(f"\tColor power preference: {o['tradeoff']}")
+        print(f"\tBrightness control: supported, set to {o['brightness']}% and dimming to 100%")
+    sys.exit(0)
+with open(os.path.join(D, "calls.log"), "a") as f: f.write(" ".join(a) + "\n")
+for arg in a:
+    parts = arg.split(".", 3)
+    if parts[0] != "output" or len(parts) < 3: continue
+    o = find(parts[1]); k = parts[2]; v = parts[3] if len(parts) > 3 else ""
+    if o is None: print("Output with name or uuid %s not found." % parts[1]); continue
+    if k == "enable": o["enabled"] = True
+    elif k == "disable": o["enabled"] = False
+    elif k == "primary":
+        for x in st["outputs"]: x["priority"] = 2
+        o["priority"] = 1
+    elif k == "mirror":
+        o["replicationSource"] = 0 if v == "none" else find(v)["id"]
+    elif k == "brightness": o["brightness"] = int(v)
+    elif k == "vrrpolicy": o["vrr"] = v.capitalize()
+    elif k == "hdr": o["hdr"] = "enabled" if v == "enable" else "disabled"
+    elif k == "wcg": o["wcg"] = "enabled" if v == "enable" else "disabled"
+    elif k == "sdr-brightness": o["sdr"] = int(v)
+    elif k == "rgbrange": o["rgb"] = v.capitalize()
+    elif k == "colorProfileSource": o["src"] = v
+    elif k == "colorPowerTradeoff": o["tradeoff"] = "prefer accuracy" if v == "preferAccuracy" else "prefer efficiency"
+    elif k == "overscan": o["overscan"] = int(v)
+    elif k == "mode": o["currentModeId"] = v
+save()

@@ -727,7 +727,7 @@ fn append_extra_rows(group: &gtk4::Box, out: &DisplayOutput, e: &ex::Extras, oth
         if hdr {
             let n = name.clone();
             // KWin's own default for how bright ordinary (non-HDR) content is shown on an HDR screen.
-            group.append(&slider_row("Brightness of normal content", 100, 1000, 200, " nits", move |v, r| {
+            group.append(&slider_row("Brightness of normal content", 100, 1000, e.sdr_brightness.unwrap_or(200), " nits", move |v, r| {
                 run_checked("kscreen-doctor", vec![format!("output.{n}.sdr-brightness.{v}")], r)
             }));
         }

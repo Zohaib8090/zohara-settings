@@ -49,11 +49,13 @@ pub struct Extras {
     pub color_source: Option<ColorSource>,
     pub tradeoff: Option<Tradeoff>,
     pub overscan: u32,
+    /// Brightness of normal content on an HDR screen, in nits (shown under the HDR line).
+    pub sdr_brightness: Option<u32>,
 }
 
 impl Default for Extras {
     fn default() -> Self {
-        Extras { brightness: None, vrr: None, hdr: None, wide_gamut: None, rgb_range: None, color_source: None, tradeoff: None, overscan: 0 }
+        Extras { brightness: None, vrr: None, hdr: None, wide_gamut: None, rgb_range: None, color_source: None, tradeoff: None, overscan: 0, sdr_brightness: None }
     }
 }
 
@@ -129,6 +131,7 @@ pub fn parse_outputs_text(raw: &str) -> HashMap<String, Extras> {
             "Vrr" => e.vrr = parse_vrr(value),
             "HDR" => e.hdr = parse_switch(value),
             "Wide Color Gamut" => e.wide_gamut = parse_switch(value),
+            "SDR brightness" => e.sdr_brightness = value.trim().split(|c: char| !c.is_ascii_digit()).next().and_then(|n| n.parse().ok()),
             "Overscan" => e.overscan = value.trim().parse().unwrap_or(0),
             "RgbRange" => {
                 e.rgb_range = match value.trim().to_lowercase().as_str() {
@@ -306,7 +309,7 @@ mod tests {
 
     #[test]
     fn capable_screens_show_their_state() {
-        let raw = "Output: 2 DP-2 abc\n\tVrr: Automatic\n\tHDR: enabled\n\tWide Color Gamut: disabled\n\tRgbRange: Limited\n\
+        let raw = "Output: 2 DP-2 abc\n\tVrr: Automatic\n\tHDR: enabled\n\t\tSDR brightness: 350\n\tWide Color Gamut: disabled\n\tRgbRange: Limited\n\
 \tColor profile source: EDID\n\tColor power preference: prefer efficiency\n\tOverscan: 3\n\tBrightness control: unsupported\n\
 Output: 3 HDMI-A-1 def\n\tVrr: Always\n\tHDR: disabled\n";
         let m = parse_outputs_text(raw);
@@ -318,6 +321,7 @@ Output: 3 HDMI-A-1 def\n\tVrr: Always\n\tHDR: disabled\n";
         assert_eq!(a.color_source, Some(ColorSource::Edid));
         assert_eq!(a.tradeoff, Some(Tradeoff::Efficiency));
         assert_eq!(a.overscan, 3);
+        assert_eq!(a.sdr_brightness, Some(350));
         assert_eq!(a.brightness, None, "unsupported brightness hides the slider");
         let b = &m["HDMI-A-1"];
         assert_eq!(b.vrr, Some(Vrr::Always));

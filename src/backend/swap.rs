@@ -154,6 +154,10 @@ pub fn explain_exit(code: Option<i32>) -> Option<String> {
         Some(EXIT_EXISTS) => Some("There is already a swap file. Remove it first, then make a new one.".into()),
         Some(EXIT_CANNOT_EMPTY) => Some("The swap file is in use and its contents don't fit in free memory right now. Close some apps and try again.".into()),
         Some(EXIT_NO_ROOM) => Some(format!("There isn't enough free disk space (at least {KEEP_FREE_GIB} GiB must stay free).")),
+        Some(super::hibernate::EXIT_TOO_SMALL) => Some("No swap on the disk is as big as memory, so Hibernate cannot work. Make a bigger swap file first.".into()),
+        Some(super::hibernate::EXIT_NO_GRUB) => Some("This computer does not start through GRUB's settings file, so Settings cannot set Hibernate up here.".into()),
+        Some(super::hibernate::EXIT_NO_UUID) => Some("Could not find the disk's ID for the swap, so nothing was changed.".into()),
+        Some(super::hibernate::EXIT_NO_OFFSET) => Some("Could not find where the swap file sits on the disk, so nothing was changed.".into()),
         _ => Some("It didn't work. Nothing is left half-done that would stop the computer from starting.".into()),
     }
 }

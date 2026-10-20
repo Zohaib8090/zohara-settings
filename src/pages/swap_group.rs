@@ -1,7 +1,7 @@
 //! Power & battery > Swap: add compressed memory swap (zram) or a swap file after installing, and see whether Hibernate
 //! can work. The system changes are in `backend::swap` (one administrator prompt each); this is only the page.
 
-use crate::backend::hibernate;
+use crate::backend::hibernate::{self, Setup};
 use crate::backend::swap::{self, Status};
 use crate::backend::worker::in_background;
 use adw::prelude::*;
@@ -19,13 +19,12 @@ fn in_use_text(s: &Status) -> String {
     }
 }
 
-fn hibernate_text(s: &Status) -> (&'static str, String) {
-    if hibernate::can_hibernate() {
-        ("Ready", "Hibernate saves everything to the disk and turns the computer off completely.".into())
-    } else if s.disk_swap_exists() && s.swap_kib() >= s.mem_kib {
-        ("Not set up", "There is enough swap, but the start-up setting Hibernate needs is missing. Setting that up from here comes in a later update.".into())
-    } else {
-        ("Not available", format!("Hibernate needs a swap file or partition on the disk as big as memory ({}). Compressed memory does not count. Make a swap file in the row above.", swap::gib(s.mem_kib)))
+fn hibernate_text(s: &Status, setup: Setup) -> (&'static str, String) {
+    match setup {
+        Setup::Ready => ("Ready", "Hibernate saves everything to the disk and turns the computer off completely. Try it once with your work saved before you rely on it.".into()),
+        Setup::RestartNeeded => ("Restart needed", "Hibernate is set up. Restart the computer once to finish; the Hibernate choices appear after that.".into()),
+        Setup::CanSetUp => ("Not set up", "There is enough swap. Press Set up to add the start-up setting Hibernate needs. Save your work and try it once before you rely on it.".into()),
+        Setup::TooSmall | Setup::NoSwap => ("Not available", format!("Hibernate needs a swap file or partition on the disk as big as memory ({}). Compressed memory does not count. Make a swap file in the row above.", swap::gib(s.mem_kib))),
     }
 }
 
@@ -59,6 +58,11 @@ pub fn group() -> adw::PreferencesGroup {
     hib.set_title("Hibernate");
     hib.set_activatable(false);
     hib.set_subtitle_lines(0);
+    let hib_btn = gtk4::Button::with_label("Set up");
+    hib_btn.set_valign(gtk4::Align::Center);
+    hib_btn.add_css_class("suggested-action");
+    hib_btn.set_visible(false);
+    hib.add_suffix(&hib_btn);
 
     let msg = adw::ActionRow::new();
     msg.set_title("Nothing changed yet");
@@ -69,7 +73,7 @@ pub fn group() -> adw::PreferencesGroup {
     let options: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
 
     let refresh: Rc<dyn Fn()> = {
-        let (info, zram, file, hib, status, options, quiet) = (info.clone(), zram.clone(), file.clone(), hib.clone(), status.clone(), options.clone(), quiet.clone());
+        let (info, zram, file, hib, hib_btn, status, options, quiet) = (info.clone(), zram.clone(), file.clone(), hib.clone(), hib_btn.clone(), status.clone(), options.clone(), quiet.clone());
         Rc::new(move || {
             let s = swap::status();
             quiet.set(true);
@@ -102,9 +106,11 @@ pub fn group() -> adw::PreferencesGroup {
                 "Uses disk space. Hibernate needs one as big as memory.".to_string()
             });
             *options.borrow_mut() = gibs;
-            let (title, why) = hibernate_text(&s);
+            let setup = hibernate::setup_state();
+            let (title, why) = hibernate_text(&s, setup);
             hib.set_title(&format!("Hibernate: {title}"));
             hib.set_subtitle(&why);
+            hib_btn.set_visible(setup == Setup::CanSetUp);
             *status.borrow_mut() = s;
             quiet.set(false);
         })
@@ -113,13 +119,14 @@ pub fn group() -> adw::PreferencesGroup {
 
     // Runs `script`; shows the result in the message row and re-reads the system either way.
     let run: Rc<dyn Fn(String, &'static str)> = {
-        let (msg, refresh, zram, file) = (msg.clone(), refresh.clone(), zram.clone(), file.clone());
+        let (msg, refresh, zram, file, hib_btn) = (msg.clone(), refresh.clone(), zram.clone(), file.clone(), hib_btn.clone());
         Rc::new(move |script: String, what: &'static str| {
             msg.set_title("Working…");
             msg.set_subtitle(what);
             zram.set_sensitive(false);
             file.set_sensitive(false);
-            let (msg, refresh, zram, file) = (msg.clone(), refresh.clone(), zram.clone(), file.clone());
+            hib_btn.set_sensitive(false);
+            let (msg, refresh, zram, file, hib_btn) = (msg.clone(), refresh.clone(), zram.clone(), file.clone(), hib_btn.clone());
             in_background(move || swap::run(&script), move |err| {
                 match err {
                     None => {
@@ -134,6 +141,7 @@ pub fn group() -> adw::PreferencesGroup {
                 refresh();
                 zram.set_sensitive(true);
                 file.set_sensitive(true);
+                hib_btn.set_sensitive(true);
             });
         })
     };
@@ -191,6 +199,27 @@ pub fn group() -> adw::PreferencesGroup {
                 run(script, if gib == 0 { "Removing the swap file…" } else { "Making the swap file… this can take a minute." });
             });
             d.present(Some(row));
+        });
+    }
+
+    {
+        let run = run.clone();
+        hib_btn.connect_clicked(move |b| {
+            let d = adw::AlertDialog::new(
+                Some("Set up Hibernate?"),
+                Some("This tells the computer where to read the saved memory back from when it starts, and turns the Hibernate choices on. It needs one restart to take effect.\n\nSave your work first, and try Hibernate once before you rely on it: if it does not come back, the session is lost."),
+            );
+            d.add_responses(&[("cancel", "Cancel"), ("go", "Set up")]);
+            d.set_response_appearance("go", adw::ResponseAppearance::Suggested);
+            d.set_default_response(Some("cancel"));
+            d.set_close_response("cancel");
+            let run = run.clone();
+            d.connect_response(None, move |_, r| {
+                if r == "go" {
+                    run(hibernate::enable_script(), "Setting up Hibernate…");
+                }
+            });
+            d.present(Some(b));
         });
     }
 

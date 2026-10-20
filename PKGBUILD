@@ -145,6 +145,7 @@ package() {
   # Windows programs open with Zohara by default (Proton-GE or Wine; the switch is in Settings > Gaming).
   install -Dm644 "$startdir/data/zohara-windows.desktop" "$pkgdir/usr/share/applications/zohara-windows.desktop"
   install -Dm644 "$startdir/data/zohara-windows-servicemenu.desktop" "$pkgdir/usr/share/kio/servicemenus/zohara-windows.desktop"
+  install -Dm644 "$startdir/data/zohara-archive-servicemenu.desktop" "$pkgdir/usr/share/kio/servicemenus/zohara-archive.desktop"
   install -Dm644 "$startdir/data/zohara-mimeapps.list" "$pkgdir/usr/share/applications/mimeapps.list"
 
   # Optional systemd user service (used by some distros for dbus activation)

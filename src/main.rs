@@ -45,6 +45,11 @@ fn main() -> glib::ExitCode {
         let once = backend::windows_apps::once_from_args(&args);
         std::process::exit(backend::windows_apps::run_file_once(&file, &once));
     }
+    // Right-click > Zohara > Install as an app (on a .tar.gz and friends)
+    if let Some(i) = args.iter().position(|a| a == "--install-archive") {
+        let file = args.get(i + 1).cloned().unwrap_or_default();
+        std::process::exit(backend::archive_install::install_from_file_manager(&file));
+    }
     // Right-click > Zohara > Add as a game
     if let Some(i) = args.iter().position(|a| a == "--add-game") {
         let file = args.get(i + 1).cloned().unwrap_or_default();

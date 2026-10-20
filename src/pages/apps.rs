@@ -985,6 +985,7 @@ pub fn build() -> gtk4::Widget {
     more.add(&startup);
     root.append(&more);
 
+    root.append(&super::archive_apps::build());
     root.append(&installed_group(&root));
 
     root.append(&sources_group(&root));

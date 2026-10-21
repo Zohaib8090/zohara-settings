@@ -13,7 +13,7 @@ name: Build & Publish Zohara Settings
 
 on:
   push:
-    branches: [main, beta]
+    branches: [main, beta, stable]
   workflow_dispatch:
     inputs:
       channel:
@@ -79,6 +79,8 @@ jobs:
             CH="stable"
           elif [ "${{ github.ref }}" = "refs/heads/beta" ]; then
             CH="beta"
+          elif [ "${{ github.ref }}" = "refs/heads/stable" ]; then
+            CH="stable"
           else
             echo "::error::Unknown ref ${{ github.ref }}; refusing to publish"
             exit 1

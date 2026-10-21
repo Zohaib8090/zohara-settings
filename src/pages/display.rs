@@ -1170,6 +1170,7 @@ pub fn build() -> gtk4::Widget {
     root.append(&screens);
 
     root.append(&build_night_light());
+    root.append(&super::x11_support::build());
 
     scroll.set_child(Some(&root));
     scroll.upcast()

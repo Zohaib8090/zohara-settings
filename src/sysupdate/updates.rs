@@ -218,6 +218,16 @@ fn pkexec(args: &[&str]) -> Command {
     c
 }
 
+/// What runs as root for a pinned system update: re-verify and move the date, refresh the keyring, drop Plasma's X11 session if the
+/// new day's repositories no longer have it (Plasma 6.8 removed `kwin-x11` and `plasma-x11-session`; pacman would stop on them),
+/// then the upgrade itself with the arguments passed after the three file names.
+const PINNED_ROOT_SCRIPT: &str = "store=\"$1\"; m=\"$2\"; s=\"$3\"; shift 3; \
+    \"$store\" --pin-date \"$m\" \"$s\" && pacman -Sy --noconfirm --needed archlinux-keyring && \
+    if pacman -Qq kwin-x11 >/dev/null 2>&1 && ! pacman -Si kwin-x11 >/dev/null 2>&1; then \
+      echo 'Plasma no longer has an X11 session here: removing it first. Settings > Display > X11 support adds another X11 desktop.'; \
+      pacman -Rns --noconfirm $(pacman -Qq plasma-x11-session kwin-x11 2>/dev/null) || exit 1; \
+    fi && exec pacman \"$@\"";
+
 /// The system update on an approved-date system, as one administrator prompt:
 /// verify the signed manifest and move the mirror to its date, refresh the
 /// keyring (so new packages verify), then a full upgrade. pacman's own hooks
@@ -248,8 +258,7 @@ fn apply_system_pinned(tx: &Sender<String>) -> Result<(), String> {
     let run = (|| {
         std::fs::write(&m_path, &signed.body).map_err(|e| e.to_string())?;
         std::fs::write(&s_path, &signed.sig).map_err(|e| e.to_string())?;
-        let script = "store=\"$1\"; m=\"$2\"; s=\"$3\"; shift 3; \
-            \"$store\" --pin-date \"$m\" \"$s\" && pacman -Sy --noconfirm --needed archlinux-keyring && exec pacman \"$@\"";
+        let script = PINNED_ROOT_SCRIPT;
         let mut c = pkexec(&["sh", "-c", script, "sh", "/usr/bin/zohara-settings", &m_path.to_string_lossy(), &s_path.to_string_lossy()]);
         c.args(&upgrade);
         run_logged(c, tx)
@@ -756,6 +765,20 @@ mod health_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_root_update_script_is_valid_and_removes_the_old_x11_session_first() {
+        let sc = PINNED_ROOT_SCRIPT;
+        let ok = Command::new("sh").args(["-n", "-c", sc]).status().map(|s| s.success()).unwrap_or(false);
+        assert!(ok, "sh -n rejected the script");
+        // order: move the date, refresh the keyring, remove the X11 pieces, then upgrade
+        let pos = |needle: &str| sc.find(needle).unwrap_or_else(|| panic!("missing {needle}"));
+        assert!(pos("--pin-date") < pos("archlinux-keyring"));
+        assert!(pos("archlinux-keyring") < pos("pacman -Rns"));
+        assert!(pos("pacman -Rns") < pos("exec pacman"));
+        // only when kwin-x11 is installed and the new repositories no longer carry it
+        assert!(sc.contains("pacman -Qq kwin-x11") && sc.contains("! pacman -Si kwin-x11"));
+    }
 
     #[test]
     fn checkupdates_lines() {

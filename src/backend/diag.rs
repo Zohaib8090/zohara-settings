@@ -77,7 +77,8 @@ impl log::Log for FileLogger {
         }
         let line = format!("{} {:<5} [{}] {}\n", timestamp(), r.level(), r.target(), r.args());
         // stderr lands in the systemd journal for apps started from Plasma.
-        eprint!("{line}");
+        // (not eprint!: that panics when stderr is a closed pipe, e.g. `zohara-settings 2>&1 | head -1`, and the panic hook logs again)
+        let _ = std::io::stderr().write_all(line.as_bytes());
         if let Ok(mut f) = self.file.lock() {
             if let Some(file) = f.as_mut() {
                 let _ = file.write_all(line.as_bytes());

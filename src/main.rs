@@ -50,6 +50,13 @@ fn main() -> glib::ExitCode {
         let file = args.get(i + 1).cloned().unwrap_or_default();
         std::process::exit(backend::archive_install::install_from_file_manager(&file));
     }
+    // `zohara-settings --check-mac-app PATH`: say whether a Mac or iPhone app has a chance here (reads only, runs nothing)
+    if let Some(i) = args.iter().position(|a| a == "--check-mac-app") {
+        let path = args.get(i + 1).cloned().unwrap_or_default();
+        let r = backend::mac_check::check(std::path::Path::new(&path));
+        println!("{}\n\n{}", backend::mac_check::headline(&r), backend::mac_check::explain(&r));
+        std::process::exit(0);
+    }
     // Right-click > Zohara > Add as a game
     if let Some(i) = args.iter().position(|a| a == "--add-game") {
         let file = args.get(i + 1).cloned().unwrap_or_default();

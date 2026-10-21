@@ -16,6 +16,7 @@ pub mod text_input;
 pub mod start_menu;
 pub mod apps;
 pub mod archive_apps;
+pub mod mac_apps;
 pub mod offline_maps;
 pub mod web_apps;
 pub mod accounts;

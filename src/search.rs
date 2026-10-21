@@ -117,6 +117,7 @@ pub static ENTRIES: &[Entry] = &[
     e!("Personalization", "Personalization", "theme colours background wallpaper accent dark light mode lock screen fonts taskbar start"),
     e!("Apps", "Apps", "installed apps startup web apps uninstall programs"),
     e!("Apps from archives", "Apps", "tar.gz tarball archive install portable app extract unpack tgz xz zst"),
+    e!("Mac and iPhone apps", "Apps", "mac macos iphone ios ipa dmg app darling apple check run"),
     e!("Accounts", "Accounts", "user users account password login sign-in"),
     e!("Time & language", "Time & language", "date time clock timezone language region"),
     e!("Gaming", "Gaming", "game games controller steam"),

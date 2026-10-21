@@ -421,6 +421,15 @@ fn fill(holder: &gtk4::Box) {
             let (f, h, name) = (game.file.clone(), holder.clone(), game.name.clone());
             gear.connect_clicked(move |b| settings_window(b, &h, &f, &name, &path, &current));
             r.add_suffix(&gear);
+        } else if std::fs::read_to_string(&game.file).map(|t| game_launch::is_app_entry(&t)).unwrap_or(false) {
+            // An installed app added from "my apps": its own launcher stays; the settings are wrapped around it.
+            let gear = gtk4::Button::from_icon_name("emblem-system-symbolic");
+            gear.set_valign(gtk4::Align::Center);
+            gear.set_tooltip_text(Some("Settings for this game"));
+            gear.update_property(&[gtk4::accessible::Property::Label("Settings for this game")]);
+            let (f, h, name) = (game.file.clone(), holder.clone(), game.name.clone());
+            gear.connect_clicked(move |b| app_settings_window(b, &h, &f, &name));
+            r.add_suffix(&gear);
         }
         let rm = gtk4::Button::from_icon_name("user-trash-symbolic");
         rm.set_valign(gtk4::Align::Center);
@@ -746,6 +755,121 @@ fn settings_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box, file: &Pat
     tv.add_bottom_bar(&bar);
     win.set_content(Some(&tv));
     win.present();
+}
+
+/// Settings for an installed app that was added from "my apps": a new name, the stronger graphics chip, Game Mode, the
+/// performance overlay, options and environment variables. They are wrapped around the app's own launcher (see
+/// `game_launch::with_app_settings`); turning them all off puts the launcher back as it was.
+fn app_settings_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box, file: &Path, name: &str) {
+    let Some(parent) = from.root().and_downcast::<gtk4::Window>() else { return };
+    let text = std::fs::read_to_string(file).unwrap_or_default();
+    let current = game_launch::app_settings_of(&text);
+    let win = adw::Window::builder().title(format!("{name}: settings")).transient_for(&parent).modal(true).default_width(560).default_height(520).build();
+    let page = adw::PreferencesPage::new();
+    let group = adw::PreferencesGroup::new();
+    group.set_title("How this game runs");
+    group.set_description(Some("This app keeps its own launcher. These choices are added around it when it starts from My games or the Start menu."));
+
+    let name_row = adw::EntryRow::new();
+    name_row.set_title("Name");
+    name_row.set_text(name);
+
+    let gpu = adw::ComboRow::new();
+    gpu.set_title("Graphics chip");
+    gpu.set_subtitle_lines(0);
+    gpu.set_model(Some(&gtk4::StringList::new(&["Automatic", "Dedicated"])));
+    gpu.set_selected(current.dedicated_gpu as u32);
+    if !gpu_pref::has_two_gpus() {
+        gpu.set_sensitive(false);
+        gpu.set_subtitle("This computer has one graphics chip, so there is nothing to choose.");
+    } else {
+        gpu.set_subtitle("Automatic lets the system decide. On a laptop with two chips, Dedicated runs the game on the stronger one.");
+    }
+    let has = |cmd: &str| Command::new("sh").args(["-c", &format!("command -v {cmd}")]).output().map(|o| o.status.success()).unwrap_or(false);
+    let gm = adw::SwitchRow::new();
+    gm.set_title("Game Mode");
+    gm.set_subtitle(if has("gamemoderun") { "Give the game priority while it runs" } else { "Game Mode isn't installed" });
+    gm.set_active(current.gamemode && has("gamemoderun"));
+    gm.set_sensitive(has("gamemoderun"));
+    let ov = adw::SwitchRow::new();
+    ov.set_title("Performance overlay (MangoHud)");
+    ov.set_subtitle(if has("mangohud") { "Shows frame rate and load on screen while playing" } else { "MangoHud isn't installed" });
+    ov.set_active(current.overlay && has("mangohud"));
+    ov.set_sensitive(has("mangohud"));
+    let options = adw::EntryRow::new();
+    options.set_title("Game options (for example -windowed)");
+    options.set_text(&current.options);
+    let env = adw::EntryRow::new();
+    env.set_title("Environment variables (NAME=value NAME2=value)");
+    env.set_text(&current.env);
+    for r in [name_row.clone().upcast::<gtk4::Widget>(), gpu.clone().upcast(), gm.clone().upcast(), ov.clone().upcast(), options.clone().upcast(), env.clone().upcast()] {
+        group.add(&r);
+    }
+    page.add(&group);
+
+    let status = gtk4::Label::new(None);
+    status.set_wrap(true);
+    status.set_halign(gtk4::Align::Start);
+    status.add_css_class("dim-label");
+    let save = gtk4::Button::with_label("Save");
+    save.add_css_class("suggested-action");
+    let cancel = gtk4::Button::with_label("Cancel");
+    {
+        let w = win.clone();
+        cancel.connect_clicked(move |_| w.close());
+    }
+    {
+        let (win, holder, status, file) = (win.clone(), holder.clone(), status.clone(), file.to_path_buf());
+        let (name_row, gpu, gm, ov, options, env) = (name_row.clone(), gpu.clone(), gm.clone(), ov.clone(), options.clone(), env.clone());
+        save.connect_clicked(move |_| {
+            let settings = GameSettings {
+                gamemode: gm.is_active(),
+                overlay: ov.is_active(),
+                dedicated_gpu: gpu.selected() == 1,
+                options: options.text().to_string(),
+                env: env.text().to_string(),
+                ..GameSettings::default()
+            };
+            let name = name_row.text().to_string();
+            if name.trim().is_empty() {
+                status.set_text("Give the game a name.");
+                return;
+            }
+            let (win, holder, status, file) = (win.clone(), holder.clone(), status.clone(), file.clone());
+            in_background(move || save_app_settings(&file, &name, &settings), move |res| match res {
+                Ok(()) => {
+                    fill(&holder);
+                    win.close();
+                }
+                Err(e) => status.set_text(&e),
+            });
+        });
+    }
+    let bar = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    bar.set_margin_top(8);
+    bar.set_margin_bottom(12);
+    bar.set_margin_start(18);
+    bar.set_margin_end(18);
+    status.set_hexpand(true);
+    bar.append(&status);
+    bar.append(&cancel);
+    bar.append(&save);
+    let tv = adw::ToolbarView::new();
+    tv.add_top_bar(&adw::HeaderBar::new());
+    tv.set_content(Some(&page));
+    tv.add_bottom_bar(&bar);
+    win.set_content(Some(&tv));
+    win.present();
+}
+
+/// Writes the settings of an installed app into its entry in My games and refreshes the menu.
+fn save_app_settings(file: &Path, name: &str, settings: &GameSettings) -> Result<(), String> {
+    let old = std::fs::read_to_string(file).map_err(|e| format!("Couldn't read the game's entry: {e}"))?;
+    let gpu_env = if settings.dedicated_gpu { gpu_pref::dedicated_env() } else { Vec::new() };
+    let text = game_launch::with_app_settings(&old, name, settings, &gpu_env)?;
+    std::fs::write(file, text).map_err(|e| e.to_string())?;
+    refresh_menu();
+    Ok(())
 }
 
 fn add_window(from: &impl IsA<gtk4::Widget>, holder: &gtk4::Box) {

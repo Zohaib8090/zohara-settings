@@ -24,6 +24,8 @@ const KEY_OPTIONS: &str = "X-Zohara-Options";
 const KEY_ENV: &str = "X-Zohara-Env";
 pub const KEY_SANDBOX: &str = "X-Zohara-Sandbox";
 pub const KEY_PROTON_TAG: &str = "X-Zohara-ProtonTag";
+/// An installed app marked as a game: the app's own `Exec=` line, kept so the settings can be wrapped around it and taken off again.
+const KEY_APP_EXEC: &str = "X-Zohara-AppExec";
 pub const MARK: &str = "X-Zohara-Game=true";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -388,6 +390,170 @@ pub fn parse_entry(text: &str) -> Option<(String, GameSettings)> {
     ))
 }
 
+// ── Installed apps marked as games ─────────────────────────────────────────
+
+/// Sets (`Some`), changes or removes (`None`) one key of the `[Desktop Entry]` section; other sections (the app's actions) are
+/// never touched. A new key goes at the end of that section.
+fn set_main_key(text: &str, key: &str, value: Option<&str>) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let (mut in_main, mut seen_main, mut done) = (false, false, false);
+    let prefix = format!("{key}=");
+    for l in text.lines() {
+        let t = l.trim();
+        if t.starts_with('[') {
+            if in_main && !done {
+                if let Some(v) = value {
+                    push_before_blank_lines(&mut out, format!("{key}={v}"));
+                }
+                done = true;
+            }
+            in_main = t == "[Desktop Entry]";
+            seen_main |= in_main;
+        } else if in_main && t.starts_with(&prefix) {
+            if !done {
+                if let Some(v) = value {
+                    out.push(format!("{key}={v}"));
+                }
+                done = true;
+            }
+            continue;
+        }
+        out.push(l.to_string());
+    }
+    if seen_main && in_main && !done {
+        if let Some(v) = value {
+            push_before_blank_lines(&mut out, format!("{key}={v}"));
+        }
+    }
+    out.join("\n") + "\n"
+}
+
+/// Adds a line at the end of a section but before the blank lines that separate it from the next one.
+fn push_before_blank_lines(out: &mut Vec<String>, line: String) {
+    let mut blanks = 0;
+    while out.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+        out.pop();
+        blanks += 1;
+    }
+    out.push(line);
+    out.extend(std::iter::repeat(String::new()).take(blanks));
+}
+
+/// Removes the translated names (`Name[de]=...`) of the main section: a new name must show in every language.
+fn drop_translated_names(text: &str) -> String {
+    let mut in_main = false;
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            if t.starts_with('[') {
+                in_main = t == "[Desktop Entry]";
+            }
+            !(in_main && t.starts_with("Name["))
+        })
+        .collect();
+    kept.join("\n") + "\n"
+}
+
+/// Whether this is an installed app marked as a game (its own launcher, not a program file we wrote).
+pub fn is_app_entry(text: &str) -> bool {
+    value_of(text, KEY_FILE).is_none() && value_of(text, "Exec").is_some()
+}
+
+/// The settings an installed app was given (all off and empty when none were set yet).
+pub fn app_settings_of(text: &str) -> GameSettings {
+    let flag = |k: &str| value_of(text, k).as_deref() == Some("true");
+    GameSettings {
+        gamemode: flag(KEY_GAMEMODE),
+        overlay: flag(KEY_OVERLAY),
+        dedicated_gpu: flag(KEY_DEDICATED),
+        options: unesc(&value_of(text, KEY_OPTIONS).unwrap_or_default()),
+        env: unesc(&value_of(text, KEY_ENV).unwrap_or_default()),
+        ..GameSettings::default()
+    }
+}
+
+/// The app's own `Exec=` line: the one saved when settings were first set, else the line now.
+fn app_exec_of(text: &str) -> Option<String> {
+    value_of(text, KEY_APP_EXEC).map(|v| unesc(&v)).or_else(|| value_of(text, "Exec"))
+}
+
+/// Trailing field codes of an `Exec=` line (`%U`, `%f` ...): options go before them.
+fn split_field_codes(exec: &str) -> (&str, &str) {
+    let mut end = exec.trim_end().len();
+    let mut start = end;
+    loop {
+        let head = exec[..end].trim_end();
+        let Some(i) = head.rfind(char::is_whitespace) else { break };
+        let tok = &head[i + 1..];
+        if tok.len() == 2 && tok.starts_with('%') && "uUfFik".contains(&tok[1..]) {
+            start = i;
+            end = i;
+        } else {
+            break;
+        }
+    }
+    (exec[..start.min(exec.len())].trim_end(), exec[start.min(exec.len())..].trim())
+}
+
+/// The entry with the settings wrapped around the app's own launcher: `env NAME=value … [gamemoderun] [mangohud] <the app's Exec> <options>`.
+/// The app's original `Exec=` is kept in the entry, so changing the settings again (or turning them all off) starts from it.
+/// `gpu_env`: the variables that put the app on the stronger chip. `name` changes the name shown in the Start menu.
+pub fn with_app_settings(text: &str, name: &str, s: &GameSettings, gpu_env: &[(String, String)]) -> Result<String, String> {
+    let original = app_exec_of(text).ok_or("This entry has no program to start.")?;
+    let options = split_words(&s.options).ok_or("A quote in the game options is not closed.")?;
+    let mut env: Vec<(String, String)> = Vec::new();
+    if s.dedicated_gpu {
+        env.extend(gpu_env.iter().cloned());
+    }
+    env.extend(parse_env(&s.env)?);
+
+    let mut prefix: Vec<String> = Vec::new();
+    if !env.is_empty() {
+        prefix.push("env".into());
+        prefix.extend(env.into_iter().map(|(k, v)| format!("{k}={v}")));
+    }
+    if s.gamemode {
+        prefix.push("gamemoderun".into());
+    }
+    if s.overlay {
+        prefix.push("mangohud".into());
+    }
+    let (body, codes) = split_field_codes(&original);
+    let mut exec = String::new();
+    for w in &prefix {
+        exec.push_str(&exec_quote(w));
+        exec.push(' ');
+    }
+    exec.push_str(body);
+    for w in &options {
+        exec.push(' ');
+        exec.push_str(&exec_quote(w));
+    }
+    if !codes.is_empty() {
+        exec.push(' ');
+        exec.push_str(codes);
+    }
+
+    let untouched = prefix.is_empty() && options.is_empty();
+    let mut t = set_main_key(text, "Exec", Some(&exec));
+    let kept = esc(&original);
+    t = set_main_key(&t, KEY_APP_EXEC, if untouched { None } else { Some(kept.as_str()) });
+    let name = name.replace('\n', " ");
+    if !name.trim().is_empty() {
+        if value_of(&t, "Name").as_deref() != Some(name.trim()) {
+            t = drop_translated_names(&t);
+        }
+        t = set_main_key(&t, "Name", Some(name.trim()));
+    }
+    t = set_main_key(&t, KEY_GAMEMODE, s.gamemode.then_some("true"));
+    t = set_main_key(&t, KEY_OVERLAY, s.overlay.then_some("true"));
+    t = set_main_key(&t, KEY_DEDICATED, s.dedicated_gpu.then_some("true"));
+    t = set_main_key(&t, KEY_OPTIONS, (!s.options.trim().is_empty()).then(|| esc(s.options.trim())).as_deref());
+    t = set_main_key(&t, KEY_ENV, (!s.env.trim().is_empty()).then(|| esc(s.env.trim())).as_deref());
+    Ok(t)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,5 +722,87 @@ mod tests {
         assert_eq!(proton_tag_of(&with_proton_tag(&pinned, None)), None);
         assert_eq!(proton_tag_of("[Desktop Entry]\nX-Zohara-ProtonTag=../../x\n"), None, "only a real version name");
         assert!(parse_entry(&pinned).is_some());
+    }
+
+    const APP: &str = "[Desktop Entry]\nName=Modrinth App\nExec=ModrinthApp %U\nIcon=modrinth\nCategories=Game;\nX-Zohara-Game=true\n\n[Desktop Action new]\nName=New\nExec=ModrinthApp --new\n";
+    const GPU: &[(&str, &str)] = &[("__NV_PRIME_RENDER_OFFLOAD", "1"), ("__GLX_VENDOR_LIBRARY_NAME", "nvidia")];
+    fn gpu() -> Vec<(String, String)> {
+        GPU.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    }
+
+    #[test]
+    fn an_installed_app_is_told_apart_from_a_program_file_game() {
+        assert!(is_app_entry(APP));
+        let own = entry_text("G", "/g/run.sh", &GameSettings::default(), &ctx()).unwrap();
+        assert!(!is_app_entry(&own));
+        assert_eq!(app_settings_of(APP), GameSettings::default());
+    }
+
+    #[test]
+    fn settings_wrap_the_apps_own_launcher_and_keep_its_field_codes_last() {
+        let s = GameSettings { gamemode: true, overlay: true, dedicated_gpu: true, options: "--windowed".into(), env: "FOO=bar".into(), ..GameSettings::default() };
+        let t = with_app_settings(APP, "Modrinth", &s, &gpu()).unwrap();
+        let exec = value_of(&t, "Exec").unwrap();
+        assert_eq!(exec, "\"env\" \"__NV_PRIME_RENDER_OFFLOAD=1\" \"__GLX_VENDOR_LIBRARY_NAME=nvidia\" \"FOO=bar\" \"gamemoderun\" \"mangohud\" ModrinthApp \"--windowed\" %U");
+        assert_eq!(value_of(&t, "Name").as_deref(), Some("Modrinth"));
+        // the app's actions are untouched and the original launcher is kept
+        assert!(t.contains("[Desktop Action new]\nName=New\nExec=ModrinthApp --new"));
+        assert_eq!(value_of(&t, KEY_APP_EXEC).as_deref(), Some("ModrinthApp %U"));
+        // read back
+        assert_eq!(app_settings_of(&t), GameSettings { runner: Runner::Auto, dxvk: true, ..s });
+        assert!(is_app_entry(&t));
+    }
+
+    #[test]
+    fn changing_again_starts_from_the_original_and_turning_everything_off_restores_it() {
+        let on = GameSettings { gamemode: true, options: "-a".into(), ..GameSettings::default() };
+        let once = with_app_settings(APP, "Modrinth App", &on, &gpu()).unwrap();
+        let twice = with_app_settings(&once, "Modrinth App", &GameSettings { overlay: true, ..GameSettings::default() }, &gpu()).unwrap();
+        assert_eq!(value_of(&twice, "Exec").unwrap(), "\"mangohud\" ModrinthApp %U", "no gamemode or options left over");
+        let off = with_app_settings(&twice, "Modrinth App", &GameSettings::default(), &gpu()).unwrap();
+        assert_eq!(value_of(&off, "Exec").as_deref(), Some("ModrinthApp %U"));
+        assert!(value_of(&off, KEY_APP_EXEC).is_none() && value_of(&off, KEY_OPTIONS).is_none() && value_of(&off, KEY_GAMEMODE).is_none());
+        assert_eq!(off.trim_end(), APP.trim_end(), "back to exactly what it was");
+    }
+
+    #[test]
+    fn bad_typing_is_refused_and_nothing_is_written() {
+        let quote = GameSettings { options: "\"open".into(), ..GameSettings::default() };
+        assert!(with_app_settings(APP, "x", &quote, &gpu()).unwrap_err().contains("quote"));
+        let env = GameSettings { env: "NOEQUALS".into(), ..GameSettings::default() };
+        assert!(with_app_settings(APP, "x", &env, &gpu()).unwrap_err().contains("NAME=value"));
+        assert!(with_app_settings("[Desktop Entry]\nName=x\n", "x", &GameSettings::default(), &gpu()).is_err());
+    }
+
+    #[test]
+    fn field_codes_and_a_path_with_spaces_survive() {
+        assert_eq!(split_field_codes("app --flag %U"), ("app --flag", "%U"));
+        assert_eq!(split_field_codes("app %f %U"), ("app", "%f %U"));
+        assert_eq!(split_field_codes("app \"/a b/c\""), ("app \"/a b/c\"", ""));
+        assert_eq!(split_field_codes("app"), ("app", ""));
+        let e = "[Desktop Entry]\nName=A\nExec=\"/opt/My App/run\" --x %U\nX-Zohara-Game=true\n";
+        let t = with_app_settings(e, "A", &GameSettings { gamemode: true, ..GameSettings::default() }, &gpu()).unwrap();
+        assert_eq!(value_of(&t, "Exec").unwrap(), "\"gamemoderun\" \"/opt/My App/run\" --x %U");
+    }
+
+    #[test]
+    fn set_main_key_only_touches_the_main_section() {
+        let t = "[Desktop Entry]\nName=A\nExec=a\n\n[Desktop Action x]\nExec=a --x\n";
+        let r = set_main_key(t, "Exec", Some("b"));
+        assert!(r.contains("Exec=b\n") && r.contains("[Desktop Action x]\nExec=a --x"));
+        let r = set_main_key(t, "New", Some("1"));
+        assert!(r.contains("Exec=a\nNew=1\n\n[Desktop Action x]"), "{r}");
+        assert!(!set_main_key(r.as_str(), "New", None).contains("New="));
+    }
+
+    #[test]
+    fn a_new_name_replaces_the_translated_names_too_but_an_unchanged_name_keeps_them() {
+        let e = "[Desktop Entry]\nName=Foo\nName[de]=Fuu\nExec=foo\nX-Zohara-Game=true\n\n[Desktop Action a]\nName=A\nName[de]=Ah\nExec=foo -a\n";
+        let renamed = with_app_settings(e, "Bar", &GameSettings::default(), &gpu()).unwrap();
+        assert_eq!(value_of(&renamed, "Name").as_deref(), Some("Bar"));
+        assert!(!renamed.contains("Name[de]=Fuu"));
+        assert!(renamed.contains("Name[de]=Ah"), "the action keeps its own translated name");
+        let same = with_app_settings(e, "Foo", &GameSettings { gamemode: true, ..GameSettings::default() }, &gpu()).unwrap();
+        assert!(same.contains("Name[de]=Fuu"));
     }
 }

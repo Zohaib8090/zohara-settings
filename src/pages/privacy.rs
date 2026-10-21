@@ -622,7 +622,7 @@ fn feedback_group() -> adw::PreferencesGroup {
         ("Detailed usage statistics", "64"),
     ];
     let g = adw::PreferencesGroup::new();
-    g.set_title("Diagnostics & feedback");
+    g.set_title(&glib::markup_escape_text("Diagnostics & feedback"));
     let row = adw::ComboRow::new();
     row.set_title("Share usage data with KDE");
     row.set_subtitle("Anonymous statistics that help improve Plasma. Takes effect after you sign in again");

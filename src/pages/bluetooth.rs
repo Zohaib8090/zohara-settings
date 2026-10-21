@@ -151,6 +151,13 @@ fn act(ui: &Rc<Ui>, button: &gtk4::Button, work: impl FnOnce() -> bool + Send + 
             show_error(&ui, fail_title, "Make sure the device is turned on, nearby, and in pairing mode, then try again.");
         }
         refresh(&ui);
+        // A device reports its battery a second or two after it connects: look again soon instead of waiting for the next tick.
+        if ok {
+            for secs in [1u32, 2, 4] {
+                let ui = ui.clone();
+                glib::timeout_add_seconds_local_once(secs, move || refresh(&ui));
+            }
+        }
     });
 }
 

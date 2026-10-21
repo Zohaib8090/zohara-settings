@@ -69,7 +69,7 @@ fn clock_group() -> adw::PreferencesGroup {
 
 fn time_group() -> adw::PreferencesGroup {
     let g = adw::PreferencesGroup::new();
-    g.set_title("Date & time");
+    g.set_title(&glib::markup_escape_text("Date & time"));
 
     let ntp = adw::SwitchRow::new();
     ntp.set_title("Set time automatically");
@@ -202,7 +202,7 @@ fn installed_locales() -> Vec<String> {
 
 fn region_group() -> adw::PreferencesGroup {
     let g = adw::PreferencesGroup::new();
-    g.set_title("Language & region");
+    g.set_title(&glib::markup_escape_text("Language & region"));
 
     let system_lang = output("localectl", &["status"])
         .and_then(|s| s.lines().find_map(|l| l.trim().strip_prefix("System Locale: LANG=").map(str::to_string)))

@@ -518,7 +518,7 @@ fn memory_group() -> adw::PreferencesGroup {
     use std::{cell::{Cell, RefCell}, rc::Rc};
 
     let g = adw::PreferencesGroup::new();
-    g.set_title("Memory & performance");
+    g.set_title(&glib::markup_escape_text("Memory & performance"));
     g.set_description(Some("How the computer uses memory and swap. The defaults suit most people."));
 
     let info = adw::ActionRow::new();

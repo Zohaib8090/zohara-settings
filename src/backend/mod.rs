@@ -1,6 +1,7 @@
 pub mod app_details;
 pub mod archive_install;
 pub mod mac_check;
+pub mod x11_support;
 pub mod autotz;
 pub mod balance;
 pub mod dbus;

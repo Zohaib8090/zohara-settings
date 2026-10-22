@@ -494,7 +494,11 @@ fn build_ui(app: &adw::Application) {
         .placeholder_text("Find a setting")
         .css_classes(vec!["win11-search".to_string()])
         .build();
-    header.set_title_widget(Some(&search_entry));
+    // The search pill is as wide as it likes up to 420 px and shrinks when the window is narrow (it used to keep 320 px, which
+    // held the whole window wide).
+    search_entry.set_width_chars(4);
+    let search_clamp = adw::Clamp::builder().maximum_size(420).tightening_threshold(300).hexpand(true).child(&search_entry).build();
+    header.set_title_widget(Some(&search_clamp));
     main_content_box.append(&header);
 
     // Content container
@@ -503,6 +507,9 @@ fn build_ui(app: &adw::Application) {
     content_stack.set_transition_duration(150);
     content_stack.set_vexpand(true);
     content_stack.set_hexpand(true);
+    // A Stack is as wide as its widest child unless told otherwise, and every page refuses to scroll sideways: the window could
+    // not be made narrower than the widest page ever opened. Only the page on screen counts.
+    content_stack.set_hhomogeneous(false);
 
     // Load initial page (Home, index 0)
     let home_widget = build_page(0);
@@ -510,7 +517,18 @@ fn build_ui(app: &adw::Application) {
     content_stack.add_named(&home_widget, Some("page_0"));
     content_stack.set_visible_child_name("page_0");
 
-    main_content_box.append(&content_stack);
+    // Safety net: a page that cannot fit a narrow window scrolls sideways instead of keeping the window wide. The pages scroll
+    // up and down themselves, so this one only moves left and right.
+    let narrow_guard = gtk4::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk4::PolicyType::Automatic)
+        .vscrollbar_policy(gtk4::PolicyType::Never)
+        .min_content_width(320)
+        .propagate_natural_width(false)
+        .hexpand(true)
+        .vexpand(true)
+        .child(&content_stack)
+        .build();
+    main_content_box.append(&narrow_guard);
     root_h_box.append(&main_content_box);
 
     // "Find a setting": results for single options, not only pages. Choosing one opens its page and flashes the row.

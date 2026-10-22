@@ -48,7 +48,7 @@ headerbar {
     border-radius: 20px;
     color: @window_fg_color;
     padding: 6px 16px;
-    min-width: 320px;
+    min-width: 0;
     font-size: 13px;
     transition: all 200ms ease;
 }

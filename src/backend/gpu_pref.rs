@@ -66,6 +66,99 @@ pub fn with_preference(text: &str, on: bool) -> String {
     s
 }
 
+// ── Chrome-type apps ───────────────────────────────────────────────────────
+//
+// On Wayland a Chromium-based app (Chrome, Brave, Edge, VS Code ...) takes its graphics chip from the desktop, which is the
+// everyday chip, and ignores the variables that put other apps on the stronger one (found 2026-10-23: with them, Chrome still
+// reported Intel; started through XWayland with `--ozone-platform=x11` it reported the NVIDIA chip). So for these apps the
+// choice also adds that flag to the launcher, and turning the choice off takes it away again.
+
+const X11_FLAG: &str = "--ozone-platform=x11";
+
+/// Whether this program is one that decides its own graphics chip the Chromium way.
+pub fn is_chromium_family(program: &str) -> bool {
+    let name = program.rsplit('/').next().unwrap_or(program).to_lowercase();
+    const PREFIXES: [&str; 7] = ["google-chrome", "chromium", "brave", "microsoft-edge", "vivaldi", "opera", "thorium"];
+    const EXACT: [&str; 4] = ["code", "code-oss", "vscodium", "electron"];
+    PREFIXES.iter().any(|p| name.starts_with(p)) || EXACT.contains(&name.as_str())
+}
+
+/// Where the program word of an `Exec=` value ends (byte index), skipping a leading `env` and `NAME=value` words. `None` when
+/// there is no program.
+fn program_end(exec: &str) -> Option<(usize, String)> {
+    let b = exec.as_bytes();
+    let mut i = 0;
+    loop {
+        while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
+            i += 1;
+        }
+        if i >= b.len() {
+            return None;
+        }
+        let start = i;
+        let word: String;
+        if b[i] == b'"' {
+            i += 1;
+            let mut w = String::new();
+            while i < b.len() && b[i] != b'"' {
+                if b[i] == b'\\' && i + 1 < b.len() {
+                    i += 1;
+                }
+                w.push(b[i] as char);
+                i += 1;
+            }
+            i = (i + 1).min(b.len());
+            word = w;
+        } else {
+            while i < b.len() && b[i] != b' ' && b[i] != b'\t' {
+                i += 1;
+            }
+            word = exec[start..i].to_string();
+        }
+        let base = word.rsplit('/').next().unwrap_or(&word);
+        if base == "env" || (word.contains('=') && !word.starts_with('/')) {
+            continue;
+        }
+        return Some((i, word));
+    }
+}
+
+/// One `Exec=` value with the flag added (`on`) or taken away. Only Chromium-family programs are touched, and a launcher that
+/// already chooses its own `--ozone-platform` is left alone when turning on.
+fn exec_with_x11_flag(value: &str, on: bool) -> String {
+    let Some((end, program)) = program_end(value) else { return value.to_string() };
+    if !is_chromium_family(&program) {
+        return value.to_string();
+    }
+    let has_flag = value.split_whitespace().any(|w| w == X11_FLAG);
+    if on {
+        if has_flag || value.contains("--ozone-platform") {
+            return value.to_string();
+        }
+        format!("{} {}{}", &value[..end], X11_FLAG, &value[end..])
+    } else if has_flag {
+        value.replacen(&format!(" {X11_FLAG}"), "", 1)
+    } else {
+        value.to_string()
+    }
+}
+
+/// The launcher text with the flag added to (or removed from) every `Exec=` line of Chromium-family programs, including the
+/// "New window" style actions.
+pub fn with_x11_flag(text: &str, on: bool) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if let Some(v) = line.strip_prefix("Exec=") {
+            out.push(format!("Exec={}", exec_with_x11_flag(v, on)));
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    let mut s = out.join("\n");
+    s.push('\n');
+    s
+}
+
 fn has_mark(text: &str) -> bool {
     text.lines().any(|l| l.trim() == format!("{MARK}=true"))
 }
@@ -103,7 +196,7 @@ pub fn set(desktop_id: &str, system_path: &Path, on: bool) -> Result<(), String>
             Some(t) => (t.clone(), has_mark(t)),
             None => (std::fs::read_to_string(system_path).map_err(|e| format!("Couldn't read the app's launcher ({e})"))?, true),
         };
-        let mut text = with_preference(&base, true);
+        let mut text = with_x11_flag(&with_preference(&base, true), true);
         if ours && !has_mark(&text) {
             // The marker goes inside [Desktop Entry]: right after its header.
             text = text.replacen("[Desktop Entry]\n", &format!("[Desktop Entry]\n{MARK}=true\n"), 1);
@@ -114,7 +207,7 @@ pub fn set(desktop_id: &str, system_path: &Path, on: bool) -> Result<(), String>
         match existing {
             None => Ok(()), // only the system launcher: nothing of ours to undo
             Some(t) if has_mark(&t) => std::fs::remove_file(&user).map_err(|e| e.to_string()),
-            Some(t) => std::fs::write(&user, with_preference(&t, false)).map_err(|e| e.to_string()),
+            Some(t) => std::fs::write(&user, with_x11_flag(&with_preference(&t, false), false)).map_err(|e| e.to_string()),
         }
     }
 }
@@ -156,9 +249,21 @@ pub fn launch_now(system_path: &Path) -> Result<(), String> {
     if env.is_empty() {
         return Err("No second graphics chip was found. Is switcheroo-control running?".into());
     }
+    // A Chrome-type app also needs the XWayland flag (see above): launch a temporary copy of its launcher that has it.
+    let mut path = system_path.to_path_buf();
+    if let Ok(text) = std::fs::read_to_string(system_path) {
+        let with = with_x11_flag(&text, true);
+        if with != format!("{}\n", text.trim_end_matches('\n')) {
+            let dir = std::env::var("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir());
+            let tmp = dir.join(format!("zohara-gpu-now-{}", system_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
+            if std::fs::write(&tmp, with).is_ok() {
+                path = tmp;
+            }
+        }
+    }
     Command::new("gio")
         .arg("launch")
-        .arg(system_path)
+        .arg(&path)
         .envs(env)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -330,6 +435,9 @@ pub fn has_two_gpus() -> bool {
 mod tests {
     use super::*;
 
+    /// The tests that point XDG_DATA_HOME at a throwaway folder must not run at the same time.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     const APP: &str = "[Desktop Entry]\nType=Application\nName=Game\nExec=game %U\n\n[Desktop Action new]\nName=New\nExec=game --new\n";
 
     #[test]
@@ -384,6 +492,7 @@ mod tests {
     /// Against a throwaway folder: on makes a marked copy that prefers the stronger chip, off removes it again.
     #[test]
     fn turning_the_choice_on_and_off_leaves_no_trace() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("zs-gpupref-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -533,5 +642,50 @@ mod tests {
         assert_eq!(back_value, "");
         assert_eq!(before, after, "the overrides file is as it was");
         assert!(flatpak_gpu_ready(), "the NVIDIA part for Flatpak is installed");
+    }
+
+    #[test]
+    fn chrome_type_apps_get_the_xwayland_flag_and_lose_it_again() {
+        let chrome = "[Desktop Entry]\nName=Google Chrome\nExec=/usr/bin/google-chrome-stable %U\n\n[Desktop Action new-window]\nName=New Window\nExec=/usr/bin/google-chrome-stable\n\n[Desktop Action p]\nExec=/usr/bin/google-chrome-stable --incognito\n";
+        let on = with_x11_flag(chrome, true);
+        assert!(on.contains("Exec=/usr/bin/google-chrome-stable --ozone-platform=x11 %U\n"));
+        assert!(on.contains("Exec=/usr/bin/google-chrome-stable --ozone-platform=x11\n"));
+        assert!(on.contains("Exec=/usr/bin/google-chrome-stable --ozone-platform=x11 --incognito\n"));
+        // adding twice changes nothing; taking it away restores the original
+        assert_eq!(with_x11_flag(&on, true), on);
+        assert_eq!(with_x11_flag(&on, false), chrome);
+    }
+
+    #[test]
+    fn other_apps_and_other_choices_are_left_alone() {
+        let game = "[Desktop Entry]\nName=G\nExec=/usr/bin/game --fullscreen %f\n";
+        assert_eq!(with_x11_flag(game, true), game);
+        // a launcher that already picks its own platform keeps it
+        let own = "[Desktop Entry]\nExec=brave --ozone-platform=wayland %U\n";
+        assert_eq!(with_x11_flag(own, true), own);
+        assert_eq!(with_x11_flag(own, false), own);
+        // an env prefix and a quoted program still find the browser
+        let wrapped = "[Desktop Entry]\nExec=env FOO=1 \"/opt/brave/brave-browser\" %U\n";
+        assert!(with_x11_flag(wrapped, true).contains("\"/opt/brave/brave-browser\" --ozone-platform=x11 %U"));
+        assert!(!is_chromium_family("firefox") && !is_chromium_family("/usr/bin/blender"));
+        assert!(is_chromium_family("/usr/bin/google-chrome-stable") && is_chromium_family("code") && is_chromium_family("chromium"));
+    }
+
+    #[test]
+    fn turning_the_choice_on_and_off_adds_and_removes_both_the_key_and_the_flag() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("zohara-gpu-x11-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sys")).unwrap();
+        let sys = dir.join("sys/google-chrome.desktop");
+        std::fs::write(&sys, "[Desktop Entry]\nName=Google Chrome\nExec=/usr/bin/google-chrome-stable %U\n").unwrap();
+        std::env::set_var("XDG_DATA_HOME", &dir);
+        set("google-chrome.desktop", &sys, true).unwrap();
+        let written = std::fs::read_to_string(dir.join("applications/google-chrome.desktop")).unwrap();
+        assert!(prefers(&written) && written.contains("--ozone-platform=x11 %U"), "{written}");
+        set("google-chrome.desktop", &sys, false).unwrap();
+        assert!(!dir.join("applications/google-chrome.desktop").exists(), "our copy is removed");
+        std::env::remove_var("XDG_DATA_HOME");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

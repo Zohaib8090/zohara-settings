@@ -45,6 +45,11 @@ fn main() -> glib::ExitCode {
         let once = backend::windows_apps::once_from_args(&args);
         std::process::exit(backend::windows_apps::run_file_once(&file, &once));
     }
+    // After a Windows installer: add what it installed to the app menu (started by the double-click handler).
+    if args.iter().any(|a| a == "--sync-windows-menu") {
+        let pid = args.iter().position(|a| a == "--wait").and_then(|i| args.get(i + 1)).and_then(|p| p.parse().ok());
+        std::process::exit(backend::windows_menu::run_after(pid));
+    }
     // Right-click > Zohara > Install as an app (on a .tar.gz and friends)
     if let Some(i) = args.iter().position(|a| a == "--install-archive") {
         let file = args.get(i + 1).cloned().unwrap_or_default();
@@ -148,6 +153,10 @@ fn main() -> glib::ExitCode {
     let rt = tokio_runtime();
     let _rt_guard = rt.enter();
 
+    // Programs a Windows installer put in the Windows folders get their menu entries (quiet, in the background).
+    std::thread::spawn(|| {
+        backend::windows_menu::sync();
+    });
     let app = adw::Application::builder()
         .application_id("os.zohara.Settings")
         .flags(gtk4::gio::ApplicationFlags::HANDLES_COMMAND_LINE)

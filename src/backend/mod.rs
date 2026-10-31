@@ -45,6 +45,7 @@ pub mod wallet;
 pub mod community_apps;
 pub mod web_accounts;
 pub mod windows_apps;
+pub mod windows_menu;
 pub mod windows_sandbox;
 pub mod wifi_diag;
 pub mod worker;

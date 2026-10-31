@@ -434,6 +434,10 @@ pub fn run_file_once(path: &str, once: &Once) -> i32 {
             return 1;
         }
     };
+    // An installer makes its shortcuts only inside the Windows folder: once this program ends, add what it installed to the menu.
+    if game.is_none() {
+        super::windows_menu::watch(child.id());
+    }
     if fell_back && notify_action("Running with Wine", "Proton-GE isn't installed yet, so plain Wine is used. Many games and programs run better with Proton-GE (a download of about 560 MB, once).", "Install Proton-GE now", 15) {
         // in its own process, so this one can end when the program has started
         if let Ok(exe) = std::env::current_exe() {

@@ -459,6 +459,117 @@ fn clear_cache() -> bool {
     files
 }
 
+// ── Flatpak ────────────────────────────────────────────────────────────────
+
+fn flatpak_installed() -> bool {
+    Command::new("flatpak").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// Application ids of the Flatpaks that are open right now.
+fn flatpak_running() -> Vec<String> {
+    Command::new("flatpak")
+        .args(["ps", "--columns=application"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+        .unwrap_or_default()
+}
+
+/// The `cache` folder of every Flatpak app that is not open (an open app may be using its cache).
+fn flatpak_cache_dirs() -> Vec<PathBuf> {
+    let running = flatpak_running();
+    let Ok(apps) = std::fs::read_dir(home().join(".var/app")) else { return Vec::new() };
+    apps.flatten()
+        .filter(|e| !running.contains(&e.file_name().to_string_lossy().to_string()))
+        .map(|e| e.path().join("cache"))
+        .filter(|p| p.is_dir())
+        .collect()
+}
+
+fn flatpak_cache_size() -> u64 {
+    flatpak_cache_dirs().iter().map(|d| du(d)).sum()
+}
+
+fn clear_flatpak_cache() -> bool {
+    for dir in flatpak_cache_dirs() {
+        let Ok(items) = std::fs::read_dir(&dir) else { continue };
+        for item in items.flatten() {
+            let p = item.path();
+            let _ = if p.is_dir() && !p.is_symlink() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+        }
+    }
+    true
+}
+
+/// "org.freedesktop.Platform.GL32.default  26.08" pairs from the list `flatpak uninstall --unused` prints
+/// before it asks (lines like ` 1.   <tab>id<tab>branch<tab>r`).
+pub fn parse_unused(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            let n = it.next()?;
+            if !n.ends_with('.') || n.trim_end_matches('.').parse::<u32>().is_err() {
+                return None;
+            }
+            Some((it.next()?.to_string(), it.next()?.to_string()))
+        })
+        .collect()
+}
+
+/// "668.9 MB", "4.5 kB", "30 bytes", "1,2 GB" (Flatpak writes sizes with GLib's decimal units) -> bytes.
+pub fn parse_flatpak_size(text: &str) -> u64 {
+    let t = text.replace('\u{a0}', " ");
+    let mut it = t.split_whitespace();
+    let num: f64 = it.next().map(|n| n.replace(',', ".")).and_then(|n| n.parse().ok()).unwrap_or(0.0);
+    let mult = match it.next().unwrap_or("bytes") {
+        "kB" | "KB" => 1e3,
+        "MB" => 1e6,
+        "GB" => 1e9,
+        "TB" => 1e12,
+        _ => 1.0,
+    };
+    (num * mult) as u64
+}
+
+fn unused_runtimes() -> Vec<(String, String)> {
+    use std::io::Write;
+    use std::process::Stdio;
+    // Without -y, flatpak lists what it would remove and asks; answer "n" so nothing is touched.
+    let Ok(mut child) = Command::new("flatpak").args(["uninstall", "--unused"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
+        return Vec::new();
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(b"n\n");
+    }
+    child.wait_with_output().map(|o| parse_unused(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default()
+}
+
+/// Size of the unused runtimes (what Flatpak reports for each, so shared data may make it a little high).
+fn unused_runtimes_size() -> u64 {
+    let unused = unused_runtimes();
+    if unused.is_empty() {
+        return 0;
+    }
+    let out = Command::new("flatpak").args(["list", "--runtime", "--columns=application,branch,size"]).output();
+    let text = out.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    let mut seen: Vec<(String, String)> = Vec::new();
+    let mut total = 0;
+    for l in text.lines() {
+        let mut f = l.split('\t');
+        let (Some(id), Some(branch), Some(size)) = (f.next(), f.next(), f.next()) else { continue };
+        let key = (id.trim().to_string(), branch.trim().to_string());
+        if unused.contains(&key) && !seen.contains(&key) {
+            total += parse_flatpak_size(size);
+            seen.push(key);
+        }
+    }
+    // The runtimes were listed but their sizes were not readable: still offer the cleanup.
+    total.max(1)
+}
+
+fn remove_unused_runtimes() -> bool {
+    run_ok("flatpak", &["uninstall", "--unused", "-y"])
+}
+
 fn cleanup_group() -> adw::PreferencesGroup {
     let g = adw::PreferencesGroup::new();
     g.set_title("Clean up");
@@ -486,6 +597,24 @@ fn cleanup_group() -> adw::PreferencesGroup {
         "Keeps the most recent previous version of each package, so you can still roll back an update. Packages that are no longer installed are removed from the cache.",
         clean_pkg_cache,
     ));
+    if flatpak_installed() {
+        g.add(&cleanup_row(
+            "Flatpak app caches",
+            "application-x-addon-symbolic",
+            flatpak_cache_size,
+            "Clear Flatpak app caches?",
+            "Temporary files that Flatpak apps keep in their own cache folders will be removed. Your documents and app settings stay. Apps that are open are skipped, and apps rebuild what they need.",
+            clear_flatpak_cache,
+        ));
+        g.add(&cleanup_row(
+            "Unused Flatpak runtimes",
+            "package-x-generic-symbolic",
+            unused_runtimes_size,
+            "Remove unused Flatpak runtimes?",
+            "Runtimes and extensions that no installed Flatpak app needs any more will be removed. You may be asked for your password.",
+            remove_unused_runtimes,
+        ));
+    }
     g
 }
 
@@ -760,5 +889,24 @@ mod cleanup_tests {
         assert_eq!(parse_paccache_saved("==> finished dry run: 2 candidates (disk space saved: 523.40 MiB)"), (523.40f64 * 1_048_576.0) as u64);
         assert_eq!(parse_paccache_saved("==> no candidate packages found for pruning"), 0);
         assert_eq!(parse_paccache_saved(""), 0);
+    }
+
+    #[test]
+    fn unused_flatpak_runtimes_are_read_from_the_prompt() {
+        let text = "\n 1.\t   \torg.freedesktop.Platform.Compat.i386\t26.08\tr\n 2.\t   \torg.freedesktop.Platform.GL32.default\t26.08-extra\tr\n\nProceed with these changes to the system installation? [Y/n]: n\n";
+        assert_eq!(
+            parse_unused(text),
+            vec![("org.freedesktop.Platform.Compat.i386".to_string(), "26.08".to_string()), ("org.freedesktop.Platform.GL32.default".to_string(), "26.08-extra".to_string())]
+        );
+        assert!(parse_unused("Nothing unused to uninstall\n").is_empty());
+    }
+
+    #[test]
+    fn flatpak_sizes_are_read() {
+        assert_eq!(parse_flatpak_size("668.9\u{a0}MB"), 668_900_000);
+        assert_eq!(parse_flatpak_size("1,2 GB"), 1_200_000_000);
+        assert_eq!(parse_flatpak_size("4.5 kB"), 4500);
+        assert_eq!(parse_flatpak_size("30 bytes"), 30);
+        assert_eq!(parse_flatpak_size(""), 0);
     }
 }

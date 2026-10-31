@@ -478,6 +478,7 @@ struct Autostart {
     comment: String,
     icon: String,
     enabled: bool,
+    exec: String,
     /// Added by the person or by an app in their own folder (no system entry of the same name): can be deleted.
     own: bool,
 }
@@ -530,7 +531,9 @@ fn load_autostart() -> Vec<Autostart> {
                 comment: e.get("Comment").cloned().unwrap_or_default(),
                 icon: e.get("Icon").cloned().unwrap_or_default(),
                 enabled: e.get("Hidden").map(String::as_str) != Some("true")
-                    && e.get("X-KDE-autostart-enabled").map(String::as_str) != Some("false"),
+                    && e.get("X-KDE-autostart-enabled").map(String::as_str) != Some("false")
+                    && !is_masked(&file),
+                exec: e.get("Exec").cloned().unwrap_or_default(),
                 own,
                 file,
             })
@@ -540,10 +543,63 @@ fn load_autostart() -> Vec<Autostart> {
     out
 }
 
+/// systemd's escaping of a name inside a unit name (what `systemd-escape` prints).
+fn unit_escape(name: &str) -> String {
+    let mut out = String::new();
+    for (i, b) in name.bytes().enumerate() {
+        match b {
+            b'/' => out.push('-'),
+            b'.' if i == 0 => out.push_str("\\x2e"),
+            b if b.is_ascii_alphanumeric() || b == b':' || b == b'_' || b == b'.' => out.push(b as char),
+            b => out.push_str(&format!("\\x{b:02x}")),
+        }
+    }
+    out
+}
+
+/// The user unit the session makes for an autostart file (systemd-xdg-autostart-generator).
+fn autostart_unit(file: &str) -> String {
+    format!("app-{}@autostart.service", unit_escape(file.strip_suffix(".desktop").unwrap_or(file)))
+}
+
+fn mask_path(file: &str) -> PathBuf {
+    let cfg = std::env::var("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|_| home().join(".config"));
+    cfg.join("systemd/user").join(autostart_unit(file))
+}
+
+/// An app can write its own autostart file back when it starts (JetBrains Toolbox and many other apps taken from
+/// archives do), which drops our `Hidden=true`. A masked unit cannot be started whatever the file says.
+fn is_masked(file: &str) -> bool {
+    std::fs::read_link(mask_path(file)).map(|t| t == Path::new("/dev/null")).unwrap_or(false)
+}
+
+fn set_masked(file: &str, on: bool) -> std::io::Result<()> {
+    let path = mask_path(file);
+    if !on {
+        return match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        };
+    }
+    if is_masked(file) {
+        return Ok(());
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let _ = std::fs::remove_file(&path);
+    std::os::unix::fs::symlink("/dev/null", &path)
+}
+
 /// Disabling writes a user copy with Hidden=true (the XDG way to turn off a
 /// system autostart entry); enabling drops the flag, or removes our override
 /// entirely when it was only hiding the system entry.
 fn set_autostart(file: &str, on: bool) -> std::io::Result<()> {
+    set_masked(file, !on)?;
+    set_autostart_file(file, on)
+}
+
+fn set_autostart_file(file: &str, on: bool) -> std::io::Result<()> {
     let user = autostart_user_dir().join(file);
     let system = Path::new("/etc/xdg/autostart").join(file);
     let strip = |t: &str| -> Vec<String> {
@@ -593,6 +649,72 @@ fn new_entry_file(name: &str) -> String {
 fn add_autostart_file(file: &str, text: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(autostart_user_dir())?;
     std::fs::write(autostart_user_dir().join(file), text)
+}
+
+/// The program an `Exec=` line starts: first word, quotes removed, `env VAR=x` prefixes skipped, field codes ignored.
+fn exec_program(exec: &str) -> Option<String> {
+    let mut words: Vec<String> = Vec::new();
+    let (mut cur, mut quote, mut any) = (String::new(), None::<char>, false);
+    for c in exec.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), c) => cur.push(c),
+            (None, '"' | '\'') => {
+                quote = Some(c);
+                any = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if any || !cur.is_empty() {
+                    words.push(std::mem::take(&mut cur));
+                    any = false;
+                }
+            }
+            (None, c) => cur.push(c),
+        }
+    }
+    if any || !cur.is_empty() {
+        words.push(cur);
+    }
+    let mut it = words.into_iter().peekable();
+    while let Some(w) = it.peek() {
+        if w == "env" || (w.contains('=') && !w.starts_with('/') && !w.starts_with('%')) {
+            it.next();
+        } else {
+            break;
+        }
+    }
+    it.next().filter(|w| !w.is_empty() && !w.starts_with('%'))
+}
+
+/// Process ids whose program is `program` (an absolute path, or a bare command name). Our own process is never listed.
+fn running_pids(program: &str) -> Vec<u32> {
+    let me = std::process::id();
+    let want_name = Path::new(program).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let absolute = program.starts_with('/');
+    let Ok(dir) = std::fs::read_dir("/proc") else { return Vec::new() };
+    let mut out = Vec::new();
+    for e in dir.flatten() {
+        let Some(pid) = e.file_name().to_string_lossy().parse::<u32>().ok().filter(|p| *p != me) else { continue };
+        let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok();
+        let argv0 = std::fs::read(format!("/proc/{pid}/cmdline")).ok().and_then(|c| c.split(|b| *b == 0).next().map(|a| String::from_utf8_lossy(a).to_string()));
+        let hit = if absolute {
+            exe.as_deref() == Some(Path::new(program)) || argv0.as_deref() == Some(program)
+        } else {
+            !want_name.is_empty() && argv0.as_deref().map(|a| Path::new(a).file_name().map(|n| n.to_string_lossy() == want_name).unwrap_or(false)).unwrap_or(false)
+        };
+        if hit {
+            out.push(pid);
+        }
+    }
+    out
+}
+
+fn stop_now(exec: &str) {
+    if let Some(program) = exec_program(exec) {
+        for pid in running_pids(&program) {
+            let _ = Command::new("kill").arg(pid.to_string()).status();
+        }
+    }
 }
 
 /// Starts an entry now, the same way the session would.
@@ -763,6 +885,20 @@ fn startup_group(page: &gtk4::Box) -> adw::PreferencesGroup {
                 let f = a.file.clone();
                 play.connect_clicked(move |_| start_now(&f));
                 row.add_suffix(&play);
+
+                if exec_program(&a.exec).map(|p| !running_pids(&p).is_empty()).unwrap_or(false) {
+                    let stop = gtk4::Button::from_icon_name("media-playback-stop-symbolic");
+                    stop.add_css_class("flat");
+                    stop.set_valign(gtk4::Align::Center);
+                    stop.set_tooltip_text(Some("It is running now: stop it"));
+                    let (exec, again2) = (a.exec.clone(), again.clone());
+                    stop.connect_clicked(move |_| {
+                        stop_now(&exec);
+                        let again3 = again2.clone();
+                        glib::timeout_add_local_once(std::time::Duration::from_millis(1200), move || again3());
+                    });
+                    row.add_suffix(&stop);
+                }
 
                 if a.own {
                     let del = gtk4::Button::from_icon_name("user-trash-symbolic");
@@ -1000,9 +1136,13 @@ pub fn build() -> gtk4::Widget {
 mod startup_tests {
     use super::*;
 
+    /// These tests point XDG_CONFIG_HOME at their own folder, so they must not run at the same time.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// The whole add / list / switch off / switch on / remove cycle against a throwaway folder.
     #[test]
     fn startup_entries_can_be_added_switched_and_removed() {
+        let _lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("zs-startup-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1032,6 +1172,40 @@ mod startup_tests {
         assert!(find(&f1).is_none());
         assert!(find(&f2).is_some());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unit_names_match_what_the_session_makes() {
+        assert_eq!(autostart_unit("jetbrains-toolbox.desktop"), "app-jetbrains\\x2dtoolbox@autostart.service");
+        assert_eq!(autostart_unit("org.kde.plasma-fallback-session-restore.desktop"), "app-org.kde.plasma\\x2dfallback\\x2dsession\\x2drestore@autostart.service");
+    }
+
+    #[test]
+    fn exec_lines_give_their_program() {
+        assert_eq!(exec_program("/home/x/.local/share/zohara/archive-apps/tb/bin/tb --minimize").as_deref(), Some("/home/x/.local/share/zohara/archive-apps/tb/bin/tb"));
+        assert_eq!(exec_program("\"/opt/My App/run\" %U").as_deref(), Some("/opt/My App/run"));
+        assert_eq!(exec_program("env GTK_THEME=x firefox --private").as_deref(), Some("firefox"));
+        assert_eq!(exec_program("").as_deref(), None);
+    }
+
+    #[test]
+    fn a_masked_startup_app_stays_off_even_if_the_app_rewrites_its_file() {
+        let _lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("zs-startup-mask-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let f = new_entry_file("Archive App");
+        add_autostart_file(&f, &custom_entry("Archive App", "/opt/app/run")).unwrap();
+        let find = || load_autostart().into_iter().find(|a| a.file == f).unwrap();
+        set_autostart(&f, false).unwrap();
+        assert!(is_masked(&f) && !find().enabled);
+        // The app writes its entry back without Hidden=true.
+        add_autostart_file(&f, &custom_entry("Archive App", "/opt/app/run")).unwrap();
+        assert!(!find().enabled, "still off");
+        set_autostart(&f, true).unwrap();
+        assert!(!is_masked(&f) && find().enabled);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

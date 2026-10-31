@@ -209,6 +209,8 @@ pub static ENTRIES: &[Entry] = &[
     e!("Drives", "Storage", "disk usb eject removable"),
     e!("App caches", "Storage", "cache temporary"),
     e!("Old package versions", "Storage", "pacman cache packages"),
+    e!("Flatpak app caches", "Storage", "flatpak cache clear clean"),
+    e!("Unused Flatpak runtimes", "Storage", "flatpak runtime remove unused clean"),
     e!("What's using space", "Storage", "disk usage large files"),
     // Personalization
     e!("Themes", "Personalization", "theme desktop style"),

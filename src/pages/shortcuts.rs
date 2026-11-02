@@ -363,6 +363,29 @@ fn create_custom(name: String, command: String, key: i32) -> Result<(), String> 
     registered
 }
 
+/// Changes a custom shortcut's name, command and key.
+fn update_custom(id: Vec<String>, old: (String, String, Option<i32>), name: String, command: String, key: i32) -> Result<(), String> {
+    let name = one_line("The name", &name)?;
+    let command = one_line("The command", &command)?;
+    let desktop_id = id.first().cloned().unwrap_or_default();
+    if !desktop_id.starts_with(CUSTOM_PREFIX) || desktop_id.contains('/') {
+        return Err("Not a custom shortcut.".into());
+    }
+    let (old_name, old_command, old_key) = old;
+    if name == old_name && command == old_command && old_key == Some(key) {
+        return Ok(());
+    }
+    // Plasma keeps the command it read when the shortcut was registered, so rewriting the file alone changes nothing
+    // (the old command still ran in a test). The shortcut is removed and made again; if that fails the old one comes back.
+    delete_custom(desktop_id)?;
+    create_custom(name, command, key).or_else(|e| {
+        if let Some(k) = old_key {
+            let _ = create_custom(old_name, old_command, k);
+        }
+        Err(e)
+    })
+}
+
 fn remove_registration(desktop_id: &str) -> Result<(), String> {
     block_on(async {
         let conn = zbus::Connection::session().await.map_err(|e| e.to_string())?;
@@ -576,6 +599,9 @@ fn populate(page: &Rc<Page>) {
         if let Some(c) = &command {
             row.set_subtitle(&glib::markup_escape_text(c));
             row.set_subtitle_lines(1);
+            // a long command is cut with an ellipsis; the whole of it is in the tooltip
+            row.set_tooltip_text(Some(c.as_str()));
+            row.set_title_lines(1);
         }
 
         let label = gtk4::Label::new(Some(keys_text(&a.keys).as_str()));
@@ -598,9 +624,15 @@ fn populate(page: &Rc<Page>) {
             row.add_suffix(&del);
         }
 
+        // every row ends with the same edit mark, so it is clear they can all be clicked
+        let edit_mark = gtk4::Image::from_icon_name("document-edit-symbolic");
+        edit_mark.set_css_classes(&["dim-label"]);
+        edit_mark.set_tooltip_text(Some(if a.is_custom() { "Edit the name, command and key" } else { "Change the key" }));
+        row.add_suffix(&edit_mark);
         {
-            let ui = ui.clone();
-            row.connect_activated(move |_| edit(&ui, i));
+            let (ui, page) = (ui.clone(), page.clone());
+            // a custom shortcut opens the full editor (name, command, key); the others only take a new key
+            row.connect_activated(move |_| if ui.actions.borrow()[i].is_custom() { add_custom(&page, Some(i)) } else { edit(&ui, i) });
         }
         {
             let ui = ui.clone();
@@ -699,19 +731,30 @@ fn confirm_delete(page: &Rc<Page>, i: usize) {
     d.present(Some(&window));
 }
 
-/// "Add a custom shortcut": a name, a command, and a key to press.
-fn add_custom(page: &Rc<Page>) {
+/// "Add a custom shortcut" (a name, a command, and a key to press), or with `edit` the same dialog filled in
+/// with an existing custom shortcut so its name, command and key can all be changed.
+fn add_custom(page: &Rc<Page>, edit: Option<usize>) {
+    let existing = edit.and_then(|i| {
+        let actions = page.ui.actions.borrow();
+        let a = actions.get(i)?;
+        let id = a.id.first()?.clone();
+        Some((id.clone(), a.id.clone(), a.name().to_string(), custom_command(&id).unwrap_or_default(), a.keys.first().copied()))
+    });
     let win = adw::Window::builder()
         .modal(true)
         .transient_for(&page.ui.window)
         .default_width(460)
         .resizable(false)
-        .title("Add a custom shortcut")
+        .title(if existing.is_some() { "Edit custom shortcut" } else { "Add a custom shortcut" })
         .build();
 
     let name = adw::EntryRow::builder().title("Name").build();
     let command = adw::EntryRow::builder().title("Command").build();
-    let key_label = gtk4::Label::new(Some("Not set"));
+    if let Some((_, _, n, c, _)) = &existing {
+        name.set_text(n);
+        command.set_text(c);
+    }
+    let key_label = gtk4::Label::new(Some(existing.as_ref().and_then(|e| e.4).map(key_text).as_deref().unwrap_or("Not set")));
     key_label.set_css_classes(&["dim-label"]);
     let key_button = gtk4::Button::with_label("Set shortcut");
     key_button.set_valign(gtk4::Align::Center);
@@ -747,9 +790,9 @@ fn add_custom(page: &Rc<Page>) {
     body.append(&error);
 
     let cancel = gtk4::Button::with_label("Cancel");
-    let add = gtk4::Button::with_label("Add");
+    let add = gtk4::Button::with_label(if existing.is_some() { "Save" } else { "Add" });
     add.set_css_classes(&["suggested-action"]);
-    add.set_sensitive(false);
+    add.set_sensitive(existing.is_some());
     let header = adw::HeaderBar::new();
     header.pack_start(&cancel);
     header.pack_end(&add);
@@ -758,7 +801,7 @@ fn add_custom(page: &Rc<Page>) {
     view.set_content(Some(&body));
     win.set_content(Some(&view));
 
-    let key: Rc<Cell<Option<i32>>> = Rc::new(Cell::new(None));
+    let key: Rc<Cell<Option<i32>>> = Rc::new(Cell::new(existing.as_ref().and_then(|e| e.4)));
     let check = {
         let (name, command, key, add) = (name.clone(), command.clone(), key.clone(), add.clone());
         Rc::new(move || {
@@ -803,8 +846,8 @@ fn add_custom(page: &Rc<Page>) {
         });
     }
     {
-        let (win, page, name, command, key, error, add2) =
-            (win.clone(), page.clone(), name.clone(), command.clone(), key.clone(), error.clone(), add.clone());
+        let (win, page, name, command, key, error, add2, existing) =
+            (win.clone(), page.clone(), name.clone(), command.clone(), key.clone(), error.clone(), add.clone(), existing.clone());
         add.connect_clicked(move |_| {
             let Some(k) = key.get() else { return };
             let (n, c) = (name.text().to_string(), command.text().to_string());
@@ -813,8 +856,9 @@ fn add_custom(page: &Rc<Page>) {
                 .actions
                 .borrow()
                 .iter()
-                .find(|a| a.keys.contains(&k))
-                .map(|a| (a.name().to_string(), a.group().to_string()));
+                .enumerate()
+                .find(|(j, a)| Some(*j) != edit && a.keys.contains(&k))
+                .map(|(_, a)| (a.name().to_string(), a.group().to_string()));
             if let Some((other, group)) = taken {
                 error.set_label(&format!("{} is already used by “{other}” ({group}). Pick another key.", key_text(k)));
                 error.set_visible(true);
@@ -823,7 +867,12 @@ fn add_custom(page: &Rc<Page>) {
             error.set_visible(false);
             add2.set_sensitive(false);
             let (win, page, error, add2) = (win.clone(), page.clone(), error.clone(), add2.clone());
-            in_background(move || create_custom(n, c, k), move |res| match res {
+            let existing = existing.clone();
+            let work = move || match existing {
+                Some((_, id, old_name, old_command, old_key)) => update_custom(id, (old_name, old_command, old_key), n, c, k),
+                None => create_custom(n, c, k),
+            };
+            in_background(work, move |res| match res {
                 Ok(()) => {
                     win.close();
                     reload(&page);
@@ -846,7 +895,12 @@ pub fn open(parent: &gtk4::Widget) {
         win.set_modal(true);
     }
 
-    let search = gtk4::SearchEntry::builder().placeholder_text("Search shortcuts").hexpand(true).build();
+    let search = gtk4::SearchEntry::builder().placeholder_text("Search shortcuts").hexpand(true).css_classes(vec!["shortcuts-search".to_string()]).build();
+    // the search field has to stand out from the header: a visible border and a darker fill (its own provider, so the
+    // header-bar and entry styles of the theme cannot win over it)
+    let look = gtk4::CssProvider::new();
+    look.load_from_string(".shortcuts-search { background: alpha(@window_fg_color, 0.12); border: 1px solid alpha(@window_fg_color, 0.4); border-radius: 10px; min-height: 34px; } .shortcuts-search text { background: none; } .shortcuts-search:focus-within { border-color: @accent_bg_color; box-shadow: 0 0 0 1px @accent_bg_color; }");
+    gtk4::style_context_add_provider_for_display(&gtk4::prelude::WidgetExt::display(&win), &look, gtk4::STYLE_PROVIDER_PRIORITY_USER);
     let add_button = gtk4::Button::from_icon_name("list-add-symbolic");
     add_button.set_tooltip_text(Some("Add a custom shortcut"));
     add_button.set_sensitive(false);
@@ -855,7 +909,7 @@ pub fn open(parent: &gtk4::Widget) {
     header.pack_start(&add_button);
 
     let list = gtk4::Box::new(gtk4::Orientation::Vertical, 18);
-    list.set_margin_top(12);
+    list.set_margin_top(28);
     list.set_margin_bottom(24);
     list.set_margin_start(24);
     list.set_margin_end(24);
@@ -889,7 +943,7 @@ pub fn open(parent: &gtk4::Widget) {
     });
     {
         let page = page.clone();
-        add_button.connect_clicked(move |_| add_custom(&page));
+        add_button.connect_clicked(move |_| add_custom(&page, None));
     }
     reload(&page);
 }
@@ -936,6 +990,24 @@ mod tests {
         assert!(one_line("The name", "  ").is_err());
         assert!(one_line("The command", "a\nb").is_err());
         assert_eq!(one_line("The command", "  ls  ").unwrap(), "ls");
+    }
+
+    #[test]
+    fn editing_the_command_keeps_the_name_and_rewrites_the_exec() {
+        let old = desktop_entry("Open site", "firefox https://a.example");
+        let new = desktop_entry("Open site", "firefox https://b.example");
+        assert_ne!(old, new);
+        assert!(new.contains("Name=Open site\n") && new.contains("Comment=firefox https://b.example\n"));
+        assert!(new.contains("Exec=sh -c \"firefox https://b.example\"\n"));
+    }
+
+    #[test]
+    fn update_refuses_what_is_not_a_custom_shortcut_or_is_empty() {
+        let other = vec!["org.kde.dolphin.desktop".to_string(), "x".into(), "y".into(), "z".into()];
+        assert!(update_custom(other, ("n".into(), "ls".into(), None), "n".into(), "ls".into(), 1).is_err());
+        let mine = vec![format!("{CUSTOM_PREFIX}x.desktop"), "x".into(), "y".into(), "z".into()];
+        assert!(update_custom(mine.clone(), ("n".into(), "ls".into(), None), "n".into(), "  ".into(), 1).is_err());
+        assert!(update_custom(mine, ("n".into(), "ls".into(), None), "".into(), "ls".into(), 1).is_err());
     }
 
     #[test]

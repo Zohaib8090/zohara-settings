@@ -471,3 +471,4 @@ popover.search-popover > contents { border-radius: 14px; padding: 4px; }
 
 /* The input device you just identified ("Which one am I using?"). */
 .input-active { border-left: 3px solid @accent_bg_color; padding-left: 10px; }
+

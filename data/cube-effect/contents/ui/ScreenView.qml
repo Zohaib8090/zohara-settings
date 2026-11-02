@@ -15,6 +15,7 @@ Item {
     focus: true
     readonly property QtObject targetScreen: KWinComponents.SceneView.screen
     readonly property int count: KWinComponents.Workspace.desktops.length
+    readonly property real parallax: effect.parallax
     readonly property real faceW: width
     readonly property real faceH: height
     readonly property real fov: 60
@@ -105,6 +106,7 @@ Item {
                                     targetScreen: root.targetScreen
                                     width: root.faceW
                                     height: root.faceH
+                                    parallax: root.parallax
                                 }
                             }
                         }

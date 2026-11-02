@@ -110,8 +110,16 @@ pub fn build() -> gtk4::Widget {
     root_box.append(&hero_box);
 
     // ── Grouped Rows (100% In-App Standalone) ─────────────────────────────────
-    let rows_box = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-    rows_box.set_css_classes(&["win11-card-group"]);
+    // Four headed sections instead of one long list, so a setting is found by what it changes.
+    let section_box = || {
+        let b = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+        b.set_css_classes(&["win11-card-group"]);
+        b
+    };
+    let look_box = section_box();
+    let windows_box = section_box();
+    let taskbar_box = section_box();
+    let system_box = section_box();
 
     // 1. Background (with In-App Wallpapers)
     let bg_exp = adw::ExpanderRow::new();
@@ -147,7 +155,7 @@ pub fn build() -> gtk4::Widget {
     for r in live_wallpaper_rows() {
         bg_exp.add_row(&r);
     }
-    rows_box.append(&bg_exp);
+    look_box.append(&bg_exp);
 
     // 2. Colors (with In-App Accent Colors)
     let colors_exp = adw::ExpanderRow::new();
@@ -215,32 +223,32 @@ pub fn build() -> gtk4::Widget {
     }
     colors_exp.add_row(&round_row);
 
-    rows_box.append(&colors_exp);
+    look_box.append(&colors_exp);
 
     // 3. Themes
     let themes_row = build_action_row("Themes", "Install, create, and manage desktop themes", "applications-graphics-symbolic");
     themes_row.connect_activated(super::themes::open);
-    rows_box.append(&super::in_list(&themes_row));
+    look_box.append(&super::in_list(&themes_row));
 
     // 4. Dynamic Lighting
     let lighting_row = build_action_row("Dynamic Lighting", "Connected RGB devices, effects, app settings", "weather-clear-symbolic");
     lighting_row.connect_activated(super::lighting::open);
-    rows_box.append(&super::in_list(&lighting_row));
+    system_box.append(&super::in_list(&lighting_row));
 
     // 5. Lock Screen
     let lock_row = build_action_row("Lock screen", "Lock screen images, apps, timeout status", "system-lock-screen-symbolic");
     lock_row.connect_activated(super::lockscreen::open);
-    rows_box.append(&super::in_list(&lock_row));
+    system_box.append(&super::in_list(&lock_row));
 
     // 6. Text Input
     let text_row = build_action_row("Text input", "Touch keyboard, voice typing, emoji and more", "input-keyboard-symbolic");
     text_row.connect_activated(super::text_input::open);
-    rows_box.append(&super::in_list(&text_row));
+    system_box.append(&super::in_list(&text_row));
 
     // 7. Start
     let start_row = build_action_row("Start", "Recent apps and items, folders, start menu layout", "view-app-grid-symbolic");
     start_row.connect_activated(super::start_menu::open);
-    rows_box.append(&super::in_list(&start_row));
+    taskbar_box.append(&super::in_list(&start_row));
 
     // 8. Taskbar (with In-App Alignment Toggle)
     let taskbar_exp = adw::ExpanderRow::new();
@@ -308,7 +316,7 @@ pub fn build() -> gtk4::Widget {
         taskbar_exp.add_row(&r);
     }
 
-    rows_box.append(&taskbar_exp);
+    taskbar_box.append(&taskbar_exp);
 
     // 8a. Quick looks: a whole feel in one click
     let looks_exp = adw::ExpanderRow::new();
@@ -341,7 +349,7 @@ pub fn build() -> gtk4::Widget {
         looks_exp.add_row(&row);
     }
     looks_exp.add_row(&looks_status);
-    rows_box.append(&looks_exp);
+    look_box.append(&looks_exp);
 
     // 8b. Window buttons (close / minimize / maximize on the left like a Mac, or on the right)
     let buttons_row = adw::ComboRow::new();
@@ -365,7 +373,7 @@ pub fn build() -> gtk4::Widget {
         });
         ready.set(true);
     }
-    rows_box.append(&super::in_list(&buttons_row));
+    windows_box.append(&super::in_list(&buttons_row));
 
     // 8b2. Desktops: how many, and the dynamic mode where every new app gets its own
     let desk_exp = adw::ExpanderRow::new();
@@ -376,7 +384,7 @@ pub fn build() -> gtk4::Widget {
     for r in desktop_rows() {
         desk_exp.add_row(&r);
     }
-    rows_box.append(&desk_exp);
+    windows_box.append(&desk_exp);
 
     // 8c. Desktop effects (jelly windows, minimize style, open/close style, dimming, mouse finders)
     let fx_exp = adw::ExpanderRow::new();
@@ -387,7 +395,7 @@ pub fn build() -> gtk4::Widget {
     for r in effect_rows() {
         fx_exp.add_row(&r);
     }
-    rows_box.append(&fx_exp);
+    windows_box.append(&fx_exp);
 
     // 9. Fonts
     let fonts_exp = adw::ExpanderRow::new();
@@ -398,9 +406,25 @@ pub fn build() -> gtk4::Widget {
     for r in font_rows() {
         fonts_exp.add_row(&r);
     }
-    rows_box.append(&fonts_exp);
+    look_box.append(&fonts_exp);
 
-    root_box.append(&rows_box);
+    // the cube has its own expander, with its options in sub-sections, instead of sitting among the effects
+    windows_box.append(&cube_expander());
+
+    for (title, b) in [
+        ("Look", &look_box),
+        ("Windows and desktops", &windows_box),
+        ("Taskbar and Start", &taskbar_box),
+        ("Lock screen, text input and lighting", &system_box),
+    ] {
+        root_box.append(&gtk4::Label::builder()
+            .label(title)
+            .halign(gtk4::Align::Start)
+            .margin_top(8)
+            .css_classes(vec!["win11-card-title".to_string()])
+            .build());
+        root_box.append(b);
+    }
     scroll.set_child(Some(&root_box));
     scroll.upcast()
 }
@@ -937,8 +961,6 @@ fn effect_rows() -> Vec<gtk4::Widget> {
     });
     rows.insert(1, strength.upcast());
 
-    rows.extend(cube_rows());
-
     for (n, g) in effects::GROUPS.iter().enumerate() {
         let row = adw::ComboRow::new();
         row.set_title(g.title);
@@ -963,9 +985,10 @@ fn effect_rows() -> Vec<gtk4::Widget> {
     rows
 }
 
-/// Zohara Cube: the on/off switch and its options. The options are only usable while the cube is on; every change is
-/// saved to kwinrc at once and the running effect is told to read it again.
-fn cube_rows() -> Vec<gtk4::Widget> {
+/// Zohara Cube: one expander with the on/off switch and its options in four sub-sections (turning, overview and gestures,
+/// desktop bar and tray, side panel). The options are only usable while the cube is on; every change is saved to kwinrc at
+/// once and the running effect is told to read it again.
+fn cube_expander() -> adw::ExpanderRow {
     use std::{cell::{Cell, RefCell}, rc::Rc};
     let installed = cube::installed();
     let state = Rc::new(RefCell::new(cube::Cube::default()));
@@ -993,6 +1016,10 @@ fn cube_rows() -> Vec<gtk4::Widget> {
     let tilt = adw::SpinRow::with_range(cube::TILT.0, cube::TILT.1, 1.0);
     tilt.set_title("Tilt while turning");
     tilt.set_subtitle("Degrees; 0 keeps the cube level");
+    let par = adw::SpinRow::with_range(cube::PARALLAX.0, cube::PARALLAX.1, 0.01);
+    par.set_digits(2);
+    par.set_title("Window float on face");
+    par.set_subtitle("How strongly the desktops float in front of their face on the cube");
     let gesture = adw::SwitchRow::new();
     gesture.set_title("4 fingers up opens the cube");
     gesture.set_subtitle("Off: leave that swipe to KWin's own Overview (windows and desktops). Meta+C always opens the cube");
@@ -1009,14 +1036,38 @@ fn cube_rows() -> Vec<gtk4::Widget> {
     let tray_time = adw::SpinRow::with_range(cube::TRAY_TIME.0 as f64, cube::TRAY_TIME.1 as f64, 50.0);
     tray_time.set_title("Slide time");
     tray_time.set_subtitle("How long that glide takes, in milliseconds");
+    let panel_on = adw::SwitchRow::new();
+    panel_on.set_title("Side panel with every open window");
+    panel_on.set_subtitle("In the cube overview, a list down the left side shows every window of every desktop. Tap one to go to it, drag it onto a desktop to move it");
+    let panel_preview = adw::SwitchRow::new();
+    panel_preview.set_title("Show a preview of each window");
+    panel_preview.set_subtitle("A small picture of the window. Off: only its icon and name, so more fit on the screen");
+    let panel_width = adw::SpinRow::with_range(cube::PANEL_WIDTH.0 as f64, cube::PANEL_WIDTH.1 as f64, 10.0);
+    panel_width.set_title("Panel width");
+    panel_width.set_subtitle("In pixels");
+    let panel_opacity = adw::SpinRow::with_range(cube::PANEL_OPACITY.0, cube::PANEL_OPACITY.1, 0.05);
+    panel_opacity.set_digits(2);
+    panel_opacity.set_title("Panel see-through");
+    panel_opacity.set_subtitle("1 is solid; lower lets the cube show through");
+    let panel_style = adw::ComboRow::new();
+    panel_style.set_title("Panel colors");
+    panel_style.set_model(Some(&gtk4::StringList::new(&cube::PANEL_STYLES)));
+    let panel_anim = adw::SwitchRow::new();
+    panel_anim.set_title("Slide the panel in");
+    panel_anim.set_subtitle("It glides in from the left, taking the slide time set in the tray section. Off: it appears at once");
+    let panel_hover = adw::SwitchRow::new();
+    panel_hover.set_title("Light up the window under the pointer");
+    panel_hover.set_subtitle("It grows a little and gets brighter");
     let note = adw::ActionRow::new();
     note.set_title("Changes apply right away");
     note.set_subtitle("After a Zohara update, log out and in once to get the newest cube.");
     note.set_activatable(false);
 
     let options: Vec<gtk4::Widget> = vec![
-        turn.clone().upcast(), gap.clone().upcast(), pull.clone().upcast(), tilt.clone().upcast(), gesture.clone().upcast(),
+        turn.clone().upcast(), gap.clone().upcast(), pull.clone().upcast(), tilt.clone().upcast(), par.clone().upcast(), gesture.clone().upcast(),
         scroll_mode.clone().upcast(), scroll_rev.clone().upcast(), tray_anim.clone().upcast(), tray_time.clone().upcast(),
+        panel_on.clone().upcast(), panel_preview.clone().upcast(), panel_width.clone().upcast(), panel_opacity.clone().upcast(),
+        panel_style.clone().upcast(), panel_anim.clone().upcast(), panel_hover.clone().upcast(),
     ];
     for o in &options {
         o.set_sensitive(false);
@@ -1080,6 +1131,45 @@ fn cube_rows() -> Vec<gtk4::Widget> {
         tray_time.connect_value_notify(move |r| { state.borrow_mut().tray_time = r.value() as u32; save(); });
     }
     {
+        let (state, save) = (state.clone(), save.clone());
+        par.connect_value_notify(move |r| { state.borrow_mut().parallax = r.value(); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        panel_preview.connect_active_notify(move |r| { state.borrow_mut().panel_preview = r.is_active(); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        panel_width.connect_value_notify(move |r| { state.borrow_mut().panel_width = r.value() as u32; save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        panel_opacity.connect_value_notify(move |r| { state.borrow_mut().panel_opacity = r.value(); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        panel_style.connect_selected_notify(move |r| { state.borrow_mut().panel_style = r.selected().min(1); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        panel_anim.connect_active_notify(move |r| { state.borrow_mut().panel_animation = r.is_active(); save(); });
+    }
+    {
+        let (state, save) = (state.clone(), save.clone());
+        panel_hover.connect_active_notify(move |r| { state.borrow_mut().panel_hover = r.is_active(); save(); });
+    }
+    {
+        // the panel's own options follow its switch
+        let (state, save, others) = (state.clone(), save.clone(), vec![panel_preview.clone().upcast::<gtk4::Widget>(), panel_width.clone().upcast(), panel_opacity.clone().upcast(), panel_style.clone().upcast(), panel_anim.clone().upcast(), panel_hover.clone().upcast()]);
+        panel_on.connect_active_notify(move |r| {
+            state.borrow_mut().side_panel = r.is_active();
+            for o in &others {
+                o.set_sensitive(r.is_active());
+            }
+            save();
+        });
+    }
+    {
         let (state, ready, on) = (state.clone(), ready.clone(), on.clone());
         gesture.connect_active_notify(move |r| {
             if !ready.get() {
@@ -1092,11 +1182,15 @@ fn cube_rows() -> Vec<gtk4::Widget> {
     }
     {
         let (state, ready, options, note, tray_anim, tray_time) = (state.clone(), ready.clone(), options.clone(), note.clone(), tray_anim.clone(), tray_time.clone());
+        let (panel_on, panel_rest) = (panel_on.clone(), vec![panel_preview.clone().upcast::<gtk4::Widget>(), panel_width.clone().upcast(), panel_opacity.clone().upcast(), panel_style.clone().upcast(), panel_anim.clone().upcast(), panel_hover.clone().upcast()]);
         on.connect_active_notify(move |r| {
             for o in &options {
                 o.set_sensitive(r.is_active());
             }
             tray_time.set_sensitive(r.is_active() && tray_anim.is_active());
+            for o in &panel_rest {
+                o.set_sensitive(r.is_active() && panel_on.is_active());
+            }
             if !ready.get() {
                 return;
             }
@@ -1113,6 +1207,9 @@ fn cube_rows() -> Vec<gtk4::Widget> {
         let (state, ready) = (state.clone(), ready.clone());
         let (on, turn, gap, pull, tilt, gesture) = (on.clone(), turn.clone(), gap.clone(), pull.clone(), tilt.clone(), gesture.clone());
         let (tray_anim, tray_time, scroll_mode, scroll_rev) = (tray_anim.clone(), tray_time.clone(), scroll_mode.clone(), scroll_rev.clone());
+        let (panel_on, panel_preview, panel_width, panel_opacity, panel_style, panel_anim, panel_hover) =
+            (panel_on.clone(), panel_preview.clone(), panel_width.clone(), panel_opacity.clone(), panel_style.clone(), panel_anim.clone(), panel_hover.clone());
+        let par = par.clone();
         crate::backend::worker::in_background(
             || (cube::read(), cube::is_on()),
             move |(c, is_on)| {
@@ -1121,22 +1218,55 @@ fn cube_rows() -> Vec<gtk4::Widget> {
                 gap.set_active(c.open_cube);
                 pull.set_value(c.pullback);
                 tilt.set_value(c.tilt);
+                par.set_value(c.parallax);
                 gesture.set_active(c.overview_gesture);
                 scroll_mode.set_selected(c.scroll_mode);
                 scroll_rev.set_active(c.scroll_reverse);
                 tray_time.set_value(c.tray_time as f64);
                 tray_anim.set_active(c.tray_animation);
+                panel_on.set_active(c.side_panel);
+                panel_preview.set_active(c.panel_preview);
+                panel_width.set_value(c.panel_width as f64);
+                panel_opacity.set_value(c.panel_opacity);
+                panel_style.set_selected(c.panel_style);
+                panel_anim.set_active(c.panel_animation);
+                panel_hover.set_active(c.panel_hover);
                 on.set_active(is_on);
                 tray_time.set_sensitive(is_on && c.tray_animation);
+                for o in [&panel_preview.clone().upcast::<gtk4::Widget>(), &panel_width.clone().upcast(), &panel_opacity.clone().upcast(), &panel_style.clone().upcast(), &panel_anim.clone().upcast(), &panel_hover.clone().upcast()] {
+                    o.set_sensitive(is_on && c.side_panel);
+                }
                 ready.set(true);
             },
         );
     }
 
-    let mut rows: Vec<gtk4::Widget> = vec![on.upcast()];
-    rows.extend(options);
-    rows.push(note.upcast());
-    rows
+    let section = |title: &str, subtitle: &str, icon: &str, rows: Vec<gtk4::Widget>| {
+        let e = adw::ExpanderRow::new();
+        e.set_title(title);
+        e.set_subtitle(subtitle);
+        e.add_prefix(&gtk4::Image::from_icon_name(icon));
+        for r in &rows {
+            e.add_row(r);
+        }
+        e
+    };
+    let exp = adw::ExpanderRow::new();
+    exp.set_title("Desktop cube");
+    exp.set_subtitle("Desktops as a 3D cube: turning, the overview, and a side panel with every open window");
+    exp.add_prefix(&gtk4::Image::from_icon_name("view-grid-symbolic"));
+    exp.set_css_classes(&["win11-expander-row"]);
+    exp.add_row(&on);
+    exp.add_row(&section("Turning and shape", "How the cube moves and looks while it turns", "object-rotate-right-symbolic",
+        vec![turn.upcast(), gap.upcast(), pull.upcast(), tilt.upcast(), par.upcast()]));
+    exp.add_row(&section("Overview and gestures", "Opening the overview and scrolling in it", "input-touchpad-symbolic",
+        vec![gesture.upcast(), scroll_mode.upcast(), scroll_rev.upcast()]));
+    exp.add_row(&section("Desktop bar and window tray", "The bars at the top and bottom of the overview", "view-paged-symbolic",
+        vec![tray_anim.upcast(), tray_time.upcast()]));
+    exp.add_row(&section("Side panel: every open window", "A list of all windows of all desktops, down the left side", "view-list-symbolic",
+        vec![panel_on.upcast(), panel_preview.upcast(), panel_width.upcast(), panel_opacity.upcast(), panel_style.upcast(), panel_anim.upcast(), panel_hover.upcast()]));
+    exp.add_row(&note);
+    exp
 }
 
 /// Live wallpaper: pick a video; it loops as the desktop background. The options show while a video is playing.

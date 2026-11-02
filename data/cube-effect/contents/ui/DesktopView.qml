@@ -12,6 +12,7 @@ Item {
 
     required property QtObject desktop
     required property QtObject targetScreen
+    property real parallax: 0.5
 
     Repeater {
         model: KWinComponents.WindowFilterModel {
@@ -25,7 +26,7 @@ Item {
             wId: model.window.internalId
             x: model.window.x - desktopView.targetScreen.geometry.x
             y: model.window.y - desktopView.targetScreen.geometry.y
-            z: model.window.stackingOrder
+            z: model.window.stackingOrder + desktopView.parallax * 12
             visible: !model.window.minimized
         }
     }

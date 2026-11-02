@@ -134,6 +134,18 @@ Item {
         }
     }
 
+    // ── every open window of every desktop, down the left side ──
+    SidePanel {
+        objectName: "sidePanel"
+        host: windowLayer
+        anchors.left: parent.left
+        anchors.leftMargin: Kirigami.Units.largeSpacing
+        anchors.top: bar.bottom
+        anchors.topMargin: Kirigami.Units.largeSpacing
+        anchors.bottom: tray.top
+        anchors.bottomMargin: Kirigami.Units.largeSpacing
+    }
+
     // ── the menu of one desktop: move it, or delete it ──
     Rectangle {
         id: menu

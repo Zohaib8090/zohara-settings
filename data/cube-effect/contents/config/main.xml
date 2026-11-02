@@ -37,6 +37,34 @@
         <entry name="TrayTime" type="Int">
             <default>350</default>
         </entry>
+        <!-- the overview's side panel: every open window of every desktop, down the left side -->
+        <entry name="SidePanel" type="Bool">
+            <default>true</default>
+        </entry>
+        <!-- true: each window in the panel shows its picture; false: only its icon and name -->
+        <entry name="SidePanelPreview" type="Bool">
+            <default>true</default>
+        </entry>
+        <!-- the panel's width in pixels -->
+        <entry name="SidePanelWidth" type="Int">
+            <default>280</default>
+        </entry>
+        <!-- how see-through the panel is, 0.3 to 1 -->
+        <entry name="SidePanelOpacity" type="Double">
+            <default>0.85</default>
+        </entry>
+        <!-- 0 dark, 1 light -->
+        <entry name="SidePanelStyle" type="Int">
+            <default>0</default>
+        </entry>
+        <!-- true: the panel glides in from the left (taking TrayTime); false: it appears at once -->
+        <entry name="SidePanelAnimation" type="Bool">
+            <default>true</default>
+        </entry>
+        <!-- true: the window under the pointer grows a little and lights up -->
+        <entry name="SidePanelHover" type="Bool">
+            <default>true</default>
+        </entry>
         <!-- scrolling in the overview: 0 up/down and left/right, 1 up/down only, 2 left/right only -->
         <entry name="ScrollMode" type="Int">
             <default>0</default>

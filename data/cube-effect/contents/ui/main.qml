@@ -19,6 +19,7 @@ KWinComponents.SceneEffect {
     // 4 fingers up and down belong to the cube's overview, or are left to KWin's own Overview
     readonly property bool overviewGesture: effect.configuration.OverviewGesture !== false
     readonly property real tilt: effect.configuration.Tilt || 0
+    readonly property real parallax: effect.configuration.Parallax !== undefined ? effect.configuration.Parallax : 0.5
     // overview scrolling: 0 up/down and left/right, 1 up/down only, 2 left/right only; reverse flips the direction
     readonly property int scrollMode: effect.configuration.ScrollMode || 0
     readonly property bool scrollReverse: effect.configuration.ScrollReverse === true

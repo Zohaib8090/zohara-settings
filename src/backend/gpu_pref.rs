@@ -379,7 +379,10 @@ pub fn flatpak_set(app_id: &str, on: bool) -> Result<(), String> {
     }
     let path = flatpak_override_path(app_id);
     let old = std::fs::read_to_string(&path).unwrap_or_default();
-    let new = override_with_env(&old, &env, on);
+    let mut new = override_with_env(&old, &env, on);
+    if !on || flatpak_is_chromium_based(app_id) {
+        new = override_with_x11(&new, on);
+    }
     if new.trim().is_empty() {
         return match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
@@ -407,6 +410,9 @@ pub fn flatpak_launch_now(app_id: &str) -> Result<(), String> {
     for (k, v) in &env {
         cmd.arg(format!("--env={k}={v}"));
     }
+    if flatpak_is_chromium_based(app_id) {
+        cmd.args(["--nosocket=wayland", "--socket=x11"]);
+    }
     cmd.arg(app_id).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     cmd.spawn().map(drop).map_err(|e| format!("Couldn't start the app ({e})"))
 }
@@ -431,6 +437,96 @@ pub fn has_two_gpus() -> bool {
     super::gpu::detect().count() >= 2
 }
 
+// ── Chromium-based Flatpak apps ───────────────────────────────────────────
+//
+// The same thing as for the Chrome-type launchers above, one level down: a Flatpak app built on Chromium (Spotify, Zoom,
+// Discord ...) ignores the stronger chip's variables while it talks to the desktop directly (Wayland), so for these the
+// choice also takes the Wayland socket away and gives it the X11 one. The app then runs through XWayland, where the
+// variables work. `!wayland` is what marks the change as ours, so turning the choice off only takes back what it added.
+
+/// The overrides file with the `sockets=` list set to use X11 instead of Wayland (`on`) or put back (off). Nothing else is touched.
+pub fn override_with_x11(text: &str, on: bool) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let ctx = lines.iter().position(|l| l.trim() == "[Context]");
+    let sock = ctx.and_then(|c| {
+        (c + 1..lines.len()).take_while(|&i| !is_group_header(lines[i].trim())).find(|&i| lines[i].trim().starts_with("sockets="))
+    });
+    let mut tokens: Vec<String> = sock
+        .map(|i| lines[i].trim()["sockets=".len()..].split(';').filter(|t| !t.is_empty()).map(str::to_string).collect())
+        .unwrap_or_default();
+    if on {
+        tokens.retain(|t| !["x11", "!x11", "wayland", "!wayland"].contains(&t.as_str()));
+        tokens.push("x11".into());
+        tokens.push("!wayland".into());
+    } else if tokens.iter().any(|t| t == "!wayland") {
+        tokens.retain(|t| t != "x11" && t != "!wayland");
+    } else {
+        return text.to_string(); // not ours
+    }
+    let line = (!tokens.is_empty()).then(|| format!("sockets={};", tokens.join(";")));
+    match (sock, line, ctx) {
+        (Some(i), Some(l), _) => lines[i] = l,
+        (Some(i), None, _) => {
+            lines.remove(i);
+        }
+        (None, Some(l), Some(c)) => lines.insert(c + 1, l),
+        (None, Some(l), None) => {
+            if lines.last().is_some_and(|l| !l.trim().is_empty()) {
+                lines.push(String::new());
+            }
+            lines.push("[Context]".into());
+            lines.push(l);
+        }
+        (None, None, _) => {}
+    }
+    // a [Context] group with nothing left in it goes too
+    if let Some(c) = lines.iter().position(|l| l.trim() == "[Context]") {
+        let empty = lines[c + 1..].iter().take_while(|l| !is_group_header(l.trim())).all(|l| l.trim().is_empty());
+        if empty {
+            let end = (c + 1..lines.len()).find(|&i| is_group_header(lines[i].trim())).unwrap_or(lines.len());
+            lines.drain(c..end);
+        }
+    }
+    let mut s = lines.join("\n");
+    if !s.trim().is_empty() {
+        s.push('\n');
+    } else {
+        s.clear();
+    }
+    s
+}
+
+/// Whether an installed Flatpak app is built on Chromium (a CEF or Electron app): its files hold Chromium's own parts.
+pub fn flatpak_is_chromium_based(app_id: &str) -> bool {
+    if !safe_flatpak_id(app_id) {
+        return false;
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    let roots = [
+        PathBuf::from("/var/lib/flatpak/app").join(app_id).join("current/active/files"),
+        PathBuf::from(home).join(".local/share/flatpak/app").join(app_id).join("current/active/files"),
+    ];
+    const MARKERS: [&str; 4] = ["libcef.so", "chrome_100_percent.pak", "chrome-sandbox", "v8_context_snapshot.bin"];
+    fn walk(dir: &std::path::Path, depth: u32, budget: &mut u32) -> bool {
+        let Ok(rd) = std::fs::read_dir(dir) else { return false };
+        for e in rd.flatten() {
+            if *budget == 0 {
+                return false;
+            }
+            *budget -= 1;
+            let name = e.file_name().to_string_lossy().into_owned();
+            if MARKERS.contains(&name.as_str()) {
+                return true;
+            }
+            if depth > 0 && e.file_type().is_ok_and(|t| t.is_dir()) && walk(&e.path(), depth - 1, budget) {
+                return true;
+            }
+        }
+        false
+    }
+    roots.iter().any(|r| walk(r, 5, &mut 20000))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,6 +535,56 @@ mod tests {
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     const APP: &str = "[Desktop Entry]\nType=Application\nName=Game\nExec=game %U\n\n[Desktop Action new]\nName=New\nExec=game --new\n";
+
+    #[test]
+    fn a_chromium_flatpak_gets_x11_instead_of_wayland_and_gives_it_back() {
+        let old = "[Context]\nsockets=!fallback-x11;\nfeatures=bluetooth;\ndevices=all;\n\n[Environment]\nFOO=bar\n";
+        let on = override_with_x11(old, true);
+        assert!(on.contains("sockets=!fallback-x11;x11;!wayland;\n"), "{on}");
+        assert!(on.contains("features=bluetooth;") && on.contains("FOO=bar"));
+        assert_eq!(override_with_x11(&on, true), on, "turning on twice changes nothing more");
+        assert_eq!(override_with_x11(&on, false), old, "off puts the file back exactly");
+    }
+
+    #[test]
+    fn x11_override_creates_and_removes_its_own_group() {
+        let on = override_with_x11("", true);
+        assert_eq!(on, "[Context]\nsockets=x11;!wayland;\n");
+        assert_eq!(override_with_x11(&on, false), "", "nothing left, so no file content");
+        let env_only = "[Environment]\nA=1\n";
+        let both = override_with_x11(env_only, true);
+        assert_eq!(both, "[Environment]\nA=1\n\n[Context]\nsockets=x11;!wayland;\n");
+        assert_eq!(override_with_x11(&both, false).trim_end(), env_only.trim_end());
+    }
+
+    #[test]
+    fn x11_off_leaves_a_users_own_sockets_alone() {
+        let theirs = "[Context]\nsockets=x11;pulseaudio;\n";
+        assert_eq!(override_with_x11(theirs, false), theirs, "no !wayland marker, so it is not ours");
+        let wayland_granted = "[Context]\nsockets=wayland;\n";
+        assert!(override_with_x11(wayland_granted, true).contains("sockets=x11;!wayland;"));
+    }
+
+    #[test]
+    fn chromium_apps_are_recognised_by_their_files() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("zs-chromium-{}", std::process::id()));
+        let files = home.join(".local/share/flatpak/app/org.example.Cef/current/active/files/extra/share/app");
+        std::fs::create_dir_all(&files).unwrap();
+        std::fs::write(files.join("libcef.so"), b"x").unwrap();
+        let plain = home.join(".local/share/flatpak/app/org.example.Plain/current/active/files/bin");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(plain.join("tool"), b"x").unwrap();
+        let old = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &home);
+        let (cef, plain_app, bad) = (flatpak_is_chromium_based("org.example.Cef"), flatpak_is_chromium_based("org.example.Plain"), flatpak_is_chromium_based("../x"));
+        match old {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(cef && !plain_app && !bad);
+    }
 
     #[test]
     fn the_key_is_added_inside_desktop_entry_only_and_removed_again() {

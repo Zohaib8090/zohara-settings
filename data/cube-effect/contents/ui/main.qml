@@ -321,11 +321,19 @@ KWinComponents.SceneEffect {
         // the tray follows by itself: it lists what is on the picked desktop
     }
 
+    // the lowest "Desktop N" no desktop has yet (the count + 1 repeated a name after a desktop was removed or moved)
+    function freeDesktopName() {
+        const used = new Set(KWinComponents.Workspace.desktops.map(d => String(d.name).replace(/\u200b/g, "")));
+        let n = 1;
+        while (used.has("Desktop " + n)) n++;
+        return "Desktop " + n;
+    }
+
     // an empty new desktop (the "+ New desktop" button), picked at once so you can drop windows on it
     function newDesktop() {
         const ws = KWinComponents.Workspace;
         if (ws.desktops.length >= 20) return;
-        ws.createDesktop(ws.desktops.length, "Desktop " + (ws.desktops.length + 1));
+        ws.createDesktop(ws.desktops.length, freeDesktopName());
         const d = ws.desktops[ws.desktops.length - 1];
         if (d) selectDesktop(d);
     }
@@ -334,7 +342,7 @@ KWinComponents.SceneEffect {
         if (!movable(w)) return;
         const ws = KWinComponents.Workspace;
         if (ws.desktops.length >= 20) return;
-        ws.createDesktop(ws.desktops.length, "Desktop " + (ws.desktops.length + 1));
+        ws.createDesktop(ws.desktops.length, freeDesktopName());
         const d = ws.desktops[ws.desktops.length - 1];
         if (d) w.desktops = [d];
     }

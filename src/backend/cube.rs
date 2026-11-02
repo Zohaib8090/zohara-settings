@@ -50,7 +50,7 @@ pub struct Cube {
 impl Default for Cube {
     fn default() -> Self {
         Cube { duration: 450, open_cube: true, pullback: 0.6, tilt: 0.0, parallax: 0.5, overview_gesture: true, tray_animation: true, tray_time: 350, scroll_mode: 0, scroll_reverse: false,
-            side_panel: true, panel_preview: true, panel_width: 280, panel_opacity: 0.85, panel_style: 0, panel_animation: true, panel_hover: true }
+            side_panel: true, panel_preview: true, panel_width: 280, panel_opacity: 0.85, panel_style: 2, panel_animation: true, panel_hover: true }
     }
 }
 
@@ -62,7 +62,7 @@ pub const SCROLL_MODES: [&str; 3] = ["Up/down and left/right", "Up/down only", "
 pub const TRAY_TIME: (u32, u32) = (100, 1200);
 pub const PANEL_WIDTH: (u32, u32) = (200, 420);
 pub const PANEL_OPACITY: (f64, f64) = (0.3, 1.0);
-pub const PANEL_STYLES: [&str; 2] = ["Dark", "Light"];
+pub const PANEL_STYLES: [&str; 3] = ["Dark", "Light", "Follow the system"];
 
 /// Whether the effect's files are on this computer.
 pub fn installed() -> bool {
@@ -88,7 +88,7 @@ pub fn read() -> Cube {
         panel_preview: get("SidePanelPreview").map(|v| v != "false").unwrap_or(d.panel_preview),
         panel_width: get("SidePanelWidth").and_then(|v| v.parse().ok()).map(|v: u32| v.clamp(PANEL_WIDTH.0, PANEL_WIDTH.1)).unwrap_or(d.panel_width),
         panel_opacity: get("SidePanelOpacity").and_then(|v| v.parse().ok()).map(|v: f64| v.clamp(PANEL_OPACITY.0, PANEL_OPACITY.1)).unwrap_or(d.panel_opacity),
-        panel_style: get("SidePanelStyle").and_then(|v| v.parse().ok()).map(|v: u32| v.min(1)).unwrap_or(d.panel_style),
+        panel_style: get("SidePanelStyle").and_then(|v| v.parse().ok()).map(|v: u32| v.min(2)).unwrap_or(d.panel_style),
         panel_animation: get("SidePanelAnimation").map(|v| v != "false").unwrap_or(d.panel_animation),
         panel_hover: get("SidePanelHover").map(|v| v != "false").unwrap_or(d.panel_hover),
     }
@@ -111,7 +111,7 @@ pub fn write(c: Cube) {
     w("SidePanelPreview", c.panel_preview.to_string());
     w("SidePanelWidth", c.panel_width.clamp(PANEL_WIDTH.0, PANEL_WIDTH.1).to_string());
     w("SidePanelOpacity", format!("{:.2}", c.panel_opacity.clamp(PANEL_OPACITY.0, PANEL_OPACITY.1)));
-    w("SidePanelStyle", c.panel_style.min(1).to_string());
+    w("SidePanelStyle", c.panel_style.min(2).to_string());
     w("SidePanelAnimation", c.panel_animation.to_string());
     w("SidePanelHover", c.panel_hover.to_string());
     let _ = std::process::Command::new("qdbus6").args(["org.kde.KWin", "/Effects", "org.kde.kwin.Effects.reconfigureEffect", ID]).status();
@@ -180,10 +180,10 @@ mod tests {
     #[test]
     fn defaults_match_the_effects_own_defaults() {
         // main.xml of the effect: Duration 450, OpenCube true, Pullback 0.6, Tilt 0, Parallax 0.5, OverviewGesture true, TrayAnimation true, TrayTime 350, ScrollMode 0, ScrollReverse false,
-        // SidePanel true, SidePanelPreview true, SidePanelWidth 280, SidePanelOpacity 0.85, SidePanelStyle 0, SidePanelAnimation true, SidePanelHover true
+        // SidePanel true, SidePanelPreview true, SidePanelWidth 280, SidePanelOpacity 0.85, SidePanelStyle 2, SidePanelAnimation true, SidePanelHover true
         assert_eq!(Cube::default(), Cube {
             duration: 450, open_cube: true, pullback: 0.6, tilt: 0.0, parallax: 0.5, overview_gesture: true, tray_animation: true, tray_time: 350, scroll_mode: 0, scroll_reverse: false,
-            side_panel: true, panel_preview: true, panel_width: 280, panel_opacity: 0.85, panel_style: 0, panel_animation: true, panel_hover: true,
+            side_panel: true, panel_preview: true, panel_width: 280, panel_opacity: 0.85, panel_style: 2, panel_animation: true, panel_hover: true,
         });
     }
 

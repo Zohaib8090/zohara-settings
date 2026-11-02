@@ -53,9 +53,9 @@
         <entry name="SidePanelOpacity" type="Double">
             <default>0.85</default>
         </entry>
-        <!-- 0 dark, 1 light -->
+        <!-- 0 dark, 1 light, 2 follow the system colors (light scheme: light panel) -->
         <entry name="SidePanelStyle" type="Int">
-            <default>0</default>
+            <default>2</default>
         </entry>
         <!-- true: the panel glides in from the left (taking TrayTime); false: it appears at once -->
         <entry name="SidePanelAnimation" type="Bool">

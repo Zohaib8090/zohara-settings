@@ -161,7 +161,7 @@ Item {
     // as your fingers move and settles on the nearest desktop when they stop.
     WheelHandler {
         id: wheel
-        enabled: effect.overview
+        enabled: effect.overview && !trayLayer.overPanel
         acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
         onWheel: ev => {
             // which axis counts: both (the stronger one), only up/down or only left/right (Settings: Scroll in the overview)
@@ -189,6 +189,7 @@ Item {
     }
 
     WindowTray {
+        id: trayLayer
         anchors.fill: parent
         targetScreen: root.targetScreen
     }

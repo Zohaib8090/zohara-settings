@@ -9,7 +9,7 @@ import org.kde.kwin as KWinComponents
 // The overview's side panel: every open window of every desktop, grouped by desktop, down the left edge. Tap a window to go to
 // it; drag it onto another desktop's group (or onto a chip in the desktop bar) to move it there. It scrolls when there are many.
 // Settings (Personalization > Desktop cube > Side panel): SidePanel, SidePanelPreview, SidePanelWidth, SidePanelOpacity,
-// SidePanelStyle (0 dark, 1 light), SidePanelAnimation (it slides in, taking TrayTime), SidePanelHover.
+// SidePanelStyle (0 dark, 1 light, 2 follows the Plasma color scheme), SidePanelAnimation (it slides in, taking TrayTime), SidePanelHover.
 Item {
     id: panel
 
@@ -20,7 +20,11 @@ Item {
     readonly property bool previews: effect.configuration.SidePanelPreview !== false
     readonly property bool hoverFx: effect.configuration.SidePanelHover !== false
     readonly property bool animate: effect.configuration.SidePanelAnimation !== false
-    readonly property bool light: effect.configuration.SidePanelStyle === 1
+    // 2 (the default): light when the Plasma color scheme is light, dark when it is dark
+    readonly property int style: effect.configuration.SidePanelStyle !== undefined ? effect.configuration.SidePanelStyle : 2
+    readonly property color sysBg: Kirigami.Theme.backgroundColor
+    readonly property bool sysLight: (0.299 * sysBg.r + 0.587 * sysBg.g + 0.114 * sysBg.b) > 0.5
+    readonly property bool light: style === 1 || (style === 2 && sysLight)
     readonly property real alpha: Math.max(0.3, Math.min(1, effect.configuration.SidePanelOpacity !== undefined ? effect.configuration.SidePanelOpacity : 0.85))
 
     readonly property color fg: light ? "#1b1d26" : "#ffffff"
@@ -28,6 +32,9 @@ Item {
     readonly property color card: light ? "#12000000" : "#1affffff"
     readonly property color cardHover: light ? "#26000000" : "#33ffffff"
     readonly property color accent: "#3b82f6"
+
+    readonly property bool hovering: panelHover.hovered
+    HoverHandler { id: panelHover }
 
     width: Math.max(200, Math.min(420, effect.configuration.SidePanelWidth || 280))
     visible: wanted && effect.amount > 0.02

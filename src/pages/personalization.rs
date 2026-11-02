@@ -1148,7 +1148,7 @@ fn cube_expander() -> adw::ExpanderRow {
     }
     {
         let (state, save) = (state.clone(), save.clone());
-        panel_style.connect_selected_notify(move |r| { state.borrow_mut().panel_style = r.selected().min(1); save(); });
+        panel_style.connect_selected_notify(move |r| { state.borrow_mut().panel_style = r.selected().min(2); save(); });
     }
     {
         let (state, save) = (state.clone(), save.clone());

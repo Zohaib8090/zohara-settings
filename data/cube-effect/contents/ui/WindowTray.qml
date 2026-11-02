@@ -11,6 +11,9 @@ import org.kde.kwin as KWinComponents
 Item {
     id: windowLayer
 
+    // the pointer is over the side panel: the mouse wheel and two-finger scrolling then scroll its list and must not turn the cube
+    readonly property bool overPanel: sidePanel.hovering
+
     required property QtObject targetScreen
     // The layer follows the cube's own zoom-out (effect.amount, 0 closed .. 1 open, which also follows your fingers on a 4 finger
     // swipe): the desktop bar glides down from the top and the tray up from the bottom, fading in a little after the cube starts.
@@ -136,6 +139,7 @@ Item {
 
     // ── every open window of every desktop, down the left side ──
     SidePanel {
+        id: sidePanel
         objectName: "sidePanel"
         host: windowLayer
         anchors.left: parent.left

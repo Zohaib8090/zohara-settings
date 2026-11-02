@@ -255,6 +255,7 @@ KWinComponents.SceneEffect {
         const wasSelected = selected !== null && selected.id === d.id;
         menuDesktop = null;
         ws.removeDesktop(d);
+        Qt.callLater(renumberDefaultNames);
         if (wasSelected || selected === null) selected = ws.currentDesktop;
         appFilter = "";
         armed = null;
@@ -319,6 +320,16 @@ KWinComponents.SceneEffect {
         if (!movable(w) || !d) return;
         w.desktops = [d];
         // the tray follows by itself: it lists what is on the picked desktop
+    }
+
+    // after a desktop is removed, the ones still named "Desktop N" count from 1 again in their order, so there is no gap
+    // (delete Desktop 4 and Desktop 5 becomes Desktop 4). A name you chose yourself is never touched.
+    function renumberDefaultNames() {
+        const list = KWinComponents.Workspace.desktops;
+        for (let p = 0; p < list.length; p++) {
+            const plain = String(list[p].name).replace(/\u200b/g, "");
+            if (/^Desktop \d+$/.test(plain) && plain !== "Desktop " + (p + 1)) setDesktopName(list[p].id, "Desktop " + (p + 1));
+        }
     }
 
     // the lowest "Desktop N" no desktop has yet (the count + 1 repeated a name after a desktop was removed or moved)

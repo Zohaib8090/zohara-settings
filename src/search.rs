@@ -378,7 +378,10 @@ pub fn attach(
                 list.remove(&c);
             }
             let q = entry.text().to_string();
-            let hits = find(ENTRIES, &q, 8);
+            let mut hits = find(ENTRIES, &q, 8);
+            if !crate::pages::zohara_ai::visible() {
+                hits.retain(|h| h.page != "Zohara AI");
+            }
             if q.trim().is_empty() {
                 shown.borrow_mut().clear();
                 popover.popdown();

@@ -10,6 +10,11 @@ use gtk4::prelude::*;
 use libadwaita as adw;
 use std::rc::Rc;
 
+/// Zohara AI is only offered on the alpha channel (the package exists nowhere else yet).
+pub fn visible() -> bool {
+    crate::sysupdate::channel::current() == "alpha"
+}
+
 struct Ui {
     page: glib::WeakRef<gtk4::Box>,
     status_row: adw::ActionRow,

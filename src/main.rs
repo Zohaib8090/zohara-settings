@@ -438,6 +438,10 @@ fn build_ui(app: &adw::Application) {
         if page_def.hidden {
             continue;
         }
+        // Zohara AI is alpha-only for now: only computers on the alpha channel see its page.
+        if page_def.label == "Zohara AI" && !pages::zohara_ai::visible() {
+            continue;
+        }
 
         let row_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
         let icon = gtk4::Image::from_icon_name(page_def.icon);

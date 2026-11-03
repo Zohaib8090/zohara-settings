@@ -50,3 +50,4 @@ pub mod windows_sandbox;
 pub mod wifi_diag;
 pub mod worker;
 pub mod zohara_link;
+pub mod zohara_ai;

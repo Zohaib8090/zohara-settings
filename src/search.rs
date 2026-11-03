@@ -138,6 +138,7 @@ pub static ENTRIES: &[Entry] = &[
     e!("Default apps", "Default apps", "default browser email file types open with"),
     e!("About", "About", "device info version kernel processor memory ram"),
     e!("Zohara Link", "Zohara Link", "phone android connect"),
+    e!("Zohara AI", "Zohara AI", "assistant chat agent zo-ai install"),
     e!("Troubleshoot", "Troubleshoot", "fix problem repair logs report health"),
     // Network & internet
     e!("Wi-Fi", "Network & internet", "wifi wireless network connect internet known networks metered password"),

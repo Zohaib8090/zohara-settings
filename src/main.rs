@@ -238,6 +238,7 @@ static PAGES: &[PageDef] = &[
     PageDef { label: "Default apps",         icon: "preferences-desktop-default-applications-symbolic", hidden: true },
     PageDef { label: "About",                icon: "help-about-symbolic",                          hidden: false },
     PageDef { label: "Zohara Link",          icon: "phone-symbolic",                               hidden: false },
+    PageDef { label: "Zohara AI",            icon: "starred-symbolic",                             hidden: false },
     PageDef { label: "Troubleshoot",         icon: "system-help-symbolic",                         hidden: false },
 ];
 
@@ -302,7 +303,8 @@ fn build_page_inner(index: usize) -> gtk4::Widget {
         21 => pages::default_apps::build(),
         22 => pages::advanced::build(),
         23 => pages::zohara_link::build(),
-        24 => pages::troubleshoot::build(),
+        24 => pages::zohara_ai::build(),
+        25 => pages::troubleshoot::build(),
         _  => unreachable!("Page index {} out of range", index),
     }
 }
@@ -461,6 +463,7 @@ fn build_ui(app: &adw::Application) {
             "Zohara Update" => "accent-cyan",
             "About" => "accent-blue",
             "Zohara Link" => "accent-green",
+            "Zohara AI" => "accent-purple",
             "Troubleshoot" => "accent-orange",
             _ => "accent-blue",
         };

@@ -134,6 +134,7 @@ KWinComponents.SceneEffect {
         dragging = false;
         pos = currentIndex();
         effect.visible = true;
+        renumberDefaultNames();
         selected = KWinComponents.Workspace.currentDesktop;
         appFilter = "";
         armed = null;
@@ -239,8 +240,8 @@ KWinComponents.SceneEffect {
             }
             if (next.length > 0) w.desktops = next;
         }
-        // names travel with their desktop
-        for (let p = 0; p < n; p++) setDesktopName(list[p].id, names[order[p]]);
+        // names travel with their desktop, but the ones still called "Desktop N" count from 1 in the new order
+        for (let p = 0; p < n; p++) setDesktopName(list[p].id, tidyName(names[order[p]], p));
 
         if (currentOld >= 0) ws.currentDesktop = list[newPosOf[currentOld]];
         if (selectedOld >= 0) selected = list[newPosOf[selectedOld]];
@@ -324,6 +325,11 @@ KWinComponents.SceneEffect {
 
     // after a desktop is removed, the ones still named "Desktop N" count from 1 again in their order, so there is no gap
     // (delete Desktop 4 and Desktop 5 becomes Desktop 4). A name you chose yourself is never touched.
+    function tidyName(name, position) {
+        const plain = String(name).replace(/\u200b/g, "");
+        return /^Desktop \d+$/.test(plain) ? "Desktop " + (position + 1) : name;
+    }
+
     function renumberDefaultNames() {
         const list = KWinComponents.Workspace.desktops;
         for (let p = 0; p < list.length; p++) {
@@ -502,5 +508,6 @@ KWinComponents.SceneEffect {
 
     Component.onCompleted: {
         effect.pos = currentIndex();
+        Qt.callLater(renumberDefaultNames);
     }
 }

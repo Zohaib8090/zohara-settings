@@ -151,6 +151,7 @@ pub static ENTRIES: &[Entry] = &[
     e!("Network adapters", "Network & internet", "ethernet cable lan adapter ip address"),
     e!("Wi-Fi adapter", "Network & internet", "no wifi missing driver adapter not detected not working wireless card broken"),
     // System
+    e!("Hardware video decoding", "System", "video playback graphics card battery decode vaapi smooth"),
     e!("Rename device", "System", "computer name hostname"),
     e!("User manager", "System", "users accounts add remove"),
     e!("Migration", "System", "import linux migrate move files"),

@@ -137,6 +137,7 @@ pub fn build() -> gtk4::Widget {
             dialog.present();
     });
     rows_box.append(&system_links_group(&root_box));
+    rows_box.append(&super::apps::video_group(&root_box));
 
     // 2) Hardware specs
     let ram_total_h = system::human_bytes(info.ram_total_bytes);

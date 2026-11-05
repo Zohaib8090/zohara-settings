@@ -1342,7 +1342,8 @@ fn va_driver(name: &str) -> bool {
     Path::new(&format!("/usr/lib/dri/{name}_drv_video.so")).exists()
 }
 
-fn video_group(page: &gtk4::Box) -> adw::PreferencesGroup {
+/// Shown on the System page (it is about the computer's hardware, not about apps).
+pub(super) fn video_group(page: &gtk4::Box) -> adw::PreferencesGroup {
     let g = adw::PreferencesGroup::new();
     g.set_title("Video playback");
     let row = adw::ActionRow::new();
@@ -1459,7 +1460,6 @@ pub fn build() -> gtk4::Widget {
     root.append(&mac);
 
     root.append(&sources_group(&root));
-    root.append(&video_group(&root));
 
     scroll.set_child(Some(&root));
     scroll.upcast()

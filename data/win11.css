@@ -472,3 +472,35 @@ popover.search-popover > contents { border-radius: 14px; padding: 4px; }
 /* The input device you just identified ("Which one am I using?"). */
 .input-active { border-left: 3px solid @accent_bg_color; padding-left: 10px; }
 
+
+/* ── Apps list: source badges, and subtitles that are easier to read on dark ── */
+.win11-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 9px;
+    border-radius: 999px;
+    background: alpha(@window_fg_color, 0.10);
+    color: alpha(@window_fg_color, 0.78);
+}
+.win11-badge-system {
+    background: alpha(@accent_color, 0.22);
+    color: @window_fg_color;
+}
+/* libadwaita draws row subtitles at 55% opacity, which is on the edge of readable on the dark window */
+.boxed-list row .subtitle,
+preferencesgroup row .subtitle {
+    opacity: 0.8;
+}
+.win11-row-sub {
+    color: alpha(@window_fg_color, 0.66);
+}
+
+/* The small heading over Zohara's own pages in the sidebar */
+.win11-nav-group {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin: 6px 14px 2px 14px;
+    color: alpha(@window_fg_color, 0.6);
+}

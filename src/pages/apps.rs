@@ -50,6 +50,8 @@ enum Source {
     AppImage(String),
     /// An app inside a distrobox container (the Ubuntu one Zohara sets up for .deb files), exported to the menu; the container's name.
     Container(String),
+    /// A program unpacked from an archive (Apps from archives): its short name. Removed in "Apps from archives" above.
+    Archive(String),
     Other,
 }
 
@@ -62,6 +64,12 @@ struct App {
     /// The launcher's file name (`firefox.desktop`) and where it is.
     desktop_id: String,
     desktop_path: String,
+    /// What the launcher says the program is for.
+    comment: String,
+    /// A part of the desktop rather than an app (settings module, Xfce/Cinnamon piece).
+    system: bool,
+    /// The desktop needs it: never offered for removal.
+    protected: bool,
 }
 
 // gio::Icon isn't Send, so gather plain data on the worker and build icons on the GTK thread.
@@ -78,6 +86,35 @@ struct RawApp {
     aur: bool,
     /// It starts inside this distrobox container.
     container: Option<String>,
+    /// Installed from an archive by Zohara (`zohara-archive-<slug>.desktop`).
+    archive: bool,
+    /// The launcher's own description (`Comment=`).
+    comment: Option<String>,
+    categories: String,
+    only_show_in: Option<String>,
+}
+
+/// Parts of the desktop that are not apps a person chose: settings modules and the pieces of other desktops (Xfce, Cinnamon).
+/// Hidden from the list unless "Show system components" is on.
+fn is_system_component(categories: &str, only_show_in: Option<&str>, pkg: Option<&str>) -> bool {
+    let cats: Vec<&str> = categories.split(';').map(str::trim).collect();
+    if cats.iter().any(|c| matches!(*c, "X-XFCE-SettingsDialog" | "X-XFCE-SystemSettings" | "X-GNOME-Settings-Panel" | "X-Cinnamon-Settings")) {
+        return true;
+    }
+    // Made for another desktop only (OnlyShowIn=XFCE; or X-Cinnamon;): not something to pick from a Plasma app list.
+    if let Some(o) = only_show_in {
+        let o = o.trim();
+        if !o.is_empty() && !o.split(';').any(|d| d.trim().eq_ignore_ascii_case("kde")) {
+            return true;
+        }
+    }
+    pkg.map(|p| ["libxfce4", "xfwm4", "xfdesktop", "xfconf", "muffin", "cinnamon-", "cjs"].iter().any(|pre| p.starts_with(pre)) || p == "cinnamon")
+        .unwrap_or(false)
+}
+
+/// Needed by the desktop itself: listed, but never offered for removal.
+fn is_protected(pkg: &str) -> bool {
+    PROTECTED.contains(&pkg) || pkg.starts_with("plasma") || pkg.starts_with("kf6")
 }
 
 /// The container a launcher starts its program in: `Exec=/usr/bin/distrobox-enter -n zohara-deb-runner -- app` -> `zohara-deb-runner`.
@@ -137,7 +174,8 @@ fn raw_apps() -> Vec<RawApp> {
             }
             let Some(name) = get("Name=") else { continue };
             let container = get("Exec=").and_then(|e| distrobox_container(&e));
-            if containers_only && container.is_none() {
+            let archive = id.starts_with("zohara-archive-");
+            if containers_only && container.is_none() && !archive {
                 seen.remove(&id);
                 continue;
             }
@@ -151,6 +189,10 @@ fn raw_apps() -> Vec<RawApp> {
                 appimage: None,
                 aur: false,
                 container,
+                archive,
+                comment: get("Comment=").filter(|c| !c.is_empty()),
+                categories: get("Categories=").unwrap_or_default(),
+                only_show_in: get("OnlyShowIn="),
             });
         }
     }
@@ -207,9 +249,13 @@ fn load_apps() -> Loaded {
             appimage: Some(a.slug),
             aur: false,
             container: None,
+            archive: false,
+            comment: None,
+            categories: String::new(),
+            only_show_in: None,
         });
     }
-    let paths: Vec<String> = raw.iter().filter(|a| a.flatpak.is_none() && a.appimage.is_none() && a.container.is_none()).map(|a| a.desktop_path.clone()).collect();
+    let paths: Vec<String> = raw.iter().filter(|a| a.flatpak.is_none() && a.appimage.is_none() && a.container.is_none() && !a.archive).map(|a| a.desktop_path.clone()).collect();
     let own = owners(&paths);
     let fv = flatpak_versions();
     let foreign = crate::backend::community_apps::foreign_packages();
@@ -236,13 +282,20 @@ fn to_app((raw, owner, fver): (RawApp, Option<(String, String)>, Option<String>)
     };
     let (source, version) = match (&raw.appimage, &raw.flatpak, owner) {
         _ if raw.container.is_some() => (Source::Container(raw.container.clone().unwrap_or_default()), String::new()),
+        _ if raw.archive => (Source::Archive(raw.id.trim_start_matches("zohara-archive-").trim_end_matches(".desktop").to_string()), String::new()),
         (Some(slug), _, _) => (Source::AppImage(slug.clone()), String::new()),
         (None, Some(id), _) => (Source::Flatpak(id.clone()), fver.unwrap_or_default()),
         (None, None, Some((pkg, ver))) if raw.aur => (Source::Aur(pkg), ver),
         (None, None, Some((pkg, ver))) => (Source::Pacman(pkg), ver),
         _ => (Source::Other, String::new()),
     };
-    App { name: raw.name, icon, source, version, desktop_id: raw.id, desktop_path: raw.desktop_path }
+    let pkg = match &source {
+        Source::Pacman(p) | Source::Aur(p) => Some(p.as_str()),
+        _ => None,
+    };
+    let system = is_system_component(&raw.categories, raw.only_show_in.as_deref(), pkg);
+    let protected = pkg.map(is_protected).unwrap_or(false);
+    App { name: raw.name, icon, source, version, desktop_id: raw.id, desktop_path: raw.desktop_path, comment: raw.comment.unwrap_or_default(), system, protected }
 }
 
 /// The graphics button of an app on a laptop with two chips: open it once on the stronger one, or always.
@@ -326,8 +379,72 @@ fn gpu_button(app: &App, page: &gtk4::Box) -> gtk4::MenuButton {
     btn
 }
 
+/// What `pacman -Rs` would do, read without administrator rights.
+#[derive(Debug, PartialEq, Eq)]
+enum Preview {
+    /// These packages would be removed (the app and what only it needed).
+    Removes(Vec<String>),
+    /// These installed packages need it, so pacman would refuse.
+    Blocked(Vec<String>),
+}
+
+/// Reads `pacman -Rsp --print-format %n` output (`stdout`) and its error text (`stderr`).
+fn parse_preview(stdout: &str, stderr: &str) -> Preview {
+    let mut needed_by: Vec<String> = Vec::new();
+    for l in stderr.lines() {
+        if let Some((_, who)) = l.split_once("' required by ") {
+            let who = who.trim().to_string();
+            if !who.is_empty() && !needed_by.contains(&who) {
+                needed_by.push(who);
+            }
+        }
+    }
+    if !needed_by.is_empty() {
+        return Preview::Blocked(needed_by);
+    }
+    Preview::Removes(stdout.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("::") && !l.starts_with("error")).map(String::from).collect())
+}
+
+fn removal_preview(pkg: &str) -> Option<Preview> {
+    let out = Command::new("pacman").args(["-Rsp", "--print-format", "%n", pkg]).output().ok()?;
+    Some(parse_preview(&String::from_utf8_lossy(&out.stdout), &String::from_utf8_lossy(&out.stderr)))
+}
+
 fn uninstall(app: &App, page: &gtk4::Box, row: &adw::ActionRow) {
-    let (title, detail, cmd): (String, String, Vec<String>) = match &app.source {
+    // For a package, look first at what would go with it and who needs it: the confirmation says so.
+    let pkg = match &app.source {
+        Source::Pacman(p) | Source::Aur(p) => Some(p.clone()),
+        _ => None,
+    };
+    let Some(pkg) = pkg else { return show_uninstall(app, page, row, None) };
+    let (app2, page2, row2) = (app.clone(), page.clone(), row.clone());
+    row.set_sensitive(false);
+    in_background(move || removal_preview(&pkg), move |pv| {
+        row2.set_sensitive(true);
+        match pv {
+            Some(Preview::Blocked(by)) => message(
+                &page2,
+                &format!("{} can't be uninstalled", app2.name),
+                &format!("These installed programs need it: {}. Remove them first, or leave it installed.", by.join(", ")),
+            ),
+            Some(Preview::Removes(list)) => {
+                let others: Vec<&String> = list.iter().filter(|n| !matches!(&app2.source, Source::Pacman(p) | Source::Aur(p) if p == *n)).collect();
+                let extra = if others.is_empty() {
+                    None
+                } else {
+                    let shown: Vec<&str> = others.iter().take(8).map(|s| s.as_str()).collect();
+                    let more = if others.len() > 8 { format!(" and {} more", others.len() - 8) } else { String::new() };
+                    Some(format!("\n\nThese go with it, because nothing else needs them: {}{}.", shown.join(", "), more))
+                };
+                show_uninstall(&app2, &page2, &row2, extra)
+            }
+            None => show_uninstall(&app2, &page2, &row2, None),
+        }
+    });
+}
+
+fn show_uninstall(app: &App, page: &gtk4::Box, row: &adw::ActionRow, extra: Option<String>) {
+    let (title, mut detail, cmd): (String, String, Vec<String>) = match &app.source {
         Source::Pacman(pkg) => (
             format!("Uninstall {}?", app.name),
             format!("This removes the “{pkg}” package and anything that was only installed for it."),
@@ -350,9 +467,13 @@ fn uninstall(app: &App, page: &gtk4::Box, row: &adw::ActionRow) {
             vec!["appimage".into(), slug.clone()],
         ),
         // Removing it means removing it inside its container; that is not done from here.
-        Source::Container(_) | Source::Other => return,
+        Source::Container(_) | Source::Archive(_) | Source::Other => return,
     };
+    if let Some(e) = extra {
+        detail.push_str(&e);
+    }
     let d = adw::AlertDialog::new(Some(&title), Some(&detail));
+    d.set_body_use_markup(false);
     d.add_responses(&[("cancel", "Cancel"), ("remove", "Uninstall")]);
     d.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
     d.set_default_response(Some("cancel"));
@@ -405,12 +526,109 @@ fn uninstall(app: &App, page: &gtk4::Box, row: &adw::ActionRow) {
     d.present(Some(page));
 }
 
+/// One row of the list as the filter and the search see it.
+struct Item {
+    /// Lower-case name, description and package, for the search box.
+    text: String,
+    /// n native (pacman, AUR), f flatpak, a AppImage or archive, c container, o anything else.
+    kind: char,
+    system: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Chip {
+    All,
+    Native,
+    Flatpak,
+    Archive,
+    Container,
+    System,
+}
+
+/// Does the row show with this search text (lower case), chip and "Show system components" switch?
+fn item_shown(it: &Item, q: &str, chip: Chip, show_system: bool) -> bool {
+    if !q.is_empty() && !it.text.contains(q) {
+        return false;
+    }
+    match chip {
+        Chip::System => it.system,
+        _ if it.system && !show_system => false,
+        Chip::All => true,
+        Chip::Native => it.kind == 'n',
+        Chip::Flatpak => it.kind == 'f',
+        Chip::Archive => it.kind == 'a',
+        Chip::Container => it.kind == 'c',
+    }
+}
+
+/// (filter letter, badge text) of a source.
+fn source_kind(s: &Source) -> (char, &'static str) {
+    match s {
+        Source::Pacman(_) => ('n', "Native"),
+        Source::Aur(_) => ('n', "AUR"),
+        Source::Flatpak(_) => ('f', "Flatpak"),
+        Source::AppImage(_) => ('a', "AppImage"),
+        Source::Archive(_) => ('a', "Archive"),
+        Source::Container(_) => ('c', "Container"),
+        Source::Other => ('o', "Manual"),
+    }
+}
+
+fn badge(text: &str, tip: &str, extra_class: &str) -> gtk4::Label {
+    let l = gtk4::Label::new(Some(text));
+    l.add_css_class("win11-badge");
+    if !extra_class.is_empty() {
+        l.add_css_class(extra_class);
+    }
+    l.set_valign(gtk4::Align::Center);
+    l.set_tooltip_text(Some(tip));
+    l
+}
+
 fn installed_group(page: &gtk4::Box) -> adw::PreferencesGroup {
+    use std::cell::RefCell;
+    use std::rc::Rc;
     let g = adw::PreferencesGroup::new();
     g.set_title("Installed apps");
-    let search = gtk4::SearchEntry::builder().placeholder_text("Search apps").build();
+    g.set_description(Some("Finding your apps…"));
+    // Scoped on purpose: this box only searches the apps below, not the settings (that is the box at the top of the window).
+    let search = gtk4::SearchEntry::builder().placeholder_text("Search installed apps").tooltip_text("Searches only the apps in this list").build();
     search.set_valign(gtk4::Align::Center);
     g.set_header_suffix(Some(&search));
+
+    // Where an app came from, and whether parts of the desktop are shown.
+    let bar = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
+    bar.set_margin_bottom(8);
+    let chips_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    let mut chips: Vec<(Chip, gtk4::ToggleButton)> = Vec::new();
+    for (chip, label, tip) in [
+        (Chip::All, "All", "Every app"),
+        (Chip::Native, "Native", "Installed with the system's package manager"),
+        (Chip::Flatpak, "Flatpak", "Installed from Flathub"),
+        (Chip::Archive, "Archive", "AppImages and programs unpacked from an archive"),
+        (Chip::Container, "Container", "Ubuntu apps that run in the container"),
+        (Chip::System, "System", "Settings modules and pieces of other desktops"),
+    ] {
+        let b = gtk4::ToggleButton::with_label(label);
+        b.set_tooltip_text(Some(tip));
+        if let Some((_, first)) = chips.first() {
+            b.set_group(Some(first));
+        }
+        chips_box.append(&b);
+        chips.push((chip, b));
+    }
+    chips[0].1.set_active(true);
+    let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    let sys_label = gtk4::Label::new(Some("Show system components"));
+    let sys_switch = gtk4::Switch::new();
+    sys_switch.set_valign(gtk4::Align::Center);
+    sys_switch.set_tooltip_text(Some("Settings modules and the pieces of Xfce or Cinnamon are hidden by default"));
+    bar.append(&chips_box);
+    bar.append(&spacer);
+    bar.append(&sys_label);
+    bar.append(&sys_switch);
+    g.add(&bar);
 
     let list = gtk4::ListBox::new();
     list.add_css_class("boxed-list");
@@ -420,41 +638,115 @@ fn installed_group(page: &gtk4::Box) -> adw::PreferencesGroup {
     list.append(&loading);
     g.add(&list);
 
-    let (list2, page2, search2) = (list.clone(), page.clone(), search.clone());
+    let items: Rc<RefCell<Vec<Item>>> = Rc::new(RefCell::new(Vec::new()));
+    let state: Rc<RefCell<(Chip, bool)>> = Rc::new(RefCell::new((Chip::All, false)));
+
+    // Refilters the list and says how many apps show.
+    let refresh: Rc<dyn Fn()> = {
+        let (list, items, state, search, g) = (list.clone(), items.clone(), state.clone(), search.clone(), g.clone());
+        Rc::new(move || {
+            list.invalidate_filter();
+            let items = items.borrow();
+            if items.is_empty() {
+                return;
+            }
+            let (chip, show) = *state.borrow();
+            let q = search.text().to_lowercase();
+            let n = items.iter().filter(|it| item_shown(it, &q, chip, show)).count();
+            let hidden = items.iter().filter(|it| it.system).count();
+            let note = if !show && chip != Chip::System && hidden > 0 { format!(" · {hidden} system components hidden") } else { String::new() };
+            g.set_description(Some(&format!("Showing {n} of {} apps{note}", items.len())));
+        })
+    };
+    for (chip, b) in &chips {
+        let (chip, state, refresh) = (*chip, state.clone(), refresh.clone());
+        b.connect_toggled(move |b| {
+            if b.is_active() {
+                state.borrow_mut().0 = chip;
+                refresh();
+            }
+        });
+    }
+    {
+        let (state, refresh) = (state.clone(), refresh.clone());
+        sys_switch.connect_active_notify(move |s| {
+            state.borrow_mut().1 = s.is_active();
+            refresh();
+        });
+    }
+    {
+        let refresh = refresh.clone();
+        search.connect_search_changed(move |_| refresh());
+    }
+    {
+        let (items, state, search) = (items.clone(), state.clone(), search.clone());
+        list.set_filter_func(move |row| {
+            let (chip, show) = *state.borrow();
+            let q = search.text().to_lowercase();
+            match row.widget_name().parse::<usize>().ok().and_then(|i| items.borrow().get(i).map(|it| item_shown(it, &q, chip, show))) {
+                Some(v) => v,
+                None => true,
+            }
+        });
+    }
+
+    let (list2, page2) = (list.clone(), page.clone());
     let dual_gpu = crate::backend::gpu_pref::has_two_gpus();
     in_background(load_apps, move |loaded| {
         list2.remove(&loading);
         let apps: Vec<App> = loaded.into_iter().map(to_app).collect();
+        let mut built: Vec<Item> = Vec::new();
         for app in apps {
             let row = adw::ActionRow::new();
             row.set_title(&glib::markup_escape_text(&app.name));
-            let where_from = match &app.source {
+            let (kind, kind_label) = source_kind(&app.source);
+            // What it is first (the launcher's own description), then where it came from and its package.
+            let detail = match &app.source {
                 Source::Pacman(p) => format!("{p} {}", app.version),
                 Source::Aur(p) => format!("AUR · {p} {}", app.version),
                 Source::Flatpak(_) => format!("Flatpak {}", app.version),
                 Source::AppImage(_) => "AppImage".to_string(),
+                Source::Archive(_) => "Unpacked from an archive".to_string(),
                 Source::Container(c) => format!("Ubuntu container · {c}"),
                 Source::Other => "Installed manually".into(),
             };
-            row.set_subtitle(&glib::markup_escape_text(where_from.trim()));
+            let subtitle = if app.comment.is_empty() { detail.trim().to_string() } else { format!("{}\n{}", app.comment, detail.trim()) };
+            row.set_subtitle(&glib::markup_escape_text(&subtitle));
+            let pkg_text = match &app.source {
+                Source::Pacman(p) | Source::Aur(p) => p.clone(),
+                _ => String::new(),
+            };
+            built.push(Item { text: format!("{} {} {}", app.name, app.comment, pkg_text).to_lowercase(), kind, system: app.system });
+            row.set_widget_name(&(built.len() - 1).to_string());
             let img = match &app.icon {
                 Some(i) => gtk4::Image::from_gicon(i),
                 None => gtk4::Image::from_icon_name("application-x-executable"),
             };
             img.set_pixel_size(32);
             row.add_prefix(&img);
+            // Where it came from, and the two things worth a warning.
+            row.add_suffix(&badge(kind_label, "Where this app came from", ""));
+            if app.system {
+                row.add_suffix(&badge("System", "A part of the desktop, not an app you chose", "win11-badge-system"));
+            }
+            if app.protected {
+                row.add_suffix(&badge("Needed", "The desktop needs this, so it can't be uninstalled here", "win11-badge-system"));
+            }
             // A laptop with two graphics chips: choose which one this app uses.
             if dual_gpu {
-                row.add_suffix(&gpu_button(&app, &page2));
+                let gb = gpu_button(&app, &page2);
+                gb.set_tooltip_text(Some("Choose which graphics card this app uses"));
+                row.add_suffix(&gb);
             }
             let removable = match &app.source {
-                Source::Pacman(p) | Source::Aur(p) => !PROTECTED.contains(&p.as_str()) && !p.starts_with("plasma") && !p.starts_with("kf6"),
+                Source::Pacman(p) | Source::Aur(p) => !is_protected(p),
                 Source::Flatpak(_) | Source::AppImage(_) => true,
-                Source::Container(_) | Source::Other => false,
+                Source::Container(_) | Source::Archive(_) | Source::Other => false,
             };
             if removable {
                 let btn = gtk4::Button::with_label("Uninstall");
                 btn.set_valign(gtk4::Align::Center);
+                btn.set_tooltip_text(Some(&format!("Uninstall {}", app.name)));
                 let (app2, page3, row2) = (app.clone(), page2.clone(), row.clone());
                 btn.connect_clicked(move |_| uninstall(&app2, &page3, &row2));
                 row.add_suffix(&btn);
@@ -469,7 +761,7 @@ fn installed_group(page: &gtk4::Box) -> adw::PreferencesGroup {
                     Source::Pacman(p) => super::app_details::Kind::Pacman(p.clone()),
                     Source::Aur(p) => super::app_details::Kind::Aur(p.clone()),
                     Source::AppImage(s) => super::app_details::Kind::AppImage(s.clone()),
-                    Source::Container(_) | Source::Other => super::app_details::Kind::Other,
+                    Source::Container(_) | Source::Archive(_) | Source::Other => super::app_details::Kind::Other,
                 },
                 desktop_id: app.desktop_id.clone(),
                 desktop_path: app.desktop_path.clone(),
@@ -481,21 +773,14 @@ fn installed_group(page: &gtk4::Box) -> adw::PreferencesGroup {
                 None
             };
             row.set_activatable(true);
-            row.add_suffix(&gtk4::Image::from_icon_name("go-next-symbolic"));
+            let chevron = gtk4::Image::from_icon_name("go-next-symbolic");
+            chevron.set_tooltip_text(Some("Open details: storage, permissions, notifications"));
+            row.add_suffix(&chevron);
             row.connect_activated(move |r| super::app_details::open(r, target.clone(), remove_cb.clone()));
             list2.append(&row);
         }
-        let s = search2.clone();
-        list2.set_filter_func(move |row| {
-            let q = s.text().to_lowercase();
-            q.is_empty()
-                || row
-                    .downcast_ref::<adw::ActionRow>()
-                    .map(|r| r.title().to_lowercase().contains(&q) || r.subtitle().map(|s| s.to_lowercase().contains(&q)).unwrap_or(false))
-                    .unwrap_or(true)
-        });
-        let l = list2.clone();
-        search2.connect_search_changed(move |_| l.invalidate_filter());
+        *items.borrow_mut() = built;
+        refresh();
     });
     g
 }
@@ -1062,6 +1347,7 @@ fn video_group(page: &gtk4::Box) -> adw::PreferencesGroup {
     g.set_title("Video playback");
     let row = adw::ActionRow::new();
     row.set_title("Hardware video decoding");
+    row.set_activatable(false);
     row.add_prefix(&gtk4::Image::from_icon_name("video-x-generic-symbolic"));
     let vendors = gpu_vendors();
     // (supported, missing package that would enable it)
@@ -1075,24 +1361,34 @@ fn video_group(page: &gtk4::Box) -> adw::PreferencesGroup {
         (false, None)
     };
     row.set_subtitle(match (ok, missing, vendors.is_empty()) {
-        (true, _, _) => "On · Videos play smoothly and use less battery",
-        (false, Some(_), _) => "Off · A driver for your graphics card isn't installed",
-        (false, None, true) => "No graphics card detected",
-        (false, None, false) => "Not available for your graphics card",
+        (true, _, _) => "Videos play smoothly and use less battery. It is switched on by the system; there is nothing to set.",
+        (false, Some(_), _) => "A driver for your graphics card isn't installed.",
+        (false, None, true) => "No graphics card detected.",
+        (false, None, false) => "Not available for your graphics card.",
     });
+    // A status, not a switch: a label in the place a switch would be reads as "On" without looking clickable.
+    let status = gtk4::Label::new(Some(if ok { "On" } else { "Off" }));
+    status.add_css_class("win11-badge");
+    if ok {
+        status.add_css_class("win11-badge-system");
+    }
+    status.set_valign(gtk4::Align::Center);
+    status.set_tooltip_text(Some("Status only: this is decided by your graphics driver"));
+    row.add_suffix(&status);
     if let Some(pkg) = missing {
         let btn = gtk4::Button::with_label("Install driver");
         btn.add_css_class("suggested-action");
         btn.set_valign(gtk4::Align::Center);
-        let (page2, row2) = (page.clone(), row.clone());
+        let (page2, row2, status2) = (page.clone(), row.clone(), status.clone());
         btn.connect_clicked(move |b| {
             b.set_sensitive(false);
-            let (page3, row3, b2) = (page2.clone(), row2.clone(), b.clone());
+            let (page3, row3, b2, status3) = (page2.clone(), row2.clone(), b.clone(), status2.clone());
             in_background(
                 move || Command::new("pkexec").args(["pacman", "-S", "--needed", "--noconfirm", pkg]).status().map(|s| s.success()).unwrap_or(false),
                 move |done| {
                     if done {
-                        row3.set_subtitle("On · Restart apps that are playing video");
+                        row3.set_subtitle("Restart apps that are playing video.");
+                        status3.set_text("On");
                         b2.set_visible(false);
                     } else {
                         b2.set_sensitive(true);
@@ -1141,7 +1437,7 @@ pub fn build() -> gtk4::Widget {
         web.connect_activated(move |_| super::web_apps::open(root.upcast_ref()));
     }
     more.add(&web);
-    let maps = nav_row("Offline maps", "Download maps of the places you choose to use without internet", "find-location-symbolic");
+    let maps = nav_row("Offline maps", "Download maps of the places you choose to use without internet", "mark-location-symbolic");
     {
         let root = root.clone();
         maps.connect_activated(move |_| super::offline_maps::open(root.upcast_ref()));
@@ -1156,8 +1452,11 @@ pub fn build() -> gtk4::Widget {
     root.append(&more);
 
     root.append(&super::archive_apps::build());
-    root.append(&super::mac_apps::build());
     root.append(&installed_group(&root));
+    // An information card, not something most people need: folded away below the list.
+    let mac = gtk4::Expander::new(Some("Mac and iPhone apps: can this app run here?"));
+    mac.set_child(Some(&super::mac_apps::build()));
+    root.append(&mac);
 
     root.append(&sources_group(&root));
     root.append(&video_group(&root));
@@ -1264,5 +1563,49 @@ mod container_tests {
         assert_eq!(distrobox_container("/usr/bin/distrobox-enter -- foo").as_deref(), Some("container"));
         assert_eq!(distrobox_container("firefox %u"), None);
         assert_eq!(distrobox_container("env -n x steam"), None, "only distrobox launchers count");
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+
+    #[test]
+    fn settings_modules_and_other_desktops_are_system_components() {
+        assert!(is_system_component("Settings;DesktopSettings;X-XFCE-SettingsDialog;", None, Some("xfce4-settings")));
+        assert!(!is_system_component("Settings;System;", None, Some("zohara-settings")), "a Settings-category tool of this desktop is an app");
+        assert!(is_system_component("Utility;", Some("XFCE;"), None));
+        assert!(is_system_component("", Some("X-Cinnamon;"), Some("cinnamon")));
+        assert!(is_system_component("Utility;", None, Some("libxfce4ui")));
+        assert!(!is_system_component("Utility;TerminalEmulator;", None, Some("xfce4-terminal")), "a terminal is an app");
+        assert!(!is_system_component("Network;", Some("KDE;GNOME;"), Some("firefox")));
+        assert!(!is_system_component("Network;WebBrowser;", None, None));
+    }
+
+    #[test]
+    fn protected_packages_are_never_offered_for_removal() {
+        assert!(is_protected("plasma-desktop") && is_protected("kf6-whatever") && is_protected("zohara-settings"));
+        assert!(!is_protected("vlc"));
+    }
+
+    #[test]
+    fn filters_and_search_combine() {
+        let app = Item { text: "vlc media player vlc".into(), kind: 'n', system: false };
+        let sys = Item { text: "workspaces xfwm4".into(), kind: 'n', system: true };
+        let flat = Item { text: "zoom".into(), kind: 'f', system: false };
+        assert!(item_shown(&app, "", Chip::All, false) && item_shown(&flat, "", Chip::All, false));
+        assert!(!item_shown(&sys, "", Chip::All, false), "system components are hidden by default");
+        assert!(item_shown(&sys, "", Chip::All, true));
+        assert!(item_shown(&sys, "", Chip::System, false) && !item_shown(&app, "", Chip::System, true));
+        assert!(item_shown(&app, "", Chip::Native, false) && !item_shown(&flat, "", Chip::Native, false));
+        assert!(item_shown(&flat, "", Chip::Flatpak, false) && !item_shown(&app, "", Chip::Flatpak, false));
+        assert!(item_shown(&app, "media", Chip::All, false) && !item_shown(&app, "zoom", Chip::All, false));
+    }
+
+    #[test]
+    fn a_removal_preview_lists_what_goes_or_who_needs_it() {
+        assert_eq!(parse_preview("vlc\nlibplacebo\n", ""), Preview::Removes(vec!["vlc".into(), "libplacebo".into()]));
+        let err = "error: failed to prepare transaction (could not satisfy dependencies)\n:: removing zenity breaks dependency 'zenity' required by materialx\n:: removing zenity breaks dependency 'zenity' required by muffin\n";
+        assert_eq!(parse_preview("", err), Preview::Blocked(vec!["materialx".into(), "muffin".into()]));
     }
 }

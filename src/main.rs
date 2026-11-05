@@ -412,27 +412,39 @@ fn build_ui(app: &adw::Application) {
     nav_list.set_css_classes(&["win11-nav-list"]);
     nav_list.set_selection_mode(gtk4::SelectionMode::Single);
 
-    // Home..About is the main settings list; Zohara Link and Troubleshoot
-    // are tools rather than settings, so they sit in their own section at
-    // the bottom behind a divider instead of reading as more of the list.
+    // Home..Privacy is the main settings list. Zohara's own pages (Zohara Update, Zohara Link, Zohara AI) sit together under a
+    // "Zohara" heading with a divider, and About and Troubleshoot close the list under another divider.
     nav_list.set_header_func(|row, _before| {
-        let starts_tools = row
-            .widget_name()
-            .parse::<usize>()
-            .ok()
-            .and_then(|i| PAGES.get(i))
-            .map(|p| p.label == "Zohara Link")
-            .unwrap_or(false);
-        if starts_tools {
-            let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
-            sep.set_css_classes(&["win11-nav-separator"]);
-            row.set_header(Some(&sep));
-        } else {
-            row.set_header(None::<&gtk4::Widget>);
+        let label = row.widget_name().parse::<usize>().ok().and_then(|i| PAGES.get(i)).map(|p| p.label).unwrap_or("");
+        match label {
+            "Zohara Update" => {
+                let h = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+                let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+                sep.set_css_classes(&["win11-nav-separator"]);
+                h.append(&sep);
+                let cap = gtk4::Label::builder().label("Zohara").halign(gtk4::Align::Start).css_classes(vec!["win11-nav-group".to_string()]).build();
+                h.append(&cap);
+                row.set_header(Some(&h));
+            }
+            "About" => {
+                let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+                sep.set_css_classes(&["win11-nav-separator"]);
+                row.set_header(Some(&sep));
+            }
+            _ => row.set_header(None::<&gtk4::Widget>),
         }
     });
 
-    for (i, page_def) in PAGES.iter().enumerate() {
+    // The order the rows are added in (their names stay the PAGES index, so nothing else changes).
+    let zohara_group = ["Zohara Update", "Zohara Link", "Zohara AI"];
+    let closing = ["About", "Troubleshoot"];
+    let at = |l: &str| PAGES.iter().position(|p| p.label == l);
+    let mut order: Vec<usize> = (0..PAGES.len()).filter(|&i| !zohara_group.contains(&PAGES[i].label) && !closing.contains(&PAGES[i].label)).collect();
+    order.extend(zohara_group.iter().filter_map(|l| at(l)));
+    order.extend(closing.iter().filter_map(|l| at(l)));
+
+    for i in order {
+        let page_def = &PAGES[i];
         // Not a sidebar row -- still fully routable (see goto()/build_page(),
         // both keyed off PAGES directly), just reached from its parent page.
         if page_def.hidden {

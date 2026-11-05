@@ -22,13 +22,22 @@ pub fn build() -> gtk4::Box {
     holder
 }
 
+/// `/home/me/.local/share/x` -> `~/.local/share/x`.
+fn tilde_path(p: &std::path::Path) -> String {
+    let full = p.to_string_lossy().to_string();
+    match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() && (full == h || full.starts_with(&format!("{h}/"))) => format!("~{}", &full[h.len()..]),
+        _ => full,
+    }
+}
+
 fn fill(holder: &gtk4::Box) {
     while let Some(c) = holder.first_child() {
         holder.remove(&c);
     }
     let g = adw::PreferencesGroup::new();
     g.set_title("Apps from archives");
-    g.set_description(Some("For programs that come as a .tar.gz or similar file. Zohara looks inside first, then unpacks the app into its own folder and adds it to the Start menu. You can remove it here later."));
+    g.set_description(Some("For programs that come as a .tar.gz or similar file. Zohara looks inside first, unpacks the app into its own folder and adds it to the Start menu."));
     let pick = gtk4::Button::with_label("Install from an archive…");
     pick.add_css_class("suggested-action");
     pick.set_valign(gtk4::Align::Center);
@@ -36,7 +45,14 @@ fn fill(holder: &gtk4::Box) {
         let holder = holder.clone();
         pick.connect_clicked(move |_| choose_file(&holder));
     }
-    g.set_header_suffix(Some(&pick));
+    // The button sits in its own row under the text: in the header it ran into the description.
+    let add_row = adw::ActionRow::new();
+    add_row.set_title("Add a program from an archive");
+    add_row.set_subtitle("Pick the file; you can remove the program here later.");
+    add_row.set_activatable(false);
+    add_row.add_prefix(&gtk4::Image::from_icon_name("package-x-generic-symbolic"));
+    add_row.add_suffix(&pick);
+    g.add(&add_row);
 
     let installed = ai::list_installed(&ai::Dirs::real());
     if installed.is_empty() {
@@ -49,7 +65,9 @@ fn fill(holder: &gtk4::Box) {
         let r = adw::ActionRow::new();
         r.set_use_markup(false);
         r.set_title(&app.name);
-        r.set_subtitle(&app.dir.to_string_lossy());
+        // ~/.local/share/zohara/archive-apps/name instead of /home/<user>/...; the whole path shows on hover.
+        r.set_subtitle(&tilde_path(&app.dir));
+        r.set_tooltip_text(Some(&app.dir.to_string_lossy()));
         r.set_activatable(false);
         let remove = gtk4::Button::with_label("Remove");
         remove.add_css_class("destructive-action");
@@ -166,4 +184,17 @@ fn offer_install(holder: &gtk4::Box, path: PathBuf, info: ai::Inspection) {
         );
     });
     d.present(Some(holder));
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn the_home_folder_is_shown_as_a_tilde() {
+        std::env::set_var("HOME", "/home/me");
+        assert_eq!(tilde_path(std::path::Path::new("/home/me/.local/share/zohara/archive-apps/toolbox")), "~/.local/share/zohara/archive-apps/toolbox");
+        assert_eq!(tilde_path(std::path::Path::new("/home/mexico/x")), "/home/mexico/x", "only a real prefix counts");
+        assert_eq!(tilde_path(std::path::Path::new("/opt/x")), "/opt/x");
+    }
 }

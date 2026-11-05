@@ -48,6 +48,8 @@ enum Source {
     Flatpak(String),
     /// An AppImage installed through Zohara Store (its id).
     AppImage(String),
+    /// An app inside a distrobox container (the Ubuntu one Zohara sets up for .deb files), exported to the menu; the container's name.
+    Container(String),
     Other,
 }
 
@@ -74,6 +76,23 @@ struct RawApp {
     appimage: Option<String>,
     /// Its package is built from the AUR.
     aur: bool,
+    /// It starts inside this distrobox container.
+    container: Option<String>,
+}
+
+/// The container a launcher starts its program in: `Exec=/usr/bin/distrobox-enter -n zohara-deb-runner -- app` -> `zohara-deb-runner`.
+/// `None` for an ordinary launcher.
+fn distrobox_container(exec: &str) -> Option<String> {
+    if !exec.contains("distrobox-enter") && !exec.contains("distrobox enter") {
+        return None;
+    }
+    let mut it = exec.split_whitespace();
+    while let Some(w) = it.next() {
+        if w == "-n" || w == "--name" {
+            return it.next().map(|n| n.trim_matches('"').trim_matches('\'').to_string()).filter(|n| !n.is_empty());
+        }
+    }
+    Some("container".to_string())
 }
 
 fn raw_apps() -> Vec<RawApp> {
@@ -86,7 +105,12 @@ fn raw_apps() -> Vec<RawApp> {
         .collect();
     dirs.push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
     dirs.push(home().join(".local/share/flatpak/exports/share/applications"));
-    for dir in dirs {
+    // The person's own launchers (~/.local/share/applications) are not in XDG_DATA_DIRS. Only the ones that start a distrobox
+    // container are listed from there (the Ubuntu apps installed from a .deb); shortcuts, Android and web-app entries have their own pages.
+    let user_dir = std::env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|_| home().join(".local/share")).join("applications");
+    let mut dirs: Vec<(PathBuf, bool)> = dirs.into_iter().map(|d| (d, false)).collect();
+    dirs.insert(0, (user_dir, true));
+    for (dir, containers_only) in dirs {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         for e in entries.flatten() {
             let path = e.path();
@@ -112,6 +136,11 @@ fn raw_apps() -> Vec<RawApp> {
                 continue;
             }
             let Some(name) = get("Name=") else { continue };
+            let container = get("Exec=").and_then(|e| distrobox_container(&e));
+            if containers_only && container.is_none() {
+                seen.remove(&id);
+                continue;
+            }
             let flatpak = get("X-Flatpak=");
             out.push(RawApp {
                 id: id.clone(),
@@ -121,6 +150,7 @@ fn raw_apps() -> Vec<RawApp> {
                 flatpak,
                 appimage: None,
                 aur: false,
+                container,
             });
         }
     }
@@ -176,9 +206,10 @@ fn load_apps() -> Loaded {
             flatpak: None,
             appimage: Some(a.slug),
             aur: false,
+            container: None,
         });
     }
-    let paths: Vec<String> = raw.iter().filter(|a| a.flatpak.is_none() && a.appimage.is_none()).map(|a| a.desktop_path.clone()).collect();
+    let paths: Vec<String> = raw.iter().filter(|a| a.flatpak.is_none() && a.appimage.is_none() && a.container.is_none()).map(|a| a.desktop_path.clone()).collect();
     let own = owners(&paths);
     let fv = flatpak_versions();
     let foreign = crate::backend::community_apps::foreign_packages();
@@ -204,6 +235,7 @@ fn to_app((raw, owner, fver): (RawApp, Option<(String, String)>, Option<String>)
         None
     };
     let (source, version) = match (&raw.appimage, &raw.flatpak, owner) {
+        _ if raw.container.is_some() => (Source::Container(raw.container.clone().unwrap_or_default()), String::new()),
         (Some(slug), _, _) => (Source::AppImage(slug.clone()), String::new()),
         (None, Some(id), _) => (Source::Flatpak(id.clone()), fver.unwrap_or_default()),
         (None, None, Some((pkg, ver))) if raw.aur => (Source::Aur(pkg), ver),
@@ -317,7 +349,8 @@ fn uninstall(app: &App, page: &gtk4::Box, row: &adw::ActionRow) {
             "This deletes the AppImage file and its menu entry. Its settings and data stay in your home folder.".into(),
             vec!["appimage".into(), slug.clone()],
         ),
-        Source::Other => return,
+        // Removing it means removing it inside its container; that is not done from here.
+        Source::Container(_) | Source::Other => return,
     };
     let d = adw::AlertDialog::new(Some(&title), Some(&detail));
     d.add_responses(&[("cancel", "Cancel"), ("remove", "Uninstall")]);
@@ -400,6 +433,7 @@ fn installed_group(page: &gtk4::Box) -> adw::PreferencesGroup {
                 Source::Aur(p) => format!("AUR · {p} {}", app.version),
                 Source::Flatpak(_) => format!("Flatpak {}", app.version),
                 Source::AppImage(_) => "AppImage".to_string(),
+                Source::Container(c) => format!("Ubuntu container · {c}"),
                 Source::Other => "Installed manually".into(),
             };
             row.set_subtitle(&glib::markup_escape_text(where_from.trim()));
@@ -416,7 +450,7 @@ fn installed_group(page: &gtk4::Box) -> adw::PreferencesGroup {
             let removable = match &app.source {
                 Source::Pacman(p) | Source::Aur(p) => !PROTECTED.contains(&p.as_str()) && !p.starts_with("plasma") && !p.starts_with("kf6"),
                 Source::Flatpak(_) | Source::AppImage(_) => true,
-                Source::Other => false,
+                Source::Container(_) | Source::Other => false,
             };
             if removable {
                 let btn = gtk4::Button::with_label("Uninstall");
@@ -435,7 +469,7 @@ fn installed_group(page: &gtk4::Box) -> adw::PreferencesGroup {
                     Source::Pacman(p) => super::app_details::Kind::Pacman(p.clone()),
                     Source::Aur(p) => super::app_details::Kind::Aur(p.clone()),
                     Source::AppImage(s) => super::app_details::Kind::AppImage(s.clone()),
-                    Source::Other => super::app_details::Kind::Other,
+                    Source::Container(_) | Source::Other => super::app_details::Kind::Other,
                 },
                 desktop_id: app.desktop_id.clone(),
                 desktop_path: app.desktop_path.clone(),
@@ -1214,5 +1248,21 @@ mod startup_tests {
         let t = custom_entry("My app", "firefox --private\nrm -rf /");
         assert!(t.starts_with("[Desktop Entry]\nType=Application\nName=My app\nExec=firefox --private rm -rf /\n"));
         assert_eq!(t.matches("Exec=").count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod container_tests {
+    use super::*;
+
+    #[test]
+    fn a_distrobox_launcher_names_its_container() {
+        assert_eq!(
+            distrobox_container("/usr/bin/distrobox-enter  -n zohara-deb-runner  --  /opt/ChatGPT/chatgpt %U").as_deref(),
+            Some("zohara-deb-runner")
+        );
+        assert_eq!(distrobox_container("/usr/bin/distrobox-enter -- foo").as_deref(), Some("container"));
+        assert_eq!(distrobox_container("firefox %u"), None);
+        assert_eq!(distrobox_container("env -n x steam"), None, "only distrobox launchers count");
     }
 }

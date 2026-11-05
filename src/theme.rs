@@ -106,11 +106,15 @@ struct Palette {
 /// wins over the light/dark default so presets keep working.
 fn resolve(cfg: &ThemeConfig, system_dark: bool) -> Palette {
     let picked = cfg.background != DEFAULT_DARK_BG;
+    let picked_is_dark = foreground_for(&cfg.background) == "#ffffff";
     let bg = match cfg.mode.as_str() {
         "custom" => cfg.background.clone(),
-        "light" if !picked => DEFAULT_LIGHT_BG.to_string(),
-        "dark" => cfg.background.clone(),
-        "light" => cfg.background.clone(),
+        // "Dark" and "Light" always give a dark or a light window. A background picked earlier (the dark swatches on Home,
+        // a preset) is kept only when it fits the mode; a dark swatch used to keep the window dark after choosing "Light".
+        "light" if picked && !picked_is_dark => cfg.background.clone(),
+        "light" => DEFAULT_LIGHT_BG.to_string(),
+        "dark" if picked_is_dark => cfg.background.clone(),
+        "dark" => DEFAULT_DARK_BG.to_string(),
         _ if picked => cfg.background.clone(),
         _ if system_dark => DEFAULT_DARK_BG.to_string(),
         _ => DEFAULT_LIGHT_BG.to_string(),
@@ -201,6 +205,18 @@ mod tests {
     fn picked_background_wins_over_the_system() {
         let cfg = ThemeConfig { background: "#0a0e17".into(), ..ThemeConfig::default() };
         assert!(resolve(&cfg, false).dark);
+    }
+
+    #[test]
+    fn light_mode_is_light_even_after_a_dark_background_was_picked() {
+        let cfg = ThemeConfig { mode: "light".into(), background: "#0a0e17".into(), ..ThemeConfig::default() };
+        let p = resolve(&cfg, true);
+        assert!(!p.dark && p.bg == DEFAULT_LIGHT_BG);
+        let dark = ThemeConfig { mode: "dark".into(), background: "#e0e7ff".into(), ..ThemeConfig::default() };
+        assert!(resolve(&dark, false).dark);
+        // a background that fits the mode is kept
+        let kept = ThemeConfig { mode: "light".into(), background: "#e0e7ff".into(), ..ThemeConfig::default() };
+        assert_eq!(resolve(&kept, true).bg, "#e0e7ff");
     }
 
     #[test]

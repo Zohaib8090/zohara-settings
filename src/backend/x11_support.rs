@@ -126,6 +126,42 @@ pub fn install_script(d: Desktop, pinned: bool) -> String {
     )
 }
 
+/// The administrator script that removes `d` again: its packages and the dependencies nothing else needs (`-Rns`). pacman refuses
+/// the whole removal when another installed program still needs one of the packages, so Plasma cannot be damaged by it.
+pub fn remove_script(d: Desktop) -> String {
+    format!("set -e\npacman -Rns --noconfirm {}\n", d.packages())
+}
+
+/// Is the person signed in to `d` right now? `current` is `XDG_CURRENT_DESKTOP` (`X-Cinnamon`, `XFCE`, `KDE`, ...). A desktop that is
+/// running is not removed from under the person.
+pub fn is_running(d: Desktop, current: &str) -> bool {
+    let c = current.to_ascii_lowercase();
+    match d {
+        Desktop::Cinnamon => c.contains("cinnamon"),
+        Desktop::Xfce => c.contains("xfce"),
+        Desktop::PlasmaX11 => false, // Plasma's X11 session shares the name KDE with the Wayland one; its removal is harmless while running
+    }
+}
+
+pub fn explain_remove_exit(code: Option<i32>) -> Option<String> {
+    match code {
+        Some(0) => None,
+        Some(126) | Some(127) => Some("The password prompt was closed, so nothing was changed.".into()),
+        _ => Some("It could not be removed. Another installed program may still need part of it, so nothing was changed.".into()),
+    }
+}
+
+/// Removes `d`; `None` when it worked, otherwise what to tell the person. Slow: call off the UI thread.
+pub fn remove(d: Desktop) -> Option<String> {
+    if is_running(d, &std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default()) {
+        return Some(format!("You are signed in to {} right now. Sign out and sign in to Plasma first, then remove it.", d.name()));
+    }
+    match Command::new("pkexec").args(["sh", "-c", &remove_script(d)]).status() {
+        Ok(s) => explain_remove_exit(s.code()),
+        Err(_) => Some("Couldn't ask for the password.".into()),
+    }
+}
+
 /// Runs the install; `None` when it worked, otherwise what to tell the person. Slow: call off the UI thread.
 pub fn install(d: Desktop) -> Option<String> {
     let pinned = crate::sysupdate::manifest::current_pinned_date().is_some();
@@ -185,6 +221,20 @@ mod tests {
             // the refresh is only ever used together with a pinned mirror
             assert!(crate::sysupdate::manifest::sync_args_safe(&["-Sy", "--noconfirm"], true));
         }
+    }
+
+    #[test]
+    fn removal_uses_fixed_names_and_stops_if_the_desktop_is_running() {
+        assert_eq!(remove_script(Desktop::Cinnamon), "set -e\npacman -Rns --noconfirm cinnamon\n");
+        assert!(remove_script(Desktop::Xfce).contains("xfce4"));
+        for d in [Desktop::Cinnamon, Desktop::Xfce, Desktop::PlasmaX11] {
+            let ok = Command::new("bash").args(["-n", "-c", &remove_script(d)]).status().map(|s| s.success()).unwrap_or(false);
+            assert!(ok, "bash -n rejected the removal script for {}", d.name());
+        }
+        assert!(is_running(Desktop::Cinnamon, "X-Cinnamon") && is_running(Desktop::Xfce, "XFCE"));
+        assert!(!is_running(Desktop::Cinnamon, "KDE") && !is_running(Desktop::Xfce, "KDE"));
+        assert!(explain_remove_exit(Some(0)).is_none());
+        assert!(explain_remove_exit(Some(1)).unwrap().contains("nothing was changed"));
     }
 
     #[test]

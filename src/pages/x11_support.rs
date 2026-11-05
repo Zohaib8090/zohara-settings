@@ -39,8 +39,12 @@ pub fn build() -> adw::PreferencesGroup {
         b.set_valign(gtk4::Align::Center);
     }
     other_btn.add_css_class("suggested-action");
+    let remove_btn = gtk4::Button::with_label("Remove an X11 desktop…");
+    remove_btn.set_valign(gtk4::Align::Center);
+    remove_btn.set_visible(false);
     row.add_suffix(&plasma_btn);
     row.add_suffix(&other_btn);
+    row.add_suffix(&remove_btn);
     g.add(&row);
 
     let msg = adw::ActionRow::new();
@@ -51,9 +55,9 @@ pub fn build() -> adw::PreferencesGroup {
     g.add(&msg);
 
     let refresh: Rc<dyn Fn()> = {
-        let (row, plasma_btn, other_btn) = (row.clone(), plasma_btn.clone(), other_btn.clone());
+        let (row, plasma_btn, other_btn, remove_btn) = (row.clone(), plasma_btn.clone(), other_btn.clone(), remove_btn.clone());
         Rc::new(move || {
-            let (row, plasma_btn, other_btn) = (row.clone(), plasma_btn.clone(), other_btn.clone());
+            let (row, plasma_btn, other_btn, remove_btn) = (row.clone(), plasma_btn.clone(), other_btn.clone(), remove_btn.clone());
             in_background(x::status, move |s| {
                 let (title, body) = describe(&s);
                 row.set_title(&title);
@@ -61,6 +65,7 @@ pub fn build() -> adw::PreferencesGroup {
                 // Plasma's own session is the first choice while it exists and is not there yet
                 plasma_btn.set_visible(s.plasma_x11_possible() && !s.has(Desktop::PlasmaX11));
                 other_btn.set_visible(!(s.has(Desktop::Cinnamon) && s.has(Desktop::Xfce)));
+                remove_btn.set_visible(!s.ready().is_empty());
             });
         })
     };
@@ -143,6 +148,58 @@ pub fn build() -> adw::PreferencesGroup {
                 "cinnamon" => run(Desktop::Cinnamon),
                 "xfce" => run(Desktop::Xfce),
                 _ => {}
+            });
+            d.present(Some(b));
+        });
+    }
+
+    // Removing an X11 desktop that was added from here: one button per desktop that is installed.
+    {
+        let (msg, plasma_btn, other_btn, remove_btn2, refresh) = (msg.clone(), plasma_btn.clone(), other_btn.clone(), remove_btn.clone(), refresh.clone());
+        remove_btn.connect_clicked(move |b| {
+            let s = x::status();
+            let installed: Vec<Desktop> = [Desktop::Cinnamon, Desktop::Xfce, Desktop::PlasmaX11].into_iter().filter(|d| s.has(*d)).collect();
+            if installed.is_empty() {
+                return;
+            }
+            let d = adw::AlertDialog::new(
+                Some("Remove an X11 desktop?"),
+                Some("The desktop and the programs only it needs are removed from this computer, and its entry leaves the sign-in screen. Plasma stays your normal desktop, and your files are not touched. It asks for your password."),
+            );
+            d.set_body_use_markup(false);
+            d.add_response("cancel", "Cancel");
+            for k in &installed {
+                d.add_response(k.session_file(), &format!("Remove {}", k.name()));
+                d.set_response_appearance(k.session_file(), adw::ResponseAppearance::Destructive);
+            }
+            d.set_default_response(Some("cancel"));
+            d.set_close_response("cancel");
+            let (msg, plasma_btn, other_btn, remove_btn2, refresh) = (msg.clone(), plasma_btn.clone(), other_btn.clone(), remove_btn2.clone(), refresh.clone());
+            d.connect_response(None, move |_, r| {
+                let Some(k) = installed.iter().copied().find(|k| k.session_file() == r) else { return };
+                msg.set_visible(true);
+                msg.set_title("Working…");
+                msg.set_subtitle(&format!("Removing {}. You may be asked for your password.", k.name()));
+                for w in [&plasma_btn, &other_btn, &remove_btn2] {
+                    w.set_sensitive(false);
+                }
+                let (msg, plasma_btn, other_btn, remove_btn2, refresh) = (msg.clone(), plasma_btn.clone(), other_btn.clone(), remove_btn2.clone(), refresh.clone());
+                in_background(move || x::remove(k), move |err| {
+                    match err {
+                        None => {
+                            msg.set_title(&format!("{} is removed", k.name()));
+                            msg.set_subtitle("It no longer shows on the sign-in screen.");
+                        }
+                        Some(e) => {
+                            msg.set_title("Nothing was removed");
+                            msg.set_subtitle(&e);
+                        }
+                    }
+                    for w in [&plasma_btn, &other_btn, &remove_btn2] {
+                        w.set_sensitive(true);
+                    }
+                    refresh();
+                });
             });
             d.present(Some(b));
         });

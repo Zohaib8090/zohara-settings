@@ -95,8 +95,10 @@ fn check_pacman_pinned() -> Result<Vec<PkgUpdate>, String> {
     let signed = manifest::fetch_verified()?;
     let m = &signed.manifest;
     let decision = manifest::decide(manifest::current_pinned_date().as_deref(), m, env!("CARGO_PKG_VERSION"))?;
-    // Already on the approved date: the archive snapshot for that day never
-    // changes, so only the non-archive repositories need checking.
+    // Already on the approved date: the archive snapshot for that day never changes, so the databases this computer already
+    // synced for it are reused (nothing is downloaded from the Archive). They must still
+    // be CHECKED: a failed update leaves the mirror moved to the new date but the packages old, and skipping the archive
+    // repositories then reported "nothing to update" for exactly the update that had just failed.
     let up_to_date = decision == manifest::Decision::UpToDate;
 
     let dir = std::env::temp_dir().join(format!("zohara-check-{}", std::process::id()));
@@ -106,12 +108,11 @@ fn check_pacman_pinned() -> Result<Vec<PkgUpdate>, String> {
         let list = dir.join("mirrorlist");
         let conf = dir.join("pacman.conf");
         let system_conf = std::fs::read_to_string("/etc/pacman.conf").map_err(|e| format!("Couldn't read pacman.conf ({e})"))?;
-        std::fs::write(&list, manifest::mirrorlist(m)).map_err(|e| e.to_string())?;
-        let check_conf = if up_to_date {
-            manifest::conf_without_mirrorlist_repos(&system_conf)
-        } else {
-            manifest::conf_with_mirrorlist(&system_conf, &list.to_string_lossy())
-        };
+        // Up to date: the archive repositories are read from the databases this computer already synced for that day (a file
+        // server, so nothing is downloaded from the Archive). Otherwise: from the approved day's mirror.
+        let list_text = if up_to_date { "Server = file:///var/lib/pacman/sync\n".to_string() } else { manifest::mirrorlist(m) };
+        std::fs::write(&list, list_text).map_err(|e| e.to_string())?;
+        let check_conf = manifest::conf_with_mirrorlist(&system_conf, &list.to_string_lossy());
         std::fs::write(&conf, check_conf).map_err(|e| e.to_string())?;
         // Same trick as checkupdates: a private copy of the databases that
         // shares the installed-package list. The sync only downloads into that

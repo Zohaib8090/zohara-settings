@@ -496,6 +496,23 @@ fn split_field_codes(exec: &str) -> (&str, &str) {
     (exec[..start.min(exec.len())].trim_end(), exec[start.min(exec.len())..].trim())
 }
 
+/// A Flatpak launcher (Modrinth, Prism and others draw their window with WebKitGTK) put on the NVIDIA chip under Wayland can die
+/// within seconds with "Error 71 (Protocol error) dispatching to the Wayland display". Turning off WebKit's DMA-BUF renderer
+/// is the known fix and the games still run on the NVIDIA chip. A Flatpak app only sees variables given with `--env=`.
+fn with_flatpak_webkit_fix(body: &str) -> String {
+    const FIX: &str = "--env=WEBKIT_DISABLE_DMABUF_RENDERER=1";
+    if body.contains(FIX) {
+        return body.to_string();
+    }
+    match body.find("flatpak run") {
+        Some(i) => {
+            let at = i + "flatpak run".len();
+            format!("{} {}{}", &body[..at], FIX, &body[at..])
+        }
+        None => body.to_string(),
+    }
+}
+
 /// The entry with the settings wrapped around the app's own launcher: `env NAME=value … [gamemoderun] [mangohud] <the app's Exec> <options>`.
 /// The app's original `Exec=` is kept in the entry, so changing the settings again (or turning them all off) starts from it.
 /// `gpu_env`: the variables that put the app on the stronger chip. `name` changes the name shown in the Start menu.
@@ -520,12 +537,13 @@ pub fn with_app_settings(text: &str, name: &str, s: &GameSettings, gpu_env: &[(S
         prefix.push("mangohud".into());
     }
     let (body, codes) = split_field_codes(&original);
+    let body = if s.dedicated_gpu { with_flatpak_webkit_fix(body) } else { body.to_string() };
     let mut exec = String::new();
     for w in &prefix {
         exec.push_str(&exec_quote(w));
         exec.push(' ');
     }
-    exec.push_str(body);
+    exec.push_str(&body);
     for w in &options {
         exec.push(' ');
         exec.push_str(&exec_quote(w));
@@ -804,5 +822,26 @@ mod tests {
         assert!(renamed.contains("Name[de]=Ah"), "the action keeps its own translated name");
         let same = with_app_settings(e, "Foo", &GameSettings { gamemode: true, ..GameSettings::default() }, &gpu()).unwrap();
         assert!(same.contains("Name[de]=Fuu"));
+    }
+
+    #[test]
+    fn a_flatpak_launcher_on_the_dedicated_chip_gets_the_webkit_fix_and_loses_it_when_turned_off() {
+        let text = "[Desktop Entry]\nName=Modrinth App\nExec=/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=modrinth-app com.modrinth.ModrinthApp %u\nCategories=Game;\nX-Zohara-Game=true\n";
+        let gpu = vec![("__NV_PRIME_RENDER_OFFLOAD".to_string(), "1".to_string())];
+        let on = GameSettings { dedicated_gpu: true, ..GameSettings::default() };
+        let t = with_app_settings(text, "Modrinth App", &on, &gpu).unwrap();
+        assert!(t.contains("/usr/bin/flatpak run --env=WEBKIT_DISABLE_DMABUF_RENDERER=1 --branch=stable"), "{t}");
+        assert!(t.contains("\"__NV_PRIME_RENDER_OFFLOAD=1\""));
+        assert!(t.trim_end().ends_with("%u") || t.contains("com.modrinth.ModrinthApp %u"));
+        // saving again does not add it twice
+        let again = with_app_settings(&t, "Modrinth App", &on, &gpu).unwrap();
+        assert_eq!(again.matches("WEBKIT_DISABLE_DMABUF_RENDERER").count(), 1);
+        // turned off: the app's own line comes back untouched
+        let off = with_app_settings(&t, "Modrinth App", &GameSettings::default(), &gpu).unwrap();
+        assert!(!off.contains("WEBKIT_DISABLE_DMABUF_RENDERER"), "{off}");
+        assert!(off.contains("Exec=/usr/bin/flatpak run --branch=stable"));
+        // an app that is not a Flatpak is left alone
+        let native = with_app_settings("[Desktop Entry]\nName=A\nExec=/usr/bin/a %U\nX-Zohara-Game=true\n", "A", &on, &gpu).unwrap();
+        assert!(!native.contains("WEBKIT"));
     }
 }

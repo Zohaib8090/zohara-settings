@@ -228,6 +228,17 @@ const PINNED_ROOT_SCRIPT: &str = "store=\"$1\"; m=\"$2\"; s=\"$3\"; shift 3; \
       pacman -Rns --noconfirm $(pacman -Qq plasma-x11-session kwin-x11 2>/dev/null) || exit 1; \
     fi && exec pacman \"$@\"";
 
+/// The arguments of the full upgrade. `--disable-download-timeout`: archive.archlinux.org is often slow, and pacman's default
+/// gives up on any file that moves under 1 byte per second for 10 seconds ("Operation too slow"), which failed whole updates of
+/// 400+ packages with nothing installed. A slow download just takes longer instead.
+fn upgrade_args(held: &str) -> Vec<String> {
+    let mut a: Vec<String> = vec!["-Su".into(), "--noconfirm".into(), "--disable-download-timeout".into()];
+    if !held.is_empty() {
+        a.extend(["--ignore".to_string(), held.to_string()]);
+    }
+    a
+}
+
 /// The system update on an approved-date system, as one administrator prompt:
 /// verify the signed manifest and move the mirror to its date, refresh the
 /// keyring (so new packages verify), then a full upgrade. pacman's own hooks
@@ -237,11 +248,9 @@ fn apply_system_pinned(tx: &Sender<String>) -> Result<(), String> {
     let signed = manifest::fetch_verified()?;
     manifest::decide(manifest::current_pinned_date().as_deref(), &signed.manifest, env!("CARGO_PKG_VERSION"))?;
 
-    let mut upgrade = vec!["-Su", "--noconfirm"];
     let held = signed.manifest.held_packages.join(",");
-    if !held.is_empty() {
-        upgrade.extend(["--ignore", &held]);
-    }
+    let upgrade = upgrade_args(&held);
+    let upgrade: Vec<&str> = upgrade.iter().map(String::as_str).collect();
     // The date is pinned by the time these run, so the refresh is safe; the
     // check still guards against anyone editing the arguments unsafely later.
     if !manifest::sync_args_safe(&["-Sy", "--noconfirm", "--needed", "archlinux-keyring"], true) || !manifest::sync_args_safe(&upgrade, true) {
@@ -280,7 +289,7 @@ pub fn apply(system: bool, system_pending: bool, zohara: &[String], tx: &Sender<
 
     if system {
         let _ = tx.send("Updating the system…".into());
-        let done = if manifest::enabled() { apply_system_pinned(tx) } else { run_logged(pkexec(&["pacman", "-Syu", "--noconfirm"]), tx) };
+        let done = if manifest::enabled() { apply_system_pinned(tx) } else { run_logged(pkexec(&["pacman", "-Syu", "--noconfirm", "--disable-download-timeout"]), tx) };
         match done {
             Ok(()) => mark_post_update(),
             Err(e) => failures.push(e),
@@ -849,5 +858,15 @@ mod tests {
         s.system.push(PkgUpdate { name: "b".into(), old: "1".into(), new: "2".into() });
         s.zohara.push(PkgUpdate { name: "zohara-a".into(), old: "1".into(), new: "2".into() });
         assert_eq!(signature(&s), "b=2,zohara-a=2");
+    }
+
+    #[test]
+    fn the_upgrade_never_gives_up_on_a_slow_download_and_still_holds_packages() {
+        let a = upgrade_args("");
+        assert_eq!(a, vec!["-Su", "--noconfirm", "--disable-download-timeout"]);
+        let h = upgrade_args("mesa,foo");
+        assert_eq!(&h[3..], ["--ignore", "mesa,foo"]);
+        let refs: Vec<&str> = h.iter().map(String::as_str).collect();
+        assert!(manifest::sync_args_safe(&refs, true));
     }
 }

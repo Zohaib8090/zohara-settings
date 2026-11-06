@@ -4,6 +4,7 @@ post_install() {
     systemctl --global enable zohara-settings-update-check.timer >/dev/null 2>&1 || true
     systemctl --global enable zohara-settings-timezone.timer >/dev/null 2>&1 || true
     fix_localtime
+    fix_pacman_timeout
     update_logo
     update_release
     fix_settings_launcher
@@ -11,6 +12,18 @@ post_install() {
 
 post_upgrade() {
     post_install
+}
+
+# pacman gives up on a file that moves under 1 byte per second for 10 seconds ("Operation too slow"). archive.archlinux.org is
+# often that slow, and a 400-package update then failed with nothing installed. The ISO's pacman.conf already has
+# DisableDownloadTimeout; machines installed from an older image do not, so add it under [options] once (never on the live
+# ISO, and never twice). PACMAN_CONF only exists so this can be tested on a copy.
+fix_pacman_timeout() {
+    f="${PACMAN_CONF:-/etc/pacman.conf}"
+    [ -f "$f" ] && [ ! -e /run/archiso ] || return 0
+    grep -q '^[[:space:]]*DisableDownloadTimeout' "$f" && return 0
+    grep -q '^\[options\]' "$f" || return 0
+    sed -i '/^\[options\]/a DisableDownloadTimeout' "$f"
 }
 
 # Older installs carry /etc/tmpfiles.d/zohara-localtime.conf with a force rule ("L+ /etc/localtime ... UTC"). systemd

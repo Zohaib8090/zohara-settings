@@ -348,6 +348,21 @@ fn rebuild_devices(ui: &Rc<Ui>, devices: &[zl::Device]) {
             in_background(move || zl::command_ok(json!({"command": "SET_PERMISSION", "deviceId": id, "screen": on})), |_| {});
             glib::Propagation::Proceed
         });
+        // ZO-AI can run commands and change anything you can, so it has its own switch, off until chosen here.
+        let zoai = gtk4::Switch::new();
+        zoai.set_valign(gtk4::Align::Center);
+        zoai.set_active(d.allow_zoai);
+        zoai.set_tooltip_text(Some("Let this phone talk to ZO-AI on this computer: ZO-AI can run commands, open apps and change files. It still asks before risky things, and a phone can never turn the questions off."));
+        let id = d.id.clone();
+        zoai.connect_state_set(move |_, on| {
+            let id = id.clone();
+            in_background(move || zl::command_ok(json!({"command": "SET_PERMISSION", "deviceId": id, "zoai": on})), |_| {});
+            glib::Propagation::Proceed
+        });
+        let zoai_label = gtk4::Label::new(Some("Use ZO-AI"));
+        zoai_label.add_css_class("dim-label");
+        row.add_suffix(&zoai_label);
+        row.add_suffix(&zoai);
         let screen_label = gtk4::Label::new(Some("Show the screen"));
         screen_label.add_css_class("dim-label");
         row.add_suffix(&screen_label);

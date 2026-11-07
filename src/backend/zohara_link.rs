@@ -37,6 +37,7 @@ pub struct Device {
     pub connected: bool,
     pub allow_input: bool,
     pub allow_screen: bool,
+    pub allow_zoai: bool,
 }
 
 /// A phone that asked to pair and is waiting for its PIN to be typed.
@@ -148,6 +149,7 @@ pub fn parse_status(v: &Value) -> Option<Status> {
                 last_ip: text(d, "last_ip"),
                 allow_input: d.get("allow_input").and_then(Value::as_bool).unwrap_or(false),
                 allow_screen: d.get("allow_screen").and_then(Value::as_bool).unwrap_or(false),
+                allow_zoai: d.get("allow_zoai").and_then(Value::as_bool).unwrap_or(false),
                 id,
             }
         })
@@ -599,6 +601,12 @@ mod tests {
     fn screen_permission_defaults_to_off() {
         let s = parse_status(&json!({"paired_devices": [{"device_id": "a", "device_name": "p", "allow_screen": true}, {"device_id": "b", "device_name": "q"}]})).unwrap();
         assert!(s.devices[0].allow_screen && !s.devices[1].allow_screen);
+    }
+
+    #[test]
+    fn zoai_permission_defaults_to_off() {
+        let s = parse_status(&json!({"paired_devices": [{"device_id": "a", "device_name": "p", "allow_zoai": true}, {"device_id": "b", "device_name": "q"}]})).unwrap();
+        assert!(s.devices[0].allow_zoai && !s.devices[1].allow_zoai);
     }
 
     #[test]

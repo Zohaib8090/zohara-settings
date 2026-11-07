@@ -5,6 +5,7 @@ post_install() {
     systemctl --global enable zohara-settings-timezone.timer >/dev/null 2>&1 || true
     fix_localtime
     fix_pacman_timeout
+    /usr/share/zohara/restore-plymouth-logo
     update_logo
     update_release
     fix_settings_launcher

@@ -129,6 +129,11 @@ package() {
   # The terminal banner logo (copied over the ISO's old one by the install hook on machines installed earlier).
   install -Dm644 "$startdir/data/zohara-logo.txt" "$pkgdir/usr/share/zohara/zohara-logo.txt"
 
+  # The boot splash logo: the plymouth package puts the Arch logo back at every update; the hook puts Zohara's back.
+  install -Dm644 "$startdir/data/zohara-plymouth-logo.png" "$pkgdir/usr/share/zohara/plymouth-logo.png"
+  install -Dm755 "$startdir/data/restore-plymouth-logo" "$pkgdir/usr/share/zohara/restore-plymouth-logo"
+  install -Dm644 "$startdir/data/80-zohara-plymouth-logo.hook" "$pkgdir/usr/share/libalpm/hooks/80-zohara-plymouth-logo.hook"
+
   # The equalizer's service (started and enabled per user by Settings > Sound > Equalizer, not by default).
   install -Dm644 "$startdir/data/zohara-equalizer.service" "$pkgdir/usr/lib/systemd/user/zohara-equalizer.service"
 

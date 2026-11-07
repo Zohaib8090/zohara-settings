@@ -1,0 +1,16 @@
+#!/bin/sh
+# The ISO puts the Zohara logo over the boot splash's stock pictures once, when the image is built. The plymouth package
+# owns those files, so every plymouth update put the Arch logo back (seen on 2026-11-07). This puts the Zohara logo back and,
+# when something changed, rebuilds the boot image so the splash shows it. Run by a pacman hook and by this package's install.
+[ -e /run/archiso ] && exit 0
+logo=/usr/share/zohara/plymouth-logo.png
+dir=${PLYMOUTH_THEME_DIR:-/usr/share/plymouth/themes/spinner}
+[ -f "$logo" ] && [ -d "$dir" ] || exit 0
+changed=0
+for f in watermark.png bgrt-fallback.png; do
+    cmp -s "$logo" "$dir/$f" || { cp "$logo" "$dir/$f" && changed=1; }
+done
+if [ "$changed" = 1 ] && [ -z "$PLYMOUTH_THEME_DIR" ] && command -v mkinitcpio >/dev/null 2>&1; then
+    mkinitcpio -P >/dev/null 2>&1 || true
+fi
+exit 0

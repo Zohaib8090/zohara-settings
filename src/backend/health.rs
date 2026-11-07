@@ -383,11 +383,38 @@ fn check(name: &'static str, pass: bool, detail: impl Into<String>) -> Check {
     Check { name, pass, detail: detail.into() }
 }
 
+/// Units whose failure means the system really is broken. Any other failed unit (a cleanup timer, say) is
+/// noise: systemd calls the system "degraded" for it, but nothing the user can feel is wrong.
+const ESSENTIAL_UNITS: &[&str] = &[
+    "sddm.service", "dbus.service", "dbus-broker.service", "systemd-logind.service", "NetworkManager.service",
+    "polkit.service", "systemd-udevd.service", "systemd-journald.service", "plasma-plasmashell.service",
+    "plasma-kwin_wayland.service", "plasma-kwin_x11.service", "plasma-workspace.target",
+];
+
+/// `state` is the output of `systemctl is-system-running`, `failed` that of `systemctl --failed --no-legend --plain`.
+fn judge_system_state(state: &str, failed: &str) -> (bool, String) {
+    if state == "running" {
+        return (true, state.to_string());
+    }
+    if state != "degraded" {
+        return (false, state.to_string());
+    }
+    let units: Vec<&str> = failed.lines().filter_map(|l| l.split_whitespace().next()).collect();
+    let bad: Vec<&&str> = units.iter().filter(|u| ESSENTIAL_UNITS.contains(*u)).collect();
+    if bad.is_empty() {
+        (true, format!("degraded, but only by minor units: {}", units.join(", ")))
+    } else {
+        (false, format!("degraded: {}", bad.iter().map(|u| **u).collect::<Vec<_>>().join(", ")))
+    }
+}
+
 /// Does the desktop actually work: the checks the plan calls for.
 fn pipeline_checks() -> Vec<Check> {
     let mut v = Vec::new();
     let state = run("systemctl", &["is-system-running"]).unwrap_or_default().trim().to_string();
-    v.push(check("system_state", state == "running", state));
+    let failed = run("systemctl", &["--failed", "--no-legend", "--plain"]).unwrap_or_default();
+    let (ok, detail) = judge_system_state(&state, &failed);
+    v.push(check("system_state", ok, detail));
     let sddm = run("systemctl", &["is-active", "sddm"]).unwrap_or_default().trim().to_string();
     v.push(check("login_manager", sddm == "active", sddm));
     let plasma = Command::new("pgrep").args(["-x", "plasmashell"]).output().map(|o| o.status.success()).unwrap_or(false);
@@ -417,6 +444,20 @@ pub fn json_report() -> i32 {
 #[cfg(test)]
 mod report_tests {
     use super::*;
+
+    #[test]
+    fn a_failed_cleanup_timer_does_not_count_as_a_broken_system() {
+        let f = "systemd-tmpfiles-clean.service loaded failed failed Cleanup of Temporary Directories\n";
+        assert!(judge_system_state("degraded", f).0);
+        assert!(judge_system_state("running", "").0);
+    }
+
+    #[test]
+    fn a_failed_login_manager_or_a_stuck_boot_still_counts() {
+        assert!(!judge_system_state("degraded", "sddm.service loaded failed failed Display Manager\n").0);
+        assert!(!judge_system_state("starting", "").0);
+        assert!(!judge_system_state("", "").0);
+    }
 
     fn issue(sev: Severity) -> Issue {
         Issue { id: "x".into(), severity: sev, title: "t".into(), detail: "d".into(), fix: None, log_cmd: None }

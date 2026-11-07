@@ -5,7 +5,7 @@ post_install() {
     systemctl --global enable zohara-settings-timezone.timer >/dev/null 2>&1 || true
     fix_localtime
     fix_pacman_timeout
-    /usr/share/zohara/restore-plymouth-logo
+    fix_boot_theme
     update_logo
     update_release
     fix_settings_launcher
@@ -25,6 +25,17 @@ fix_pacman_timeout() {
     grep -q '^[[:space:]]*DisableDownloadTimeout' "$f" && return 0
     grep -q '^\[options\]' "$f" || return 0
     sed -i '/^\[options\]/a DisableDownloadTimeout' "$f"
+}
+
+# Machines installed earlier boot with the stock "spinner" theme, whose logo the plymouth package resets to Arch's at each
+# update. Switch them to Zohara's own theme (shipped by this package, so nothing else can overwrite it) and rebuild the boot
+# image. Only when the theme is still the stock one: a theme the owner picked is left alone. Never on the live ISO.
+fix_boot_theme() {
+    [ ! -e /run/archiso ] || return 0
+    command -v plymouth-set-default-theme >/dev/null 2>&1 || return 0
+    [ -d /usr/share/plymouth/themes/zohara-splash ] || return 0
+    [ "$(plymouth-set-default-theme 2>/dev/null)" = "spinner" ] || return 0
+    plymouth-set-default-theme -R zohara-splash >/dev/null 2>&1 || true
 }
 
 # Older installs carry /etc/tmpfiles.d/zohara-localtime.conf with a force rule ("L+ /etc/localtime ... UTC"). systemd

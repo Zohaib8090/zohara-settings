@@ -208,38 +208,43 @@ struct PageDef {
     /// Bluetooth & devices, not the sidebar. Kept in PAGES at all rather
     /// than removed so nothing else has to change to reach them.
     hidden: bool,
+    /// The sidebar page this one is reached from (the PAGES index of its
+    /// parent). Sub-pages have no sidebar row of their own, so the header's
+    /// back button is shown for them and jumps here; `None` for every page
+    /// that has a sidebar row.
+    parent: Option<usize>,
 }
 
 static PAGES: &[PageDef] = &[
-    PageDef { label: "Home",                 icon: "user-home-symbolic",                          hidden: false },
-    PageDef { label: "System",               icon: "computer-symbolic",                           hidden: false },
-    PageDef { label: "Bluetooth & devices",  icon: "bluetooth-symbolic",                           hidden: false },
-    PageDef { label: "Network & internet",   icon: "network-wireless-symbolic",                    hidden: false },
-    PageDef { label: "Personalization",      icon: "preferences-desktop-symbolic",                 hidden: false },
-    PageDef { label: "Apps",                 icon: "application-x-executable-symbolic",            hidden: false },
-    PageDef { label: "Accounts",             icon: "system-users-symbolic",                        hidden: false },
-    PageDef { label: "Time & language",      icon: "preferences-system-time-symbolic",             hidden: false },
-    PageDef { label: "Gaming",               icon: "applications-games-symbolic",                  hidden: false },
-    PageDef { label: "Accessibility",        icon: "preferences-desktop-accessibility-symbolic",   hidden: false },
-    PageDef { label: "Privacy & security",   icon: "security-high-symbolic",                       hidden: false },
-    PageDef { label: "Zohara Update",        icon: "system-software-update-symbolic",              hidden: false },
+    PageDef { label: "Home",                 icon: "user-home-symbolic",                          hidden: false, parent: None },
+    PageDef { label: "System",               icon: "computer-symbolic",                           hidden: false, parent: None },
+    PageDef { label: "Bluetooth & devices",  icon: "bluetooth-symbolic",                           hidden: false, parent: None },
+    PageDef { label: "Network & internet",   icon: "network-wireless-symbolic",                    hidden: false, parent: None },
+    PageDef { label: "Personalization",      icon: "preferences-desktop-symbolic",                 hidden: false, parent: None },
+    PageDef { label: "Apps",                 icon: "application-x-executable-symbolic",            hidden: false, parent: None },
+    PageDef { label: "Accounts",             icon: "system-users-symbolic",                        hidden: false, parent: None },
+    PageDef { label: "Time & language",      icon: "preferences-system-time-symbolic",             hidden: false, parent: None },
+    PageDef { label: "Gaming",               icon: "applications-games-symbolic",                  hidden: false, parent: None },
+    PageDef { label: "Accessibility",        icon: "preferences-desktop-accessibility-symbolic",   hidden: false, parent: None },
+    PageDef { label: "Privacy & security",   icon: "security-high-symbolic",                       hidden: false, parent: None },
+    PageDef { label: "Zohara Update",        icon: "system-software-update-symbolic",              hidden: false, parent: None },
     // Reached from System's "Settings" group (system_links_group in system.rs).
-    PageDef { label: "Display",              icon: "video-display-symbolic",                       hidden: true },
-    PageDef { label: "Sound",                icon: "audio-speakers-symbolic",                      hidden: true },
-    PageDef { label: "Notifications",        icon: "preferences-system-notifications-symbolic",    hidden: true },
-    PageDef { label: "Power & battery",      icon: "battery-level-80-symbolic",                    hidden: true },
-    PageDef { label: "Storage",              icon: "drive-harddisk-symbolic",                      hidden: true },
+    PageDef { label: "Display",              icon: "video-display-symbolic",                       hidden: true, parent: Some(1) },
+    PageDef { label: "Sound",                icon: "audio-speakers-symbolic",                      hidden: true, parent: Some(1) },
+    PageDef { label: "Notifications",        icon: "preferences-system-notifications-symbolic",    hidden: true, parent: Some(1) },
+    PageDef { label: "Power & battery",      icon: "battery-level-80-symbolic",                    hidden: true, parent: Some(1) },
+    PageDef { label: "Storage",              icon: "drive-harddisk-symbolic",                      hidden: true, parent: Some(1) },
     // Reached from Bluetooth & devices' "Other devices" group (already existed).
-    PageDef { label: "Mouse",                icon: "input-mouse-symbolic",                         hidden: true },
-    PageDef { label: "Touchpad",             icon: "input-touchpad-symbolic",                      hidden: true },
-    PageDef { label: "Keyboard",             icon: "input-keyboard-symbolic",                      hidden: true },
-    PageDef { label: "Printers",             icon: "printer-symbolic",                             hidden: true },
+    PageDef { label: "Mouse",                icon: "input-mouse-symbolic",                         hidden: true, parent: Some(2) },
+    PageDef { label: "Touchpad",             icon: "input-touchpad-symbolic",                      hidden: true, parent: Some(2) },
+    PageDef { label: "Keyboard",             icon: "input-keyboard-symbolic",                      hidden: true, parent: Some(2) },
+    PageDef { label: "Printers",             icon: "printer-symbolic",                             hidden: true, parent: Some(2) },
     // Reached from Apps' own "Default apps" row (already existed).
-    PageDef { label: "Default apps",         icon: "preferences-desktop-default-applications-symbolic", hidden: true },
-    PageDef { label: "About",                icon: "help-about-symbolic",                          hidden: false },
-    PageDef { label: "Zohara Link",          icon: "phone-symbolic",                               hidden: false },
-    PageDef { label: "Zohara AI",            icon: "starred-symbolic",                             hidden: false },
-    PageDef { label: "Troubleshoot",         icon: "system-help-symbolic",                         hidden: false },
+    PageDef { label: "Default apps",         icon: "preferences-desktop-default-applications-symbolic", hidden: true, parent: Some(5) },
+    PageDef { label: "About",                icon: "help-about-symbolic",                          hidden: false, parent: None },
+    PageDef { label: "Zohara Link",          icon: "phone-symbolic",                               hidden: false, parent: None },
+    PageDef { label: "Zohara AI",            icon: "starred-symbolic",                             hidden: false, parent: None },
+    PageDef { label: "Troubleshoot",         icon: "system-help-symbolic",                         hidden: false, parent: None },
 ];
 
 /// Build a page, isolating failures: a page that panics while being built
@@ -529,6 +534,19 @@ fn build_ui(app: &adw::Application) {
     header.set_title_widget(Some(&search_clamp));
     main_content_box.append(&header);
 
+    // Back button for sub-pages (Display, Sound, Mouse, ...). Those pages
+    // have no sidebar row of their own, so once you drill into one the
+    // sidebar deselects and there was no way back except re-clicking the
+    // parent page's rows. Shown only while a sub-page is on screen; clicking
+    // it activates `win.goto` on the parent, which also re-selects the
+    // parent's sidebar row (the normal goto path). The click handler is
+    // connected after the window exists (it needs the `win.goto` action).
+    let back_button = gtk4::Button::from_icon_name("go-previous-symbolic");
+    back_button.set_tooltip_text(Some("Back"));
+    back_button.add_css_class("flat");
+    back_button.set_visible(false);
+    header.pack_start(&back_button);
+
     // Content container
     let content_stack = gtk4::Stack::new();
     content_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
@@ -539,11 +557,38 @@ fn build_ui(app: &adw::Application) {
     // not be made narrower than the widest page ever opened. Only the page on screen counts.
     content_stack.set_hhomogeneous(false);
 
+    // Which page is currently on screen (a PAGES index), so the back button
+    // knows where to go without having to guess from the stack's children.
+    let current_page: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+
+    // Build-or-fetch and show a page, and update the back button. The one
+    // place page switching happens: the sidebar's row handler and the
+    // `goto` action (including the back button itself) both come through
+    // here, so the back button can never show on a top-level page or stay
+    // stale after a switch.
+    let show_page: Rc<dyn Fn(usize)> = {
+        let stack = content_stack.clone();
+        let cache = page_cache.clone();
+        let back = back_button.clone();
+        let current = current_page.clone();
+        Rc::new(move |idx: usize| {
+            let page_tag = format!("page_{}", idx);
+            {
+                let mut cache = cache.borrow_mut();
+                if cache[idx].is_none() {
+                    let widget = build_page(idx);
+                    stack.add_named(&widget, Some(&page_tag));
+                    cache[idx] = Some(widget);
+                }
+            }
+            stack.set_visible_child_name(&page_tag);
+            back.set_visible(PAGES[idx].parent.is_some());
+            *current.borrow_mut() = idx;
+        })
+    };
+
     // Load initial page (Home, index 0)
-    let home_widget = build_page(0);
-    page_cache.borrow_mut()[0] = Some(home_widget.clone());
-    content_stack.add_named(&home_widget, Some("page_0"));
-    content_stack.set_visible_child_name("page_0");
+    show_page(0);
 
     // Safety net: a page that cannot fit a narrow window scrolls sideways instead of keeping the window wide. The pages scroll
     // up and down themselves, so this one only moves left and right.
@@ -583,22 +628,13 @@ fn build_ui(app: &adw::Application) {
     }
 
     // ΓöÇΓöÇ Row Navigation Switching ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-    let cache = page_cache.clone();
-    let stack_clone = content_stack.clone();
+    let show_for_row = show_page.clone();
     nav_list.connect_row_activated(move |_, row| {
         let idx: usize = match row.widget_name().parse() {
             Ok(i) if i < PAGES.len() => i,
             _ => return,
         };
-
-        let page_tag = format!("page_{}", idx);
-        let mut cache = cache.borrow_mut();
-        if cache[idx].is_none() {
-            let widget = build_page(idx);
-            stack_clone.add_named(&widget, Some(&page_tag));
-            cache[idx] = Some(widget);
-        }
-        stack_clone.set_visible_child_name(&page_tag);
+        show_for_row(idx);
     });
 
     if let Some(first_row) = nav_list.row_at_index(0) {
@@ -624,8 +660,7 @@ fn build_ui(app: &adw::Application) {
     // that instead of assuming position; a hidden target has no row to
     // select, so just switch the content directly.
     let nav_for_goto = nav_list.clone();
-    let cache_for_goto = page_cache.clone();
-    let stack_for_goto = content_stack.clone();
+    let show_for_goto = show_page.clone();
     let goto = gtk4::gio::SimpleAction::new("goto", Some(glib::VariantTy::STRING));
     goto.connect_activate(move |_, param| {
         let Some(label) = param.and_then(|p| p.get::<String>()) else { return };
@@ -648,18 +683,29 @@ fn build_ui(app: &adw::Application) {
             row.activate();
         } else {
             // Hidden page: no sidebar row to activate, switch directly.
-            let page_tag = format!("page_{}", idx);
-            let mut cache = cache_for_goto.borrow_mut();
-            if cache[idx].is_none() {
-                let widget = build_page(idx);
-                stack_for_goto.add_named(&widget, Some(&page_tag));
-                cache[idx] = Some(widget);
-            }
-            stack_for_goto.set_visible_child_name(&page_tag);
+            show_for_goto(idx);
             nav_for_goto.unselect_all();
         }
     });
     window.add_action(&goto);
+
+    // Back = goto the current page's parent. The parent always has a
+    // sidebar row, so the normal goto path re-selects it too.
+    {
+        let window_for_back = window.clone();
+        let current_for_back = current_page.clone();
+        back_button.connect_clicked(move |_| {
+            let idx = *current_for_back.borrow();
+            if let Some(parent) = PAGES.get(idx).and_then(|p| p.parent) {
+                let label = PAGES[parent].label;
+                let _ = gtk4::prelude::WidgetExt::activate_action(
+                    &window_for_back,
+                    "win.goto",
+                    Some(&label.to_variant()),
+                );
+            }
+        });
+    }
 
     window.present();
 

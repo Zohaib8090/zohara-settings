@@ -1,0 +1,14 @@
+[Unit]
+Description=Zohara: ARM app support for Android apps (only when turned on in Settings)
+Documentation=file:///usr/share/doc/zohara-settings/WAYDROID-ARM-AND-ROOT.md
+ConditionPathExists=/var/lib/waydroid/images/system.img
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/zohara/zohara-waydroid-fix arm
+TimeoutStartSec=20min
+
+[Install]
+WantedBy=multi-user.target

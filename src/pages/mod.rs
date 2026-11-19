@@ -15,6 +15,7 @@ pub mod lockscreen;
 pub mod text_input;
 pub mod start_menu;
 pub mod apps;
+pub mod android_apps;
 pub mod archive_apps;
 pub mod mac_apps;
 pub mod x11_support;

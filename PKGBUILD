@@ -28,6 +28,7 @@ depends=(
   'qt6-multimedia-ffmpeg'  # ...and the codecs it plays with
   'udisks2'        # USB drives, SD cards and external disks: list, format, rename, check, write an image
   'curl'           # downloads the signed update approval list
+  'lzip'           # unpacks the ARM translation library for Android apps (Waydroid) when it is turned on
   'fakeroot'       # lets the update check use a private copy of the package lists
   # Windows programs (Gaming > Windows programs): the Windows layer and what it needs on first use, so a double-click works out of the box
   'wine'           # runs .exe files; Proton-GE (downloaded on first use) is used for games
@@ -134,6 +135,13 @@ package() {
   (cd "$startdir/data/plymouth-zohara" && find . -type f -print0) | while IFS= read -r -d '' f; do
     install -Dm644 "$startdir/data/plymouth-zohara/$f" "$pkgdir/usr/share/plymouth/themes/zohara-splash/${f#./}"
   done
+
+  # Android apps (Waydroid): the helper and its two root services (docs/WAYDROID-ARM-AND-ROOT.md). The first runs before every
+  # container start (offline, quick); the second only does something when ARM support was turned on in Settings.
+  install -Dm755 "$startdir/data/zohara-waydroid-fix" "$pkgdir/usr/lib/zohara/zohara-waydroid-fix"
+  install -Dm644 "$startdir/data/zohara-waydroid-fix.service" "$pkgdir/usr/lib/systemd/system/zohara-waydroid-fix.service"
+  install -Dm644 "$startdir/data/zohara-waydroid-arm.service" "$pkgdir/usr/lib/systemd/system/zohara-waydroid-arm.service"
+  install -Dm644 "$startdir/docs/WAYDROID-ARM-AND-ROOT.md" "$pkgdir/usr/share/doc/zohara-settings/WAYDROID-ARM-AND-ROOT.md"
 
   # The equalizer's service (started and enabled per user by Settings > Sound > Equalizer, not by default).
   install -Dm644 "$startdir/data/zohara-equalizer.service" "$pkgdir/usr/lib/systemd/user/zohara-equalizer.service"

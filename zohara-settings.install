@@ -3,6 +3,8 @@
 post_install() {
     systemctl --global enable zohara-settings-update-check.timer >/dev/null 2>&1 || true
     systemctl --global enable zohara-settings-timezone.timer >/dev/null 2>&1 || true
+    # Android apps (Waydroid): the build-marker fix runs before each container start; ARM support only when turned on in Settings
+    systemctl enable zohara-waydroid-fix.service zohara-waydroid-arm.service >/dev/null 2>&1 || true
     fix_localtime
     fix_pacman_timeout
     fix_boot_theme

@@ -1,0 +1,158 @@
+#!/bin/bash
+# Zohara OS helper for Waydroid (Android apps). Runs as root, from the two systemd services and from Settings.
+#
+#   zohara-waydroid-fix disguise    make the container report a normal release build instead of "userdebug / test-keys"
+#                                   (apps that refuse "rooted devices" read exactly these markers). Offline, quick.
+#   zohara-waydroid-fix arm         add ARM app support (Intel: libhoudini, AMD: libndk) when the person turned it on
+#   zohara-waydroid-fix status      print what is applied (also written to $STATE/status for Settings)
+#   zohara-waydroid-fix undo-disguise
+#
+# Never blocks or breaks Waydroid: every step is guarded, failures are written to the status file, the exit code is 0.
+# Settings (/etc/zohara/waydroid.conf):  disguise=1 (default on)   arm=0 (default OFF: it downloads Intel's/Google's
+# translation library onto this computer, so it needs the person's yes).
+#
+# Overlay: Waydroid lays /var/lib/waydroid/overlay over its system image. A build.prop there wins over the image's own and
+# "undo" is deleting/reverting one file; the image itself is never changed.
+#
+# Tests point ZOHARA_WAYDROID_DIR / _CONF / _STATE / _IMAGE_DIR at a throwaway folder (see tests/waydroid-fix-test.sh).
+
+set -u
+W="${ZOHARA_WAYDROID_DIR:-/var/lib/waydroid}"
+CONF="${ZOHARA_WAYDROID_CONF:-/etc/zohara/waydroid.conf}"
+STATE="${ZOHARA_WAYDROID_STATE:-/var/lib/zohara/waydroid}"
+IMG="${ZOHARA_WAYDROID_IMAGE:-$W/images/system.img}"
+OVER_PROP="$W/overlay/system/build.prop"
+CPUINFO="${ZOHARA_WAYDROID_CPUINFO:-/proc/cpuinfo}"
+
+# waydroid_script (GPL-3.0, casualsnek): the commit that was read and tested, never "latest". Bump together with a test run.
+PIN_SHA="4a50dabd97fcb632a608b1421105258862a5b994"
+PIN_URL="https://github.com/casualsnek/waydroid_script/archive/${PIN_SHA}.tar.gz"
+PIN_TAR_SHA256="786a95136b8cb8f79646ed74ea11835a35148eba76e8f14a71363e3f6349a114"
+PIP_PINS="tqdm==4.70.1 requests==2.34.2 InquirerPy==0.3.4"
+
+mkdir -p "$STATE" 2>/dev/null || true
+LOG="$STATE/last-error"
+
+setting() { # key default
+    local v
+    v=$(grep -E "^$1=" "$CONF" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' \r')
+    echo "${v:-$2}"
+}
+
+fail() { echo "$*" > "$LOG"; echo "zohara-waydroid-fix: $*" >&2; }
+
+have_image() { [ -f "$IMG" ]; }
+
+image_id() { stat -c '%s-%Y' "$IMG" 2>/dev/null; }
+
+# The same text with the developer-build markers turned into a release build, and back.
+to_release() { sed -e 's/test-keys/release-keys/g' -e 's/userdebug/user/g'; }
+to_dev() { sed -e 's/release-keys/test-keys/g' -e 's#:user/test-keys#:userdebug/test-keys#g' -e 's#^\(ro.build.type=\)user$#\1userdebug#' -e 's#-user \([0-9]\)#-userdebug \1#'; }
+
+# The container's build.prop as the image ships it: mounted read-only, so this works while Waydroid is stopped.
+image_build_prop() {
+    # tests hand in a file instead of an image
+    if [ -n "${ZOHARA_WAYDROID_BUILD_PROP_SRC:-}" ]; then cat "$ZOHARA_WAYDROID_BUILD_PROP_SRC"; return; fi
+    local mnt rc=1
+    mnt=$(mktemp -d) || return 1
+    if mount -o ro,loop "$IMG" "$mnt" 2>/dev/null; then
+        for p in "$mnt/system/build.prop" "$mnt/build.prop"; do
+            if [ -f "$p" ]; then cat "$p"; rc=0; break; fi
+        done
+        umount "$mnt" 2>/dev/null
+    fi
+    rmdir "$mnt" 2>/dev/null
+    return $rc
+}
+
+disguise() {
+    have_image || return 0
+    if [ "$(setting disguise 1)" != 1 ]; then undo_disguise; return 0; fi
+    local now old tmp
+    now=$(image_id)
+    old=$(cat "$STATE/image-id" 2>/dev/null)
+    # a new system image (a Waydroid update): the old overlay build.prop belongs to the old image, so start again from the new one
+    if [ -n "$old" ] && [ "$old" != "$now" ]; then rm -f "$OVER_PROP" "$STATE/arm-done"; fi
+    tmp=$(mktemp) || return 0
+    if [ -f "$OVER_PROP" ]; then cat "$OVER_PROP" > "$tmp"; else image_build_prop > "$tmp"; fi
+    if [ ! -s "$tmp" ]; then fail "could not read the Android build.prop"; rm -f "$tmp"; return 0; fi
+    to_release < "$tmp" > "$tmp.new"
+    if ! grep -q '^ro.build.tags=release-keys' "$tmp.new"; then
+        fail "ro.build.tags not found in build.prop; nothing changed"; rm -f "$tmp" "$tmp.new"; return 0
+    fi
+    if ! cmp -s "$tmp.new" "$OVER_PROP" 2>/dev/null; then
+        install -D -m 644 "$tmp.new" "$OVER_PROP" && echo "$now" > "$STATE/image-id" && : > "$STATE/restart-needed"
+    else
+        echo "$now" > "$STATE/image-id"
+    fi
+    rm -f "$tmp" "$tmp.new"
+}
+
+undo_disguise() {
+    [ -f "$OVER_PROP" ] || return 0
+    local tmp; tmp=$(mktemp) || return 0
+    to_dev < "$OVER_PROP" > "$tmp"
+    # nothing else in the overlay file (ARM lines) was added by the disguise, so only the markers move back
+    install -D -m 644 "$tmp" "$OVER_PROP" && : > "$STATE/restart-needed"
+    rm -f "$tmp"
+}
+
+arm_present() {
+    [ -f "$W/overlay/system/lib/libhoudini.so" ] || [ -f "$W/overlay/system/lib64/libhoudini.so" ] || \
+    [ -f "$W/overlay/system/lib/libndk_translation.so" ] || [ -f "$W/overlay/system/lib64/libndk_translation.so" ]
+}
+
+cpu_translator() {
+    if grep -qi 'GenuineIntel' "$CPUINFO" 2>/dev/null; then echo libhoudini
+    elif grep -qi 'AuthenticAMD' "$CPUINFO" 2>/dev/null; then echo libndk
+    else echo none; fi
+}
+
+arm() {
+    have_image || return 0
+    [ "$(setting arm 0)" = 1 ] || return 0
+    if arm_present; then return 0; fi
+    local tr; tr=$(cpu_translator)
+    [ "$tr" != none ] || { fail "this computer's processor does not need or support ARM translation"; return 0; }
+    command -v curl >/dev/null && command -v python3 >/dev/null && command -v lzip >/dev/null || { fail "needs curl, python3 and lzip installed"; return 0; }
+    local tool="$STATE/waydroid_script"
+    if [ ! -f "$tool/main.py" ]; then
+        local tgz; tgz=$(mktemp)
+        if ! curl -fsSL --max-time 300 -o "$tgz" "$PIN_URL"; then fail "no internet: ARM support will be tried again later"; rm -f "$tgz"; return 0; fi
+        if [ "$(sha256sum "$tgz" | cut -d' ' -f1)" != "$PIN_TAR_SHA256" ]; then fail "the downloaded tool does not match the checked version; not used"; rm -f "$tgz"; return 0; fi
+        rm -rf "$tool"; mkdir -p "$tool"
+        tar -xzf "$tgz" -C "$tool" --strip-components=1 && rm -f "$tgz" || { fail "could not unpack the tool"; return 0; }
+    fi
+    if [ ! -x "$tool/venv/bin/python3" ]; then
+        python3 -m venv "$tool/venv" && "$tool/venv/bin/pip" install -q $PIP_PINS || { fail "could not set up the tool (no internet?)"; rm -rf "$tool/venv"; return 0; }
+    fi
+    if (cd "$tool" && timeout 900 venv/bin/python3 main.py install "$tr" >"$STATE/arm.log" 2>&1) && arm_present; then
+        : > "$STATE/restart-needed"; rm -f "$LOG"
+        # the translator edits the overlay build.prop: put the release markers back on top of it
+        disguise
+    else
+        fail "ARM support did not install; see $STATE/arm.log"
+    fi
+}
+
+status() {
+    {
+        have_image && echo "waydroid=installed" || echo "waydroid=missing"
+        grep -q '^ro.build.tags=release-keys' "$OVER_PROP" 2>/dev/null && echo "disguise=applied" || echo "disguise=not-applied"
+        arm_present && echo "arm=present" || echo "arm=absent"
+        echo "arm_wanted=$(setting arm 0)"
+        echo "disguise_wanted=$(setting disguise 1)"
+        echo "translator=$(cpu_translator)"
+        [ -f "$STATE/restart-needed" ] && echo "restart=needed"
+        [ -s "$LOG" ] && echo "error=$(head -c 300 "$LOG" | tr '\n' ' ')"
+    } | tee "$STATE/status"
+}
+
+case "${1:-}" in
+    disguise) disguise; status >/dev/null ;;
+    arm) arm; status >/dev/null ;;
+    undo-disguise) undo_disguise; status >/dev/null ;;
+    status) status ;;
+    *) echo "usage: $0 disguise | arm | undo-disguise | status" >&2 ;;
+esac
+exit 0

@@ -1,0 +1,13 @@
+[Unit]
+Description=Zohara: make Android apps (Waydroid) report a normal build
+Documentation=file:///usr/share/doc/zohara-settings/WAYDROID-ARM-AND-ROOT.md
+ConditionPathExists=/var/lib/waydroid/images/system.img
+Before=waydroid-container.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/zohara/zohara-waydroid-fix disguise
+TimeoutStartSec=60
+
+[Install]
+WantedBy=waydroid-container.service

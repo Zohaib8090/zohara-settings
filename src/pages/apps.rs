@@ -1450,6 +1450,12 @@ pub fn build() -> gtk4::Widget {
         startup.connect_activated(move |_| open_startup(root.upcast_ref()));
     }
     more.add(&startup);
+    let android = nav_row("Android apps", "Make Android apps run on more apps: look like a normal phone, support apps made for ARM phones", "phone-symbolic");
+    {
+        let root = root.clone();
+        android.connect_activated(move |_| super::android_apps::open(root.upcast_ref()));
+    }
+    more.add(&android);
     root.append(&more);
 
     root.append(&super::archive_apps::build());

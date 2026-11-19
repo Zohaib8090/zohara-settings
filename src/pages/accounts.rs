@@ -87,7 +87,7 @@ fn call_user(path: &str, method: &str, arg: &str) -> Result<(), String> {
 }
 
 /// Runs `script` as root through pkexec with positional args and optional stdin.
-fn pkexec_sh(script: &str, args: &[&str], stdin: Option<String>) -> Result<(), String> {
+pub(crate) fn pkexec_sh(script: &str, args: &[&str], stdin: Option<String>) -> Result<(), String> {
     let mut cmd = Command::new("pkexec");
     cmd.args(["sh", "-c", script, "sh"]).args(args);
     cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });

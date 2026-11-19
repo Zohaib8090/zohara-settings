@@ -24,6 +24,44 @@ pub const GRACE_CHOICES: [(&str, u32); 5] = [("Right away", 0), ("5 seconds", 5)
 
 const RC: &str = "kscreenlockerrc";
 
+/// The sign-in screen (SDDM, shown when the computer starts) is a different program from the lock screen and has its own
+/// background, set in the theme's `theme.conf.user`. It runs as the `sddm` user, which cannot read a picture in someone's home
+/// folder, so the picture is copied to a world-readable place first.
+const LOGIN_DIR: &str = "/usr/share/zohara/login";
+const LOGIN_THEME_CONF: &str = "/usr/share/sddm/themes/breeze/theme.conf.user";
+
+/// The extension of a picture the sign-in screen can use, lower-case; `None` for anything else.
+pub fn login_ext(path: &str) -> Option<&'static str> {
+    match std::path::Path::new(path).extension()?.to_str()?.to_lowercase().as_str() {
+        "jpg" | "jpeg" => Some("jpg"),
+        "png" => Some("png"),
+        "webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+/// The script (run as root, picture path as `$1`) that copies the picture and points the sign-in screen at it. Other lines of
+/// `theme.conf.user` (clock, logo, colours) are kept.
+pub fn login_script(ext: &str) -> String {
+    format!(
+        "set -e; mkdir -p {LOGIN_DIR}; rm -f {LOGIN_DIR}/background.*; install -m 644 \"$1\" {LOGIN_DIR}/background.{ext}; \
+         f={LOGIN_THEME_CONF}; touch \"$f\"; sed -i -e '/^background=/d' -e '/^type=/d' \"$f\"; \
+         grep -q '^\\[General\\]' \"$f\" || echo '[General]' >> \"$f\"; \
+         sed -i '/^\\[General\\]/a type=image\\nbackground={LOGIN_DIR}/background.{ext}' \"$f\""
+    )
+}
+
+/// True when the sign-in screen already shows a picture put there by this page.
+fn login_picture_set() -> bool {
+    std::fs::read_to_string(LOGIN_THEME_CONF).map(|t| t.lines().any(|l| l.trim().starts_with(&format!("background={LOGIN_DIR}/")))).unwrap_or(false)
+}
+
+/// Puts `path` on the sign-in screen too (asks for the administrator password).
+fn set_login_picture(path: &str) -> Result<(), String> {
+    let ext = login_ext(path).ok_or_else(|| "The sign-in screen can only use JPEG, PNG or WebP pictures.".to_string())?;
+    super::accounts::pkexec_sh(&login_script(ext), &[path], None)
+}
+
 /// Which choice matches what is stored: the nearest listed time at or above `minutes`, and "Never" when auto-lock is off.
 pub fn lock_choice_for(autolock: bool, minutes: u32) -> u32 {
     if !autolock {
@@ -72,10 +110,28 @@ pub fn open(parent_row: &adw::ActionRow) {
         pic.add_css_class("card");
         photo.add_prefix(&pic);
     }
+    let login_row = adw::SwitchRow::new();
+    login_row.set_title("Also use it on the sign-in screen");
+    login_row.set_subtitle("The screen you see when the computer starts. Asks for your password once each time the picture changes");
+    login_row.set_active(login_picture_set() || image_path().is_none());
+    {
+        let status = status.clone();
+        login_row.connect_active_notify(move |r| {
+            if !r.is_active() {
+                return;
+            }
+            let Some(p) = image_path() else { return };
+            let status = status.clone();
+            in_background(move || set_login_picture(&p), move |res| match res {
+                Ok(()) => report(&status, true, "the same picture on the sign-in screen".into()),
+                Err(e) => status.set_text(&format!("Couldn't change the sign-in screen: {e}")),
+            });
+        });
+    }
     let choose = gtk4::Button::with_label("Choose photo…");
     choose.set_valign(gtk4::Align::Center);
     {
-        let (photo, status) = (photo.clone(), status.clone());
+        let (photo, status, login_row) = (photo.clone(), status.clone(), login_row.clone());
         choose.connect_clicked(move |btn| {
             let parent = btn.root().and_downcast::<gtk4::Window>();
             let dialog = gtk4::FileDialog::new();
@@ -86,23 +142,30 @@ pub fn open(parent_row: &adw::ActionRow) {
             let filters = gio::ListStore::new::<gtk4::FileFilter>();
             filters.append(&filter);
             dialog.set_filters(Some(&filters));
-            let (photo, status) = (photo.clone(), status.clone());
+            let (photo, status, login_row) = (photo.clone(), status.clone(), login_row.clone());
             dialog.open(parent.as_ref(), None::<&gio::Cancellable>, move |res| {
                 let Some(path) = res.ok().and_then(|f| f.path()) else { return };
                 let p = path.to_string_lossy().to_string();
                 let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
                 let (photo, status) = (photo.clone(), status.clone());
+                let also_login = login_row.is_active();
                 in_background(
                     move || {
                         kconfig::write(RC, &["Greeter"], "WallpaperPlugin", "org.kde.image");
                         kconfig::write(RC, &["Greeter", "Wallpaper", "org.kde.image", "General"], "Image", &p);
-                        image_path().as_deref() == Some(p.as_str())
+                        let ok = image_path().as_deref() == Some(p.as_str());
+                        let login = if ok && also_login { Some(set_login_picture(&p)) } else { None };
+                        (ok, login)
                     },
-                    move |ok| {
+                    move |(ok, login)| {
                         if ok {
                             photo.set_subtitle(&name);
                         }
-                        report(&status, ok, format!("lock screen picture {name}"));
+                        match login {
+                            Some(Err(e)) => status.set_text(&format!("Saved the lock screen picture {name}, but not for the sign-in screen: {e}")),
+                            Some(Ok(())) => report(&status, ok, format!("lock screen and sign-in picture {name}")),
+                            None => report(&status, ok, format!("lock screen picture {name}")),
+                        }
                     },
                 );
             });
@@ -110,6 +173,8 @@ pub fn open(parent_row: &adw::ActionRow) {
     }
     photo.add_suffix(&choose);
     bg.add(&photo);
+
+    bg.add(&login_row);
 
     let colour = adw::ActionRow::new();
     colour.set_title("Plain colour");
@@ -310,6 +375,25 @@ mod tests {
         assert_eq!(lock_choice_for(true, 60), 4);
         assert_eq!(lock_choice_for(true, 600), 4);
         assert_eq!(lock_choice_for(false, 5), 5);
+    }
+
+    #[test]
+    fn the_sign_in_screen_takes_jpeg_png_and_webp_only() {
+        assert_eq!(login_ext("/home/a/Pictures/x.JPG"), Some("jpg"));
+        assert_eq!(login_ext("/a/b.jpeg"), Some("jpg"));
+        assert_eq!(login_ext("/a/b.png"), Some("png"));
+        assert_eq!(login_ext("/a/b.webp"), Some("webp"));
+        assert_eq!(login_ext("/a/b.gif"), None);
+        assert_eq!(login_ext("/a/noext"), None);
+    }
+
+    #[test]
+    fn the_sign_in_script_copies_the_picture_and_keeps_the_other_theme_lines() {
+        let s = login_script("png");
+        assert!(s.contains("install -m 644 \"$1\" /usr/share/zohara/login/background.png"));
+        assert!(s.contains("/usr/share/sddm/themes/breeze/theme.conf.user"));
+        assert!(s.contains("sed -i -e '/^background=/d' -e '/^type=/d'"), "only background and type are replaced");
+        assert!(!s.contains("> \"$f\"\"") && !s.contains(" > $f"), "the file is edited, not overwritten");
     }
 
     #[test]

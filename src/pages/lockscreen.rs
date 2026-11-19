@@ -24,9 +24,10 @@ pub const GRACE_CHOICES: [(&str, u32); 5] = [("Right away", 0), ("5 seconds", 5)
 
 const RC: &str = "kscreenlockerrc";
 
-/// The sign-in screen (SDDM, shown when the computer starts) is a different program from the lock screen and has its own
-/// background, set in the theme's `theme.conf.user`. It runs as the `sddm` user, which cannot read a picture in someone's home
-/// folder, so the picture is copied to a world-readable place first.
+/// ONE background for every screen that is not the desktop: the lock screen (kscreenlockerrc) and the sign-in screen that
+/// shows when the computer starts, after a log out and for "switch user" (SDDM). SDDM is a separate program with its own
+/// background in the theme's `theme.conf.user`; it runs as the `sddm` user, which cannot read a picture in someone's home
+/// folder, so a picture is copied to a world-readable place first. This page keeps the two in step.
 const LOGIN_DIR: &str = "/usr/share/zohara/login";
 const LOGIN_THEME_CONF: &str = "/usr/share/sddm/themes/breeze/theme.conf.user";
 
@@ -40,26 +41,80 @@ pub fn login_ext(path: &str) -> Option<&'static str> {
     }
 }
 
-/// The script (run as root, picture path as `$1`) that copies the picture and points the sign-in screen at it. Other lines of
-/// `theme.conf.user` (clock, logo, colours) are kept.
-pub fn login_script(ext: &str) -> String {
-    format!(
-        "set -e; mkdir -p {LOGIN_DIR}; rm -f {LOGIN_DIR}/background.*; install -m 644 \"$1\" {LOGIN_DIR}/background.{ext}; \
-         f={LOGIN_THEME_CONF}; touch \"$f\"; sed -i -e '/^background=/d' -e '/^type=/d' \"$f\"; \
-         grep -q '^\\[General\\]' \"$f\" || echo '[General]' >> \"$f\"; \
-         sed -i '/^\\[General\\]/a type=image\\nbackground={LOGIN_DIR}/background.{ext}' \"$f\""
-    )
+/// Shell text (run as root) that edits only the `type`, `background` and `color` lines of the theme file, keeping the rest
+/// (clock, logo, fonts). `@SET@` is the lines to add under [General].
+const EDIT_THEME: &str = r#"f=@CONF@; mkdir -p "$(dirname "$f")"; touch "$f"; sed -i -e '/^background=/d' -e '/^type=/d' -e '/^color=/d' "$f"; grep -q '^\[General\]' "$f" || echo '[General]' >> "$f"; @SET@"#;
+
+fn edit_theme(set_lines: &str) -> String {
+    EDIT_THEME.replace("@CONF@", LOGIN_THEME_CONF).replace("@SET@", set_lines)
 }
 
-/// True when the sign-in screen already shows a picture put there by this page.
-fn login_picture_set() -> bool {
-    std::fs::read_to_string(LOGIN_THEME_CONF).map(|t| t.lines().any(|l| l.trim().starts_with(&format!("background={LOGIN_DIR}/")))).unwrap_or(false)
+/// Script (run as root, the picture path is `$1`): copy the picture and point the sign-in screen at it.
+pub fn login_picture_script(ext: &str) -> String {
+    let set = format!(r#"sed -i '/^\[General\]/a type=image\nbackground={LOGIN_DIR}/background.{ext}' "$f""#);
+    format!(r#"set -e; mkdir -p {LOGIN_DIR}; rm -f {LOGIN_DIR}/background.*; install -m 644 "$1" {LOGIN_DIR}/background.{ext}; {}"#, edit_theme(&set))
 }
 
-/// Puts `path` on the sign-in screen too (asks for the administrator password).
-fn set_login_picture(path: &str) -> Result<(), String> {
-    let ext = login_ext(path).ok_or_else(|| "The sign-in screen can only use JPEG, PNG or WebP pictures.".to_string())?;
-    super::accounts::pkexec_sh(&login_script(ext), &[path], None)
+/// Script (colour `#rrggbb` is `$1`): a plain colour on the sign-in screen.
+pub fn login_colour_script() -> String {
+    let set = r#"sed -i "/^\[General\]/a type=color\ncolor=$1" "$f""#;
+    format!("set -e; rm -rf {LOGIN_DIR}; {}", edit_theme(set))
+}
+
+/// Script: back to the theme's own picture.
+pub fn login_default_script() -> String {
+    format!("set -e; rm -rf {LOGIN_DIR}; {}", edit_theme(":"))
+}
+
+/// `r,g,b` (0-255, as kscreenlockerrc stores it) as `#rrggbb`.
+pub fn hex_colour(rgb: &str) -> Option<String> {
+    let v: Vec<u32> = rgb.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+    (v.len() >= 3 && v.iter().take(3).all(|c| *c <= 255)).then(|| format!("#{:02x}{:02x}{:02x}", v[0], v[1], v[2]))
+}
+
+fn theme_value(key: &str) -> Option<String> {
+    let t = std::fs::read_to_string(LOGIN_THEME_CONF).ok()?;
+    t.lines().find_map(|l| l.trim().strip_prefix(&format!("{key}=")).map(str::to_string))
+}
+
+/// What the lock screen shows now, from kscreenlockerrc.
+#[derive(Debug, PartialEq, Clone)]
+pub enum Look {
+    Picture(String),
+    Colour(String),
+    Default,
+}
+
+fn lock_look() -> Look {
+    match kconfig::read(RC, &["Greeter"], "WallpaperPlugin").as_deref() {
+        Some("org.kde.color") => kconfig::read(RC, &["Greeter", "Wallpaper", "org.kde.color", "General"], "Color").and_then(|c| hex_colour(&c)).map(Look::Colour).unwrap_or(Look::Default),
+        _ => image_path().filter(|p| std::path::Path::new(p).exists()).map(Look::Picture).unwrap_or(Look::Default),
+    }
+}
+
+/// Does the sign-in screen show the same as the lock screen?
+fn login_in_sync(look: &Look) -> bool {
+    match look {
+        Look::Default => theme_value("background").map_or(true, |b| !b.starts_with(LOGIN_DIR)) && theme_value("type").map_or(true, |t| t != "color"),
+        Look::Colour(hex) => theme_value("type").as_deref() == Some("color") && theme_value("color").map(|c| c.eq_ignore_ascii_case(hex)).unwrap_or(false),
+        Look::Picture(path) => {
+            let Some(bg) = theme_value("background").filter(|b| b.starts_with(LOGIN_DIR)) else { return false };
+            matches!((std::fs::read(path), std::fs::read(&bg)), (Ok(a), Ok(b)) if a == b)
+        }
+    }
+}
+
+/// Makes the sign-in screen show `look` (asks for the administrator password).
+fn apply_login(look: &Look) -> Result<(), String> {
+    let pk = super::accounts::pkexec_sh;
+    match look {
+        Look::Picture(p) => {
+            let ext = login_ext(p).ok_or_else(|| "The sign-in screen can only use JPEG, PNG or WebP pictures.".to_string())?;
+            pk(&login_picture_script(ext), &[p], None)
+        }
+        Look::Colour(hex) => pk(&login_colour_script(), &[hex], None),
+        Look::Default => pk(&login_default_script(), &[], None),
+    }
 }
 
 /// Which choice matches what is stored: the nearest listed time at or above `minutes`, and "Never" when auto-lock is off.
@@ -110,20 +165,32 @@ pub fn open(parent_row: &adw::ActionRow) {
         pic.add_css_class("card");
         photo.add_prefix(&pic);
     }
-    let login_row = adw::SwitchRow::new();
-    login_row.set_title("Also use it on the sign-in screen");
-    login_row.set_subtitle("The screen you see when the computer starts. Asks for your password once each time the picture changes");
-    login_row.set_active(login_picture_set() || image_path().is_none());
+    // The sign-in screen (computer start-up, log out, switch user) always shows the same as the lock screen.
+    let sync = adw::ActionRow::new();
+    sync.set_title("Sign-in screen");
+    sync.set_subtitle("Checking…");
+    let sync_btn = gtk4::Button::with_label("Match now");
+    sync_btn.set_valign(gtk4::Align::Center);
+    sync_btn.set_visible(false);
+    sync.add_suffix(&sync_btn);
+    const SAME: &str = "Same as the lock screen. It also shows when the computer starts, after you log out and when you switch user";
     {
-        let status = status.clone();
-        login_row.connect_active_notify(move |r| {
-            if !r.is_active() {
-                return;
-            }
-            let Some(p) = image_path() else { return };
-            let status = status.clone();
-            in_background(move || set_login_picture(&p), move |res| match res {
-                Ok(()) => report(&status, true, "the same picture on the sign-in screen".into()),
+        let (sync, btn) = (sync.clone(), sync_btn.clone());
+        in_background(|| login_in_sync(&lock_look()), move |ok| {
+            sync.set_subtitle(if ok { SAME } else { "Different from the lock screen" });
+            btn.set_visible(!ok);
+        });
+    }
+    {
+        let (sync, status) = (sync.clone(), status.clone());
+        sync_btn.connect_clicked(move |btn| {
+            let (sync, status, btn) = (sync.clone(), status.clone(), btn.clone());
+            in_background(|| apply_login(&lock_look()), move |res| match res {
+                Ok(()) => {
+                    sync.set_subtitle(SAME);
+                    btn.set_visible(false);
+                    report(&status, true, "the sign-in screen now matches the lock screen".into());
+                }
                 Err(e) => status.set_text(&format!("Couldn't change the sign-in screen: {e}")),
             });
         });
@@ -131,7 +198,7 @@ pub fn open(parent_row: &adw::ActionRow) {
     let choose = gtk4::Button::with_label("Choose photo…");
     choose.set_valign(gtk4::Align::Center);
     {
-        let (photo, status, login_row) = (photo.clone(), status.clone(), login_row.clone());
+        let (photo, status, sync) = (photo.clone(), status.clone(), sync.clone());
         choose.connect_clicked(move |btn| {
             let parent = btn.root().and_downcast::<gtk4::Window>();
             let dialog = gtk4::FileDialog::new();
@@ -142,24 +209,24 @@ pub fn open(parent_row: &adw::ActionRow) {
             let filters = gio::ListStore::new::<gtk4::FileFilter>();
             filters.append(&filter);
             dialog.set_filters(Some(&filters));
-            let (photo, status, login_row) = (photo.clone(), status.clone(), login_row.clone());
+            let (photo, status, sync) = (photo.clone(), status.clone(), sync.clone());
             dialog.open(parent.as_ref(), None::<&gio::Cancellable>, move |res| {
                 let Some(path) = res.ok().and_then(|f| f.path()) else { return };
                 let p = path.to_string_lossy().to_string();
                 let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
                 let (photo, status) = (photo.clone(), status.clone());
-                let also_login = login_row.is_active();
-                in_background(
+                                in_background(
                     move || {
                         kconfig::write(RC, &["Greeter"], "WallpaperPlugin", "org.kde.image");
                         kconfig::write(RC, &["Greeter", "Wallpaper", "org.kde.image", "General"], "Image", &p);
                         let ok = image_path().as_deref() == Some(p.as_str());
-                        let login = if ok && also_login { Some(set_login_picture(&p)) } else { None };
+                        let login = if ok { Some(apply_login(&Look::Picture(p.clone()))) } else { None };
                         (ok, login)
                     },
                     move |(ok, login)| {
                         if ok {
                             photo.set_subtitle(&name);
+                            sync.set_subtitle(if matches!(login, Some(Ok(()))) { "Same as the lock screen" } else { "Different from the lock screen" });
                         }
                         match login {
                             Some(Err(e)) => status.set_text(&format!("Saved the lock screen picture {name}, but not for the sign-in screen: {e}")),
@@ -173,8 +240,8 @@ pub fn open(parent_row: &adw::ActionRow) {
     }
     photo.add_suffix(&choose);
     bg.add(&photo);
+    bg.add(&sync);
 
-    bg.add(&login_row);
 
     let colour = adw::ActionRow::new();
     colour.set_title("Plain colour");
@@ -190,21 +257,30 @@ pub fn open(parent_row: &adw::ActionRow) {
     cbtn.set_rgba(&start);
     let colour_ready = Rc::new(std::cell::Cell::new(false));
     {
-        let (status, ready) = (status.clone(), colour_ready.clone());
+        let (status, ready, sync_outer) = (status.clone(), colour_ready.clone(), sync.clone());
         cbtn.connect_rgba_notify(move |b| {
             if !ready.get() {
                 return;
             }
             let c = b.rgba();
             let v = format!("{},{},{}", (c.red() * 255.0).round() as u32, (c.green() * 255.0).round() as u32, (c.blue() * 255.0).round() as u32);
-            let status = status.clone();
+            let (status, sync) = (status.clone(), sync_outer.clone());
             in_background(
                 move || {
                     kconfig::write(RC, &["Greeter"], "WallpaperPlugin", "org.kde.color");
                     kconfig::write(RC, &["Greeter", "Wallpaper", "org.kde.color", "General"], "Color", &v);
-                    kconfig::read(RC, &["Greeter"], "WallpaperPlugin").as_deref() == Some("org.kde.color")
+                    let ok = kconfig::read(RC, &["Greeter"], "WallpaperPlugin").as_deref() == Some("org.kde.color");
+                    let login = if ok { hex_colour(&v).map(|h| apply_login(&Look::Colour(h))) } else { None };
+                    (ok, login)
                 },
-                move |ok| report(&status, ok, "plain colour background".into()),
+                move |(ok, login)| match login {
+                    Some(Err(e)) => status.set_text(&format!("Saved the colour for the lock screen, but not for the sign-in screen: {e}")),
+                    Some(Ok(())) => {
+                        sync.set_subtitle(SAME);
+                        report(&status, ok, "plain colour on the lock and sign-in screens".into());
+                    }
+                    None => report(&status, ok, "plain colour background".into()),
+                },
             );
         });
     }
@@ -218,21 +294,30 @@ pub fn open(parent_row: &adw::ActionRow) {
     let rb = gtk4::Button::with_label("Reset");
     rb.set_valign(gtk4::Align::Center);
     {
-        let (photo, status) = (photo.clone(), status.clone());
+        let (photo, status, sync) = (photo.clone(), status.clone(), sync.clone());
         rb.connect_clicked(move |_| {
-            let (photo, status) = (photo.clone(), status.clone());
+            let (photo, status, sync) = (photo.clone(), status.clone(), sync.clone());
             in_background(
                 || {
                     kconfig::delete(RC, &["Greeter"], "WallpaperPlugin");
                     kconfig::delete(RC, &["Greeter", "Wallpaper", "org.kde.image", "General"], "Image");
                     kconfig::delete(RC, &["Greeter", "Wallpaper", "org.kde.color", "General"], "Color");
-                    image_path().is_none()
+                    let ok = image_path().is_none();
+                    let login = if ok { Some(apply_login(&Look::Default)) } else { None };
+                    (ok, login)
                 },
-                move |ok| {
+                move |(ok, login)| {
                     if ok {
                         photo.set_subtitle("Using the default picture");
                     }
-                    report(&status, ok, "default background".into());
+                    match login {
+                        Some(Err(e)) => status.set_text(&format!("Back to the default for the lock screen, but not for the sign-in screen: {e}")),
+                        Some(Ok(())) => {
+                            sync.set_subtitle(SAME);
+                            report(&status, ok, "default background on the lock and sign-in screens".into());
+                        }
+                        None => report(&status, ok, "default background".into()),
+                    }
                 },
             );
         });
@@ -388,12 +473,23 @@ mod tests {
     }
 
     #[test]
-    fn the_sign_in_script_copies_the_picture_and_keeps_the_other_theme_lines() {
-        let s = login_script("png");
-        assert!(s.contains("install -m 644 \"$1\" /usr/share/zohara/login/background.png"));
-        assert!(s.contains("/usr/share/sddm/themes/breeze/theme.conf.user"));
-        assert!(s.contains("sed -i -e '/^background=/d' -e '/^type=/d'"), "only background and type are replaced");
-        assert!(!s.contains("> \"$f\"\"") && !s.contains(" > $f"), "the file is edited, not overwritten");
+    fn colours_become_hex() {
+        assert_eq!(hex_colour("26,26,31").as_deref(), Some("#1a1a1f"));
+        assert_eq!(hex_colour("255, 0, 128").as_deref(), Some("#ff0080"));
+        assert_eq!(hex_colour("300,0,0"), None);
+        assert_eq!(hex_colour("1,2"), None);
+    }
+
+    #[test]
+    fn the_sign_in_scripts_edit_only_their_lines_and_never_overwrite_the_theme_file() {
+        for s in [login_picture_script("png"), login_colour_script(), login_default_script()] {
+            assert!(s.contains("sed -i -e '/^background=/d' -e '/^type=/d' -e '/^color=/d'"), "{s}");
+            assert!(s.contains(LOGIN_THEME_CONF) && !s.contains(" > \"$f\""), "{s}");
+        }
+        assert!(login_picture_script("png").contains("install -m 644 \"$1\" /usr/share/zohara/login/background.png"));
+        assert!(login_picture_script("jpg").contains("type=image"));
+        assert!(login_colour_script().contains("type=color") && login_colour_script().contains("color=$1"));
+        assert!(login_default_script().contains("rm -rf /usr/share/zohara/login"));
     }
 
     #[test]

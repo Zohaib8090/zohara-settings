@@ -101,6 +101,94 @@ fn valid_mirror(s: &str) -> bool {
     s.starts_with("https://") && s.len() < 200 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~:/".contains(&b))
 }
 
+// ── Download routes ────────────────────────────────────────────────────────
+//
+// The pinned day lives on one server, the Arch Linux Archive. When a person's network cannot reach it, more routes help:
+// pacman tries the `Server` lines of the mirrorlist in order and skips a server that keeps failing, so extra lines ARE the
+// failover. Packages and databases are signed by Arch, so an extra route cannot hand out forged packages; routes are
+// written only by root (through Settings) after the same checks as the built-in one.
+
+/// Extra routes kept in /etc/zohara/update-routes.conf.
+pub const ROUTES_FILE: &str = "/etc/zohara/update-routes.conf";
+/// At most this many of each kind (a long list only slows a failing update down).
+pub const MAX_ROUTES: usize = 4;
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Routes {
+    /// Other servers that keep daily snapshots (`https://host/repos`, then `/YYYY/MM/DD/...`): the same packages as the archive.
+    pub dated: Vec<String>,
+    /// Live Arch mirrors (`https://host/archlinux`): NOT the approved day. Only tried when every dated route failed, and only
+    /// if the person asked for it, because they can hold newer packages than Zohara has tested.
+    pub live: Vec<String>,
+}
+
+/// Lines are `dated URL` or `live URL`; anything else (comments, bad URLs, a repeat) is dropped.
+pub fn parse_routes(text: &str) -> Routes {
+    let mut r = Routes::default();
+    for line in text.lines() {
+        let mut w = line.split_whitespace();
+        let (Some(kind), Some(url), None) = (w.next(), w.next(), w.next()) else { continue };
+        let url = url.trim_end_matches('/').to_string();
+        if !valid_mirror(&url) || url.contains("..") {
+            continue;
+        }
+        let list = match kind {
+            "dated" => &mut r.dated,
+            "live" => &mut r.live,
+            _ => continue,
+        };
+        if list.len() < MAX_ROUTES && !list.contains(&url) {
+            list.push(url);
+        }
+    }
+    r
+}
+
+pub fn routes_text(r: &Routes) -> String {
+    let mut out = String::from("# Extra download routes for system updates (written by Zohara Settings)\n");
+    for u in &r.dated {
+        out.push_str(&format!("dated {u}\n"));
+    }
+    for u in &r.live {
+        out.push_str(&format!("live {u}\n"));
+    }
+    out
+}
+
+pub fn read_routes() -> Routes {
+    parse_routes(&std::fs::read_to_string(ROUTES_FILE).unwrap_or_default())
+}
+
+/// The mirrorlist for one pinned day with extra routes after the first server. `$repo` and `$arch` stay literal.
+pub fn mirrorlist_with(date: &str, base: &str, routes: &Routes) -> String {
+    let base = base.trim_end_matches('/');
+    let mut out = format!(
+        "# Written by Zohara Settings. Official packages as they were on {date}.\n# Zohara only offers updates that were tested, so this date moves forward when they are approved.\n{mark} {date}\nServer = {base}/{date}/$repo/os/$arch\n",
+        mark = DATE_MARK,
+    );
+    for u in &routes.dated {
+        out.push_str(&format!("Server = {u}/{date}/$repo/os/$arch\n"));
+    }
+    if !routes.live.is_empty() {
+        out.push_str("# Live Arch mirrors, tried only when every route above failed (they are not the approved day):\n");
+        for u in &routes.live {
+            out.push_str(&format!("Server = {u}/$repo/os/$arch\n"));
+        }
+    }
+    out
+}
+
+/// Runs as root (`zohara-settings --apply-routes`): rewrites the mirrorlist for the CURRENT pinned day with the routes in the
+/// routes file. Does nothing when the mirrorlist is not one Zohara wrote.
+pub fn root_apply_routes() -> Result<String, String> {
+    let date = current_pinned_date().ok_or_else(|| "The package mirror is not set up by Zohara yet; run a system update once.".to_string())?;
+    let routes = read_routes();
+    let tmp = format!("{MIRRORLIST}.zohara-new");
+    std::fs::write(&tmp, mirrorlist_with(&date, DEFAULT_MIRROR, &routes)).map_err(|e| format!("can't write mirrorlist: {e}"))?;
+    std::fs::rename(&tmp, MIRRORLIST).map_err(|e| format!("can't replace mirrorlist: {e}"))?;
+    Ok(format!("{} dated and {} live extra routes for {date}", routes.dated.len(), routes.live.len()))
+}
+
 // ── Versions ───────────────────────────────────────────────────────────────
 
 fn parse_version(v: &str) -> Option<Vec<u64>> {
@@ -121,12 +209,7 @@ pub fn version_at_least(current: &str, required: &str) -> bool {
 
 /// The mirrorlist for one pinned day. `$repo` and `$arch` stay literal: pacman fills them in.
 pub fn mirrorlist(m: &Manifest) -> String {
-    let base = m.mirror.as_deref().unwrap_or(DEFAULT_MIRROR).trim_end_matches('/');
-    format!(
-        "# Written by Zohara Settings. Official packages as they were on {date}.\n# Zohara only offers updates that were tested, so this date moves forward when they are approved.\n{mark} {date}\nServer = {base}/{date}/$repo/os/$arch\n",
-        date = m.approved_date,
-        mark = DATE_MARK,
-    )
+    mirrorlist_with(&m.approved_date, m.mirror.as_deref().unwrap_or(DEFAULT_MIRROR), &Routes::default())
 }
 
 /// The pinned date recorded in a mirrorlist, if it was written by Zohara.
@@ -245,7 +328,7 @@ pub fn root_pin(manifest_path: &str, sig_path: &str, this_version: &str) -> Resu
         Decision::UpToDate => Ok(format!("Already on {}", m.approved_date)),
         Decision::Move { .. } => {
             let tmp = format!("{MIRRORLIST}.zohara-new");
-            std::fs::write(&tmp, mirrorlist(&m)).map_err(|e| format!("can't write mirrorlist: {e}"))?;
+            std::fs::write(&tmp, mirrorlist_with(&m.approved_date, m.mirror.as_deref().unwrap_or(DEFAULT_MIRROR), &read_routes())).map_err(|e| format!("can't write mirrorlist: {e}"))?;
             std::fs::rename(&tmp, MIRRORLIST).map_err(|e| format!("can't replace mirrorlist: {e}"))?;
             Ok(format!("Now following {}", m.approved_date))
         }
@@ -261,6 +344,30 @@ mod tests {
     const TEST_PUB: &str = include_str!("../../tests/test.pub");
     const GOOD_MANIFEST: &[u8] = include_bytes!("../../tests/manifest.json");
     const GOOD_SIG: &str = include_str!("../../tests/manifest.json.minisig");
+
+    #[test]
+    fn routes_are_read_strictly_and_written_back() {
+        let r = parse_routes("# c\ndated https://a.example/repos/\ndated https://a.example/repos\ndated http://insecure.example/repos\nlive https://geo.example/archlinux\nlive https://x.example/a b\nfoo https://z.example\ndated https://evil.example/../x\ndated\n");
+        assert_eq!(r.dated, vec!["https://a.example/repos".to_string()], "a repeat, http and .. are dropped");
+        assert_eq!(r.live, vec!["https://geo.example/archlinux".to_string()]);
+        assert_eq!(parse_routes(&routes_text(&r)), r);
+        let many: String = (0..9).map(|i| format!("dated https://m{i}.example/repos\n")).collect();
+        assert_eq!(parse_routes(&many).dated.len(), MAX_ROUTES);
+    }
+
+    #[test]
+    fn extra_routes_become_extra_server_lines_after_the_archive() {
+        let r = Routes { dated: vec!["https://a.example/repos".into()], live: vec!["https://geo.example/archlinux".into()] };
+        let t = mirrorlist_with("2026/10/13", DEFAULT_MIRROR, &r);
+        let servers: Vec<&str> = t.lines().filter(|l| l.starts_with("Server")).collect();
+        assert_eq!(servers, vec![
+            "Server = https://archive.archlinux.org/repos/2026/10/13/$repo/os/$arch",
+            "Server = https://a.example/repos/2026/10/13/$repo/os/$arch",
+            "Server = https://geo.example/archlinux/$repo/os/$arch",
+        ], "the archive first, other dated routes next, live mirrors last");
+        assert_eq!(pinned_date(&t).as_deref(), Some("2026/10/13"));
+        assert_eq!(mirrorlist_with("2026/10/13", DEFAULT_MIRROR, &Routes::default()).lines().filter(|l| l.starts_with("Server")).count(), 1);
+    }
 
     #[test]
     fn genuine_manifest_is_accepted() {

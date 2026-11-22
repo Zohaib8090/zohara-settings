@@ -150,6 +150,19 @@ fn main() -> glib::ExitCode {
             }
         }
     }
+    // Root helper: rewrite the package mirrorlist with the extra download routes (see sysupdate::manifest::Routes).
+    if args.iter().any(|a| a == "--apply-routes") {
+        match sysupdate::manifest::root_apply_routes() {
+            Ok(msg) => {
+                println!("{msg}");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
     let rt = tokio_runtime();
     let _rt_guard = rt.enter();
 

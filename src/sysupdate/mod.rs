@@ -5,5 +5,6 @@
 pub mod channel;
 pub mod manifest;
 pub mod recommended;
+pub mod routes_ui;
 pub mod ui;
 pub mod updates;

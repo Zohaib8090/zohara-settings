@@ -133,6 +133,13 @@ pub fn build_content(scroll_to_end: impl Fn() + 'static) -> gtk4::Widget {
     chan_row.set_model(Some(&gtk4::StringList::new(&channel::CHANNELS.map(|c| c.1))));
     chan_row.set_selected(channel::index_of(channel::current()));
     chan_group.add(&chan_row);
+    let routes_row = adw::ActionRow::new();
+    routes_row.set_title("Download routes");
+    routes_row.set_subtitle("Other servers to use when the Arch Linux Archive cannot be reached from your connection");
+    routes_row.set_activatable(true);
+    routes_row.add_suffix(&gtk4::Image::from_icon_name("go-next-symbolic"));
+    routes_row.connect_activated(|r| super::routes_ui::open(r.upcast_ref()));
+    chan_group.add(&routes_row);
     inner.append(&chan_group);
 
     let groups = gtk4::Box::new(gtk4::Orientation::Vertical, 16);

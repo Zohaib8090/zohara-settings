@@ -57,3 +57,14 @@ key for the signature tests).
 Found a pending Settings update through the real signed-approval path, installed it from the page with the administrator
 prompt (restore points before and after), "Everything is up to date" afterwards; the root helper accepted the real signed
 manifest and refused a tampered one. **Not yet verified**: a full system update with many Arch packages through the page.
+
+## Download routes (2026-11-22)
+
+System updates are the Arch packages of an approved day, read from `archive.archlinux.org`. When a network cannot reach that one server (found on the owner's StormFiber line: the host answers ping but ports 80 and 443 time out) the update failed with only pacman timeouts. Zohara Update > **Download routes** now lets the person add more servers:
+
+- **Snapshot server**: another server that keeps daily snapshots (`https://host/repos`, then `/YYYY/MM/DD/...`). Same approved day, tried right after the archive. No public second archive is known today; this is for a mirror the person or Zohara runs.
+- **Live Arch mirror**: tried only when every snapshot route failed. It is NOT the approved day (it can hold newer packages than Zohara tested), so it is opt-in and labelled.
+
+How it works: routes are kept in `/etc/zohara/update-routes.conf` (`dated URL` / `live URL`, https only, at most 4 of each, strictly validated when read). `sudo zohara-settings --apply-routes` (run through pkexec by the page) rewrites `/etc/pacman.d/mirrorlist` for the current pinned day with extra `Server =` lines; pacman tries them in order and skips a server that keeps failing, so the extra lines are the failover. A new approved date keeps the routes. Packages and databases stay signed by Arch, so a route cannot forge a package. Each route has a Test button (fetches the first database of the day). When the archive cannot be reached the update dialog now says so and what to do.
+
+Not tested: on a machine where the archive is really blocked, and the page on screen.

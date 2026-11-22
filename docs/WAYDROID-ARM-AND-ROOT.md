@@ -10,6 +10,9 @@ Status (2026-11-19): BUILT and shipped as part of the zohara-settings package. W
 - Never blocks Waydroid: every step is guarded and the exit code is always 0.
 - Tests: `tests/waydroid-fix-test.sh` (19 checks against a throwaway folder: markers, idempotence, ARM lines kept, switch off restores, image update, CPU choice, no-Waydroid) and the unit tests in `src/pages/android_apps.rs`.
 
+## Found after shipping (2026-11-22): "There's an internal problem with your device. Contact your manufacturer"
+Android compares the build fingerprint of EVERY partition at boot (`Build.isFingerprintConsistent`) and shows that message when they disagree. The first version changed only the system partition's build.prop, so `ro.vendor.build.*` (in the vendor image's own build.prop) still said `userdebug/test-keys`. The helper now writes the same release markers to `/var/lib/waydroid/overlay/vendor/build.prop` as well (read from `images/vendor.img`), keeps the two fingerprints identical, restores both when switched off, and starts again from both images after a Waydroid update. Test: "the system and vendor fingerprints are identical".
+
 ## Not verified
 - The two services and the package hooks on a clean machine, the ARM download from inside the service, and the Settings page on screen. (Done by hand on the owner's laptop: the same steps.)
 - Bumping the pinned waydroid_script commit needs a test run; Intel's houdini build inside it expires on 2028-07-01.

@@ -7,6 +7,10 @@ export ZOHARA_WAYDROID_DIR="$T/w" ZOHARA_WAYDROID_CONF="$T/waydroid.conf" ZOHARA
 mkdir -p "$T/w/images" "$T/w/overlay/system"; : > "$T/w/images/system.img"
 printf 'ro.build.type=userdebug\nro.build.tags=test-keys\nro.build.fingerprint=waydroid/lineage_waydroid_x86_64/waydroid_x86_64:13/TQ3A.230901.001/eng.x:userdebug/test-keys\nro.build.display.id=lineage_waydroid_x86_64-userdebug 13 TQ3A.230901.001 eng.x test-keys\nro.product.model=WayDroid x86_64 Device\nro.other=1\n' > "$T/src.prop"
 export ZOHARA_WAYDROID_BUILD_PROP_SRC="$T/src.prop"
+printf 'ro.vendor.build.type=userdebug\nro.vendor.build.tags=test-keys\nro.vendor.build.fingerprint=waydroid/lineage_waydroid_x86_64/waydroid_x86_64:13/TQ3A.230901.001/eng.x:userdebug/test-keys\nro.vendor.other=1\n' > "$T/vendor.prop"
+export ZOHARA_WAYDROID_VENDOR_BUILD_PROP_SRC="$T/vendor.prop" ZOHARA_WAYDROID_VENDOR_IMAGE="$T/w/images/vendor.img"
+: > "$T/w/images/vendor.img"; mkdir -p "$T/w/overlay/vendor"
+VOVER="$T/w/overlay/vendor/build.prop"
 F="$HERE/data/zohara-waydroid-fix"; OVER="$T/w/overlay/system/build.prop"
 fails=0
 ok() { if [ "$1" = 0 ]; then echo "ok   $2"; else echo "FAIL $2"; fails=$((fails+1)); fi; }
@@ -17,6 +21,9 @@ grep -q '^ro.build.type=user$' "$OVER"; ok $? "type becomes user"
 grep -q ':user/release-keys' "$OVER"; ok $? "fingerprint ends in user/release-keys"
 ! grep -q 'test-keys\|userdebug' "$OVER"; ok $? "no developer marker is left"
 grep -q '^ro.other=1' "$OVER" && grep -q '^ro.product.model=WayDroid' "$OVER"; ok $? "other lines are kept"
+grep -q ':user/release-keys' "$VOVER" \&\& ! grep -q 'test-keys\|userdebug' "$VOVER"; ok $? "the vendor partition gets the same markers (Android compares every partition's fingerprint)"
+grep -q '^ro.vendor.other=1' "$VOVER"; ok $? "vendor lines are kept"
+fp_sys=$(grep '^ro.build.fingerprint=' "$OVER" | cut -d= -f2); fp_ven=$(grep '^ro.vendor.build.fingerprint=' "$VOVER" | cut -d= -f2); [ "$fp_sys" = "$fp_ven" ]; ok $? "the system and vendor fingerprints are identical"
 before=$(cat "$OVER"); bash "$F" disguise; [ "$before" = "$(cat "$OVER")" ]; ok $? "running it twice changes nothing"
 
 echo 'ARM_LINE_FROM_TRANSLATOR=1' >> "$OVER"
@@ -24,6 +31,7 @@ bash "$F" disguise; grep -q '^ARM_LINE_FROM_TRANSLATOR=1' "$OVER"; ok $? "lines 
 
 printf 'disguise=0\n' > "$T/waydroid.conf"; bash "$F" disguise
 grep -q '^ro.build.tags=test-keys' "$OVER" && grep -q '^ro.build.type=userdebug$' "$OVER" && grep -q ':userdebug/test-keys' "$OVER" && grep -q -- '-userdebug 13' "$OVER"; ok $? "switching it off puts every marker back"
+grep -q ':userdebug/test-keys' "$VOVER" && grep -q '^ro.vendor.build.type=userdebug$' "$VOVER"; ok $? "switching it off puts the vendor markers back too"
 grep -q '^ARM_LINE_FROM_TRANSLATOR=1' "$OVER"; ok $? "switching it off keeps the ARM lines"
 
 rm -f "$T/waydroid.conf"; bash "$F" disguise

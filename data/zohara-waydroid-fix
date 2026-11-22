@@ -22,6 +22,11 @@ CONF="${ZOHARA_WAYDROID_CONF:-/etc/zohara/waydroid.conf}"
 STATE="${ZOHARA_WAYDROID_STATE:-/var/lib/zohara/waydroid}"
 IMG="${ZOHARA_WAYDROID_IMAGE:-$W/images/system.img}"
 OVER_PROP="$W/overlay/system/build.prop"
+# The vendor partition has its own build.prop with its own copy of the fingerprint. Android compares ALL of them at boot and
+# shows "There's an internal problem with your device. Contact your manufacturer" when they disagree, so the markers must
+# change in both places (found 2026-11-22: changing only the system one produced that message).
+VENDOR_IMG="${ZOHARA_WAYDROID_VENDOR_IMAGE:-$W/images/vendor.img}"
+VENDOR_OVER_PROP="$W/overlay/vendor/build.prop"
 CPUINFO="${ZOHARA_WAYDROID_CPUINFO:-/proc/cpuinfo}"
 
 # waydroid_script (GPL-3.0, casualsnek): the commit that was read and tested, never "latest". Bump together with a test run.
@@ -43,19 +48,20 @@ fail() { echo "$*" > "$LOG"; echo "zohara-waydroid-fix: $*" >&2; }
 
 have_image() { [ -f "$IMG" ]; }
 
-image_id() { stat -c '%s-%Y' "$IMG" 2>/dev/null; }
+image_id() { stat -c '%s-%Y' "$IMG" "$VENDOR_IMG" 2>/dev/null | tr '\n' '-'; }
 
 # The same text with the developer-build markers turned into a release build, and back.
 to_release() { sed -e 's/test-keys/release-keys/g' -e 's/userdebug/user/g'; }
-to_dev() { sed -e 's/release-keys/test-keys/g' -e 's#:user/test-keys#:userdebug/test-keys#g' -e 's#^\(ro.build.type=\)user$#\1userdebug#' -e 's#-user \([0-9]\)#-userdebug \1#'; }
+to_dev() { sed -e 's/release-keys/test-keys/g' -e 's#:user/test-keys#:userdebug/test-keys#g' -e 's#^\(ro\.[a-z_.]*build\.type=\)user$#\1userdebug#' -e 's#-user \([0-9]\)#-userdebug \1#'; }
 
-# The container's build.prop as the image ships it: mounted read-only, so this works while Waydroid is stopped.
+# A build.prop as an image ships it: mounted read-only, so this works while Waydroid is stopped. `$1` is the image, `$2` the
+# name of a test variable that may hold a file to use instead.
 image_build_prop() {
-    # tests hand in a file instead of an image
-    if [ -n "${ZOHARA_WAYDROID_BUILD_PROP_SRC:-}" ]; then cat "$ZOHARA_WAYDROID_BUILD_PROP_SRC"; return; fi
-    local mnt rc=1
+    local img="$1" testvar="$2" mnt rc=1
+    if [ -n "${!testvar:-}" ]; then cat "${!testvar}"; return; fi
+    [ -f "$img" ] || return 1
     mnt=$(mktemp -d) || return 1
-    if mount -o ro,loop "$IMG" "$mnt" 2>/dev/null; then
+    if mount -o ro,loop "$img" "$mnt" 2>/dev/null; then
         for p in "$mnt/system/build.prop" "$mnt/build.prop"; do
             if [ -f "$p" ]; then cat "$p"; rc=0; break; fi
         done
@@ -65,36 +71,49 @@ image_build_prop() {
     return $rc
 }
 
-disguise() {
-    have_image || return 0
-    if [ "$(setting disguise 1)" != 1 ]; then undo_disguise; return 0; fi
-    local now old tmp
-    now=$(image_id)
-    old=$(cat "$STATE/image-id" 2>/dev/null)
-    # a new system image (a Waydroid update): the old overlay build.prop belongs to the old image, so start again from the new one
-    if [ -n "$old" ] && [ "$old" != "$now" ]; then rm -f "$OVER_PROP" "$STATE/arm-done"; fi
+# One partition: the overlay file (`$2`) holds the release markers. Its source is the overlay file itself when it exists
+# (the ARM translator edits it too), otherwise the image's own build.prop.
+disguise_one() {
+    local img="$1" over="$2" testvar="$3" required="$4" tmp
     tmp=$(mktemp) || return 0
-    if [ -f "$OVER_PROP" ]; then cat "$OVER_PROP" > "$tmp"; else image_build_prop > "$tmp"; fi
-    if [ ! -s "$tmp" ]; then fail "could not read the Android build.prop"; rm -f "$tmp"; return 0; fi
+    if [ -f "$over" ]; then cat "$over" > "$tmp"; else image_build_prop "$img" "$testvar" > "$tmp"; fi
+    if [ ! -s "$tmp" ]; then
+        [ "$required" = 1 ] && fail "could not read the Android build.prop ($img)"
+        rm -f "$tmp"; return 0
+    fi
     to_release < "$tmp" > "$tmp.new"
-    if ! grep -q '^ro.build.tags=release-keys' "$tmp.new"; then
+    if [ "$required" = 1 ] && ! grep -q '^ro.build.tags=release-keys' "$tmp.new"; then
         fail "ro.build.tags not found in build.prop; nothing changed"; rm -f "$tmp" "$tmp.new"; return 0
     fi
-    if ! cmp -s "$tmp.new" "$OVER_PROP" 2>/dev/null; then
-        install -D -m 644 "$tmp.new" "$OVER_PROP" && echo "$now" > "$STATE/image-id" && : > "$STATE/restart-needed"
-    else
-        echo "$now" > "$STATE/image-id"
+    if ! cmp -s "$tmp.new" "$over" 2>/dev/null; then
+        install -D -m 644 "$tmp.new" "$over" && : > "$STATE/restart-needed"
     fi
     rm -f "$tmp" "$tmp.new"
 }
 
+disguise() {
+    have_image || return 0
+    if [ "$(setting disguise 1)" != 1 ]; then undo_disguise; return 0; fi
+    local now old
+    now=$(image_id)
+    old=$(cat "$STATE/image-id" 2>/dev/null)
+    # a new image (a Waydroid update): the old overlay files belong to the old images, so start again from the new ones
+    if [ -n "$old" ] && [ "$old" != "$now" ]; then rm -f "$OVER_PROP" "$VENDOR_OVER_PROP" "$STATE/arm-done"; fi
+    disguise_one "$IMG" "$OVER_PROP" ZOHARA_WAYDROID_BUILD_PROP_SRC 1
+    disguise_one "$VENDOR_IMG" "$VENDOR_OVER_PROP" ZOHARA_WAYDROID_VENDOR_BUILD_PROP_SRC 0
+    echo "$now" > "$STATE/image-id"
+}
+
 undo_disguise() {
-    [ -f "$OVER_PROP" ] || return 0
-    local tmp; tmp=$(mktemp) || return 0
-    to_dev < "$OVER_PROP" > "$tmp"
-    # nothing else in the overlay file (ARM lines) was added by the disguise, so only the markers move back
-    install -D -m 644 "$tmp" "$OVER_PROP" && : > "$STATE/restart-needed"
-    rm -f "$tmp"
+    local f tmp
+    for f in "$OVER_PROP" "$VENDOR_OVER_PROP"; do
+        [ -f "$f" ] || continue
+        tmp=$(mktemp) || continue
+        to_dev < "$f" > "$tmp"
+        # nothing else in the overlay file (ARM lines) was added by the disguise, so only the markers move back
+        install -D -m 644 "$tmp" "$f" && : > "$STATE/restart-needed"
+        rm -f "$tmp"
+    done
 }
 
 arm_present() {

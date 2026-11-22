@@ -143,6 +143,13 @@ package() {
   install -Dm644 "$startdir/data/zohara-waydroid-arm.service" "$pkgdir/usr/lib/systemd/system/zohara-waydroid-arm.service"
   install -Dm644 "$startdir/docs/WAYDROID-ARM-AND-ROOT.md" "$pkgdir/usr/share/doc/zohara-settings/WAYDROID-ARM-AND-ROOT.md"
 
+  # The login lock that gets stricter when it is abused (docs/LOGIN-LOCK.md): the helper PAM calls, the installer that puts it into
+  # system-auth, and the pacman hook that puts it back after each update of pambase (which owns that file).
+  install -Dm755 "$startdir/data/zohara-faillock-policy" "$pkgdir/usr/lib/zohara/zohara-faillock-policy"
+  install -Dm755 "$startdir/data/zohara-faillock-install" "$pkgdir/usr/lib/zohara/zohara-faillock-install"
+  install -Dm644 "$startdir/data/hooks/zohara-faillock.hook" "$pkgdir/usr/share/libalpm/hooks/zohara-faillock.hook"
+  install -Dm644 "$startdir/docs/LOGIN-LOCK.md" "$pkgdir/usr/share/doc/zohara-settings/LOGIN-LOCK.md"
+
   # The equalizer's service (started and enabled per user by Settings > Sound > Equalizer, not by default).
   install -Dm644 "$startdir/data/zohara-equalizer.service" "$pkgdir/usr/lib/systemd/user/zohara-equalizer.service"
 

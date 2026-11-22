@@ -1,0 +1,49 @@
+#!/bin/bash
+# Zohara OS: puts the escalating-lock helper into the system login rules, or takes it out again.
+#   zohara-faillock-install apply     (run after every update of pambase, by the pacman hook; also by Settings)
+#   zohara-faillock-install remove    back to stock Arch (the settings in faillock.conf stay)
+# Two `optional` pam_exec lines go into /etc/pam.d/system-auth, around pam_faillock. "optional" means a problem in the helper
+# can neither deny nor allow a login. The file is owned by the pambase package, so the pacman hook puts the lines back
+# after each pambase update. Tests: ZOHARA_PAM_FILE, ZOHARA_FAILLOCK_CONF, ZOHARA_FAILLOCK_SETTINGS.
+set -u
+PAM="${ZOHARA_PAM_FILE:-/etc/pam.d/system-auth}"
+CONF="${ZOHARA_FAILLOCK_CONF:-/etc/security/faillock.conf}"
+SETTINGS="${ZOHARA_FAILLOCK_SETTINGS:-/etc/zohara/faillock.conf}"
+HELPER="${ZOHARA_FAILLOCK_HELPER:-/usr/lib/zohara/zohara-faillock-policy}"
+MARK="zohara-faillock-policy"
+
+remove() {
+    [ -f "$PAM" ] || return 0
+    grep -q "$MARK" "$PAM" || return 0
+    local tmp; tmp=$(mktemp "$PAM.XXXXXX") || return 1
+    grep -v "$MARK" "$PAM" > "$tmp" && chmod --reference="$PAM" "$tmp" && mv -f "$tmp" "$PAM"
+}
+
+apply() {
+    [ -f "$PAM" ] || { echo "no $PAM" >&2; return 0; }
+    [ -x "$HELPER" ] || { echo "helper missing: $HELPER" >&2; return 0; }
+    # only a stock-looking file is touched: it must have the three faillock lines
+    grep -q 'pam_faillock.so.*preauth' "$PAM" && grep -q 'pam_faillock.so.*authfail' "$PAM" && grep -q 'pam_faillock.so.*authsucc' "$PAM" || { echo "system-auth has no pam_faillock lines; left alone" >&2; return 0; }
+    remove
+    local tmp; tmp=$(mktemp "$PAM.XXXXXX") || return 1
+    awk -v h="$HELPER" '
+        /pam_faillock.so.*preauth/ && !b { print "auth       optional                    pam_exec.so          quiet seteuid " h " before"; b=1 }
+        { print }
+        /pam_faillock.so.*authsucc/ && !s { print "auth       optional                    pam_exec.so          quiet seteuid " h " success"; s=1 }
+    ' "$PAM" > "$tmp" || { rm -f "$tmp"; return 1; }
+    # both lines must be there, or nothing is changed
+    if [ "$(grep -c "$MARK" "$tmp")" = 2 ]; then
+        chmod --reference="$PAM" "$tmp" && mv -f "$tmp" "$PAM"
+    else
+        rm -f "$tmp"; echo "could not place the lines; left alone" >&2; return 0
+    fi
+    # first numbers right away (the helper rewrites them at every login check)
+    PAM_USER=nobody ZOHARA_FAILLOCK_CONF="$CONF" ZOHARA_FAILLOCK_SETTINGS="$SETTINGS" "$HELPER" success >/dev/null 2>&1
+}
+
+case "${1:-apply}" in
+    apply) apply ;;
+    remove) remove ;;
+    *) echo "usage: $0 apply | remove" >&2 ;;
+esac
+exit 0

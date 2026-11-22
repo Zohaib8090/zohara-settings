@@ -1,0 +1,104 @@
+#!/bin/bash
+# Zohara OS: a login lock that gets stricter when it is abused.
+#
+# Stock Arch locks an account for a fixed time after a fixed number of wrong passwords (pam_faillock). Zohara's default is
+# 5 tries and 5 minutes; if the person is locked and, after the lock ends, fails again, the next rounds get fewer tries and a
+# longer lock: 5/5, 4/10, 3/20, 2/40, then 2/60 minutes (never longer, so a mistake can never lock you out for good).
+# A successful sign-in puts everything back to the first round, and so do 24 hours without a lock.
+#
+# Called by PAM (pam_exec, control "optional", so a failure here can never deny or allow a login) from /etc/pam.d/system-auth:
+#     zohara-faillock-policy before     just before pam_faillock reads its settings
+#     zohara-faillock-policy success    after a correct password
+# It only rewrites deny / unlock_time / fail_interval in faillock.conf for the NEXT check. Environment for tests:
+# ZOHARA_FAILLOCK_CONF, _STATE, _SETTINGS, _DIR (the faillock tally folder), _NOW (a fixed time).
+#
+# Limits worth knowing: one faillock.conf serves every account, so on a computer where several people fail at the same time
+# the last person to try decides the numbers (a home computer has one or two). ssh failures count like any other.
+set -u
+CONF="${ZOHARA_FAILLOCK_CONF:-/etc/security/faillock.conf}"
+STATE="${ZOHARA_FAILLOCK_STATE:-/var/lib/zohara/faillock}"
+SETTINGS="${ZOHARA_FAILLOCK_SETTINGS:-/etc/zohara/faillock.conf}"
+TALLY="${ZOHARA_FAILLOCK_DIR:-/var/run/faillock}"
+NOW="${ZOHARA_FAILLOCK_NOW:-$(date +%s)}"
+USER_NAME="${PAM_USER:-${ZOHARA_FAILLOCK_USER:-}}"
+MODE="${1:-before}"
+
+# a user name that cannot break out of a file name
+[[ "$USER_NAME" =~ ^[a-z_][a-z0-9_.-]{0,63}$ ]] || exit 0
+
+setting() { # key default min max
+    local v
+    v=$(grep -E "^$1=" "$SETTINGS" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' \r')
+    [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -ge "$3" ] && [ "$v" -le "$4" ] && echo "$v" || echo "$2"
+}
+ESCALATE=$(setting escalate 1 0 1)
+BASE_TRIES=$(setting tries 5 3 10)
+BASE_MINUTES=$(setting minutes 5 1 30)
+MAX_TIER=4
+
+# tier -> "tries minutes". Tries go down by one each round (never below 2), minutes double (never above 60).
+tier_values() {
+    local t=$1 tries minutes i
+    tries=$((BASE_TRIES - t)); [ "$tries" -lt 2 ] && tries=2
+    minutes=$BASE_MINUTES
+    for ((i = 0; i < t; i++)); do minutes=$((minutes * 2)); done
+    [ "$minutes" -gt 60 ] && minutes=60
+    [ "$minutes" -lt "$BASE_MINUTES" ] && minutes=$BASE_MINUTES
+    echo "$tries $minutes"
+}
+
+write_conf() { # tries minutes
+    local tmp
+    [ -f "$CONF" ] || return 0
+    tmp=$(mktemp "$CONF.XXXXXX") || return 0
+    grep -vE '^[[:space:]]*(deny|unlock_time|fail_interval)[[:space:]]*=' "$CONF" > "$tmp"
+    printf 'deny = %s\nunlock_time = %s\nfail_interval = 900\n' "$1" "$(($2 * 60))" >> "$tmp"
+    if ! cmp -s "$tmp" "$CONF"; then
+        chmod --reference="$CONF" "$tmp" 2>/dev/null; mv -f "$tmp" "$CONF"
+    else
+        rm -f "$tmp"
+    fi
+}
+
+mkdir -p "$STATE" 2>/dev/null
+FILE="$STATE/$USER_NAME"
+tier=0; in_lock=0; last=0
+if [ -f "$FILE" ]; then
+    tier=$(grep -E '^tier=' "$FILE" | tail -1 | cut -d= -f2); in_lock=$(grep -E '^in_lock=' "$FILE" | tail -1 | cut -d= -f2); last=$(grep -E '^last=' "$FILE" | tail -1 | cut -d= -f2)
+fi
+[[ "$tier" =~ ^[0-9]+$ ]] || tier=0; [[ "$in_lock" =~ ^[01]$ ]] || in_lock=0; [[ "$last" =~ ^[0-9]+$ ]] || last=0
+[ "$tier" -gt "$MAX_TIER" ] && tier=$MAX_TIER
+save() { printf 'tier=%s\nin_lock=%s\nlast=%s\n' "$tier" "$in_lock" "$last" > "$FILE.tmp" && mv -f "$FILE.tmp" "$FILE"; }
+
+if [ "$ESCALATE" = 0 ]; then
+    read -r tries minutes <<<"$(tier_values 0)"; write_conf "$tries" "$minutes"; exit 0
+fi
+
+if [ "$MODE" = success ]; then
+    tier=0; in_lock=0; last=0; save
+    read -r tries minutes <<<"$(tier_values 0)"; write_conf "$tries" "$minutes"; exit 0
+fi
+
+# before a check: a day without a lock starts over; a lock that has ended moves the account to the next, stricter round
+if [ "$last" -gt 0 ] && [ $((NOW - last)) -gt 86400 ]; then tier=0; in_lock=0; last=0; fi
+read -r tries minutes <<<"$(tier_values "$tier")"
+# how many valid failures happened inside the failure interval, and when the newest was (pam_faillock locks while
+# failures >= tries and the newest is younger than the lock time)
+failed=0; newest=0
+while read -r d t rest; do
+    [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || continue
+    case "$rest" in *" V") ;; *) continue ;; esac
+    e=$(date -d "$d $t" +%s 2>/dev/null) || continue
+    [ $((NOW - e)) -le 900 ] || continue
+    failed=$((failed + 1)); [ "$e" -gt "$newest" ] && newest=$e
+done < <(faillock --dir "$TALLY" --user "$USER_NAME" 2>/dev/null)
+if [ "$failed" -ge "$tries" ] && [ $((NOW - newest)) -lt $((minutes * 60)) ]; then
+    in_lock=1                                 # locked right now: the numbers of this round stay until it ends
+elif [ "$in_lock" = 1 ]; then
+    in_lock=0; last=$NOW
+    [ "$tier" -lt "$MAX_TIER" ] && tier=$((tier + 1))
+    read -r tries minutes <<<"$(tier_values "$tier")"
+fi
+save
+write_conf "$tries" "$minutes"
+exit 0

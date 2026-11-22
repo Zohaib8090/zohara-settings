@@ -1,0 +1,11 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = pambase
+Target = zohara-settings
+
+[Action]
+Description = Zohara: keeping the escalating login lock in the system login rules
+When = PostTransaction
+Exec = /usr/lib/zohara/zohara-faillock-install apply

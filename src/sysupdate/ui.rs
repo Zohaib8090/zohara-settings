@@ -53,6 +53,15 @@ fn background<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static, done: i
     });
 }
 
+/// Zohara's system updates are the Arch Linux packages of an approved day, read from archive.archlinux.org. When that one
+/// server cannot be reached from the person's network, pacman only prints timeouts; this says what it means and what to do.
+pub const ARCHIVE_HINT: &str = "The Arch Linux Archive (archive.archlinux.org), where Zohara's system updates come from, could not be reached from this connection. Nothing was changed. Try again in a while, or on another network (for example your phone's hotspot).";
+
+/// One line of pacman output that shows the archive could not be reached.
+pub fn is_archive_trouble(line: &str) -> bool {
+    line.contains("archive.archlinux.org") && (line.contains("timed out") || line.contains("failed retrieving") || line.contains("Could not resolve") || line.contains("Could not connect"))
+}
+
 /// The page's content. `scroll_to_end` jumps the surrounding scrolled window to its bottom (the restore points are
 /// there); the caller owns the scrolling.
 pub fn build_content(scroll_to_end: impl Fn() + 'static) -> gtk4::Widget {
@@ -532,8 +541,12 @@ fn run_job(page: &Rc<Page>, parent: &gtk4::Widget, title: &str, work: impl FnOnc
     });
 
     let page = page.clone();
+    let archive_trouble = std::cell::Cell::new(false);
     glib::timeout_add_local(Duration::from_millis(100), move || {
         while let Ok(line) = rx.try_recv() {
+            if is_archive_trouble(&line) {
+                archive_trouble.set(true);
+            }
             let mut end = log.end_iter();
             log.insert(&mut end, &format!("{line}\n"));
             let mark = log.create_mark(None, &log.end_iter(), false);
@@ -550,6 +563,7 @@ fn run_job(page: &Rc<Page>, parent: &gtk4::Widget, title: &str, work: impl FnOnc
                         status.set_text(if must { "Done. Restart your computer to finish." } else { "Done." });
                         restart.set_visible(must);
                     }
+                    Err(e) if archive_trouble.get() => status.set_text(&format!("{ARCHIVE_HINT}\n\n{e}")),
                     Err(e) => status.set_text(&format!("Something went wrong.\n{e}")),
                 }
                 close.set_sensitive(true);
@@ -820,3 +834,17 @@ fn pick_pacman_version(page: &Rc<Page>, from: &gtk4::Widget, name: &str) {
     );
 }
 
+
+#[cfg(test)]
+mod archive_hint_tests {
+    use super::*;
+
+    #[test]
+    fn the_timeouts_of_the_archive_are_recognised_and_other_lines_are_not() {
+        assert!(is_archive_trouble("error: failed retrieving file 'core.db' from archive.archlinux.org : Connection timed out after 10000 milliseconds"));
+        assert!(is_archive_trouble("error: failed retrieving file 'x' from archive.archlinux.org : Could not resolve host: archive.archlinux.org"));
+        assert!(!is_archive_trouble("error: failed retrieving file 'x' from github.com : Connection timed out"), "other servers are not the archive");
+        assert!(!is_archive_trouble(":: Synchronizing package databases..."));
+        assert!(ARCHIVE_HINT.contains("Nothing was changed") && ARCHIVE_HINT.contains("hotspot"));
+    }
+}

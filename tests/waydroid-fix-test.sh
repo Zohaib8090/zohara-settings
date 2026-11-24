@@ -70,5 +70,7 @@ echo "$st" | grep -q 'disguise=applied'; ok $? "status says the disguise is appl
 printf 'GenuineIntel\n' > "$T/cpu"; export ZOHARA_WAYDROID_CPUINFO="$T/cpu"; bash "$F" status | grep -q 'translator=libhoudini'; ok $? "Intel gets libhoudini"
 printf 'AuthenticAMD\n' > "$T/cpu"; bash "$F" status | grep -q 'translator=libndk'; ok $? "AMD gets libndk"
 printf 'ARM\n' > "$T/cpu"; bash "$F" status | grep -q 'translator=none'; ok $? "another processor gets none"
+printf "[waydroid]\nmount_overlays = False\n" > "$T/w/waydroid.cfg"; bash "$F" status | grep -q "overlays=off" && bash "$F" status | grep -q "error=Waydroid has its overlays switched off"; ok $? "status warns when Waydroid has its overlays switched off"
+printf "[waydroid]\nmount_overlays = True\n" > "$T/w/waydroid.cfg"; bash "$F" status | grep -q "overlays=on"; ok $? "and says on when they are"
 rm -rf "$T/w/images"; bash "$F" disguise; echo "$?" | grep -q '^0$'; ok $? "no Waydroid image: quietly nothing"
 [ "$fails" = 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }

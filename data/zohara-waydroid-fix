@@ -183,8 +183,12 @@ status() {
         echo "arm_wanted=$(setting arm 0)"
         echo "disguise_wanted=$(setting disguise 1)"
         echo "translator=$(cpu_translator)"
+        # Waydroid switches overlays off for good in waydroid.cfg when an overlay mount fails once (moving the overlay folder
+        # does it); with overlays off it ignores every file this helper writes
+        if grep -qE '^mount_overlays *= *False' "$W/waydroid.cfg" 2>/dev/null; then echo "overlays=off"; else echo "overlays=on"; fi
         [ -f "$STATE/restart-needed" ] && echo "restart=needed"
         [ -s "$LOG" ] && echo "error=$(head -c 300 "$LOG" | tr '\n' ' ')"
+        grep -qE '^mount_overlays *= *False' "$W/waydroid.cfg" 2>/dev/null && echo "error=Waydroid has its overlays switched off (mount_overlays = False in /var/lib/waydroid/waydroid.cfg), so the changes of this helper are not used. Set it to True and restart Android."
     } | tee "$STATE/status"
 }
 

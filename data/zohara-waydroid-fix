@@ -22,11 +22,12 @@ CONF="${ZOHARA_WAYDROID_CONF:-/etc/zohara/waydroid.conf}"
 STATE="${ZOHARA_WAYDROID_STATE:-/var/lib/zohara/waydroid}"
 IMG="${ZOHARA_WAYDROID_IMAGE:-$W/images/system.img}"
 OVER_PROP="$W/overlay/system/build.prop"
-# The vendor partition has its own build.prop with its own copy of the fingerprint. Android compares ALL of them at boot and
-# shows "There's an internal problem with your device. Contact your manufacturer" when they disagree, so the markers must
-# change in both places (found 2026-11-22: changing only the system one produced that message).
+# Every partition has its own build.prop with its own copy of the fingerprint (system, system_ext, product, vendor, odm,
+# vendor_dlkm ...). Android compares them at boot and shows "There's an internal problem with your device. Contact your
+# manufacturer" ("Build fingerprint is not consistent") when they disagree, so the developer markers must go from EVERY one
+# (found 2026-11-22 and 2026-11-24: changing only system, then system and vendor, still left odm, system_ext and vendor_dlkm).
+# The system image's root is laid under $W/overlay, the vendor image's root under $W/overlay/vendor.
 VENDOR_IMG="${ZOHARA_WAYDROID_VENDOR_IMAGE:-$W/images/vendor.img}"
-VENDOR_OVER_PROP="$W/overlay/vendor/build.prop"
 CPUINFO="${ZOHARA_WAYDROID_CPUINFO:-/proc/cpuinfo}"
 
 # waydroid_script (GPL-3.0, casualsnek): the commit that was read and tested, never "latest". Bump together with a test run.
@@ -37,6 +38,7 @@ PIP_PINS="tqdm==4.70.1 requests==2.34.2 InquirerPy==0.3.4"
 
 mkdir -p "$STATE" 2>/dev/null || true
 LOG="$STATE/last-error"
+MANAGED="$STATE/managed-files"
 
 setting() { # key default
     local v
@@ -54,71 +56,83 @@ image_id() { stat -c '%s-%Y' "$IMG" "$VENDOR_IMG" 2>/dev/null | tr '\n' '-'; }
 to_release() { sed -e 's/test-keys/release-keys/g' -e 's/userdebug/user/g'; }
 to_dev() { sed -e 's/release-keys/test-keys/g' -e 's#:user/test-keys#:userdebug/test-keys#g' -e 's#^\(ro\.[a-z_.]*build\.type=\)user$#\1userdebug#' -e 's#-user \([0-9]\)#-userdebug \1#'; }
 
-# A build.prop as an image ships it: mounted read-only, so this works while Waydroid is stopped. `$1` is the image, `$2` the
-# name of a test variable that may hold a file to use instead.
-image_build_prop() {
-    local img="$1" testvar="$2" mnt rc=1
-    if [ -n "${!testvar:-}" ]; then cat "${!testvar}"; return; fi
+# Calls `$3` (a function) with the root folder of an image, mounted read-only for the call (so this works while Waydroid is
+# stopped). Tests give a plain folder (`$2`) instead of an image.
+with_image_root() {
+    local img="$1" testroot="$2" cb="$3" mnt rc=0
+    if [ -n "$testroot" ]; then "$cb" "$testroot"; return; fi
     [ -f "$img" ] || return 1
     mnt=$(mktemp -d) || return 1
-    if mount -o ro,loop "$img" "$mnt" 2>/dev/null; then
-        for p in "$mnt/system/build.prop" "$mnt/build.prop"; do
-            if [ -f "$p" ]; then cat "$p"; rc=0; break; fi
-        done
-        umount "$mnt" 2>/dev/null
-    fi
+    if mount -o ro,loop "$img" "$mnt" 2>/dev/null; then "$cb" "$mnt"; rc=$?; umount "$mnt" 2>/dev/null; else rc=1; fi
     rmdir "$mnt" 2>/dev/null
     return $rc
 }
 
-# One partition: the overlay file (`$2`) holds the release markers. Its source is the overlay file itself when it exists
-# (the ARM translator edits it too), otherwise the image's own build.prop.
-disguise_one() {
-    local img="$1" over="$2" testvar="$3" required="$4" tmp
-    tmp=$(mktemp) || return 0
-    if [ -f "$over" ]; then cat "$over" > "$tmp"; else image_build_prop "$img" "$testvar" > "$tmp"; fi
-    if [ ! -s "$tmp" ]; then
-        [ "$required" = 1 ] && fail "could not read the Android build.prop ($img)"
-        rm -f "$tmp"; return 0
-    fi
-    to_release < "$tmp" > "$tmp.new"
-    if [ "$required" = 1 ] && ! grep -q '^ro.build.tags=release-keys' "$tmp.new"; then
-        fail "ro.build.tags not found in build.prop; nothing changed"; rm -f "$tmp" "$tmp.new"; return 0
-    fi
-    if ! cmp -s "$tmp.new" "$over" 2>/dev/null; then
-        install -D -m 644 "$tmp.new" "$over" && : > "$STATE/restart-needed"
-    fi
-    rm -f "$tmp" "$tmp.new"
+# For every build.prop in the image root that still carries a developer marker: the release version goes into the overlay,
+# at the same path (under $OVERLAY_BASE). The overlay file is the source when it already exists (the ARM translator edits it too).
+write_from_root() {
+    local root="$1" f rel out src tmp
+    tmp=$(mktemp) || return 1
+    while IFS= read -r f; do
+        rel="${f#"$root"/}"
+        out="$OVERLAY_BASE/$rel"
+        # an overlay file that is already there (written by an earlier version, or edited by the ARM translator) is the source
+        # and is remembered as ours, even when it has no marker left
+        if [ -f "$out" ]; then src="$out"; echo "$out" >> "$MANAGED"; else src="$f"; fi
+        grep -qE 'test-keys|userdebug' "$src" 2>/dev/null || continue
+        to_release < "$src" > "$tmp"
+        install -D -m 644 "$tmp" "$out" && echo "$out" >> "$MANAGED"
+    done < <(find "$root" -maxdepth 4 -name build.prop -type f 2>/dev/null | sort)
+    rm -f "$tmp"
 }
 
 disguise() {
     have_image || return 0
     if [ "$(setting disguise 1)" != 1 ]; then undo_disguise; return 0; fi
-    local now old
+    local now old f tmp
     now=$(image_id)
     old=$(cat "$STATE/image-id" 2>/dev/null)
-    # a new image (a Waydroid update): the old overlay files belong to the old images, so start again from the new ones
-    if [ -n "$old" ] && [ "$old" != "$now" ]; then rm -f "$OVER_PROP" "$VENDOR_OVER_PROP" "$STATE/arm-done"; fi
-    disguise_one "$IMG" "$OVER_PROP" ZOHARA_WAYDROID_BUILD_PROP_SRC 1
-    disguise_one "$VENDOR_IMG" "$VENDOR_OVER_PROP" ZOHARA_WAYDROID_VENDOR_BUILD_PROP_SRC 0
+    # a new image (a Waydroid update), or the first run: the old overlay files belong to the old images, so start again
+    if [ ! -s "$MANAGED" ] || [ "$old" != "$now" ]; then
+        if [ -s "$MANAGED" ]; then while IFS= read -r f; do rm -f "$f"; done < "$MANAGED"; fi
+        : > "$MANAGED"; rm -f "$STATE/arm-done"
+        OVERLAY_BASE="$W/overlay"          with_image_root "$IMG" "${ZOHARA_WAYDROID_SYSTEM_ROOT:-}" write_from_root
+        OVERLAY_BASE="$W/overlay/vendor"   with_image_root "$VENDOR_IMG" "${ZOHARA_WAYDROID_VENDOR_ROOT:-}" write_from_root
+        sort -u "$MANAGED" -o "$MANAGED"
+        if ! grep -q '^ro.build.tags=release-keys' "$OVER_PROP" 2>/dev/null; then
+            fail "could not write the release markers (ro.build.tags not found in the system build.prop)"; return 0
+        fi
+        : > "$STATE/restart-needed"
+    else
+        # same images: only make sure the markers are still in place (the ARM translator may have rewritten a file)
+        tmp=$(mktemp) || return 0
+        while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            to_release < "$f" > "$tmp"
+            cmp -s "$tmp" "$f" || { install -m 644 "$tmp" "$f"; : > "$STATE/restart-needed"; }
+        done < "$MANAGED"
+        rm -f "$tmp"
+    fi
     echo "$now" > "$STATE/image-id"
 }
 
 undo_disguise() {
     local f tmp
-    for f in "$OVER_PROP" "$VENDOR_OVER_PROP"; do
+    [ -s "$MANAGED" ] || return 0
+    tmp=$(mktemp) || return 0
+    while IFS= read -r f; do
         [ -f "$f" ] || continue
-        tmp=$(mktemp) || continue
         to_dev < "$f" > "$tmp"
-        # nothing else in the overlay file (ARM lines) was added by the disguise, so only the markers move back
-        install -D -m 644 "$tmp" "$f" && : > "$STATE/restart-needed"
-        rm -f "$tmp"
-    done
+        # nothing else in the overlay files (ARM lines) was added by the disguise, so only the markers move back
+        install -m 644 "$tmp" "$f" && : > "$STATE/restart-needed"
+    done < "$MANAGED"
+    rm -f "$tmp"
 }
 
 arm_present() {
-    [ -f "$W/overlay/system/lib/libhoudini.so" ] || [ -f "$W/overlay/system/lib64/libhoudini.so" ] || \
-    [ -f "$W/overlay/system/lib/libndk_translation.so" ] || [ -f "$W/overlay/system/lib64/libndk_translation.so" ]
+    { [ -f "$W/overlay/system/lib/libhoudini.so" ] || [ -f "$W/overlay/system/lib64/libhoudini.so" ] || \
+      [ -f "$W/overlay/system/lib/libndk_translation.so" ] || [ -f "$W/overlay/system/lib64/libndk_translation.so" ]; } && \
+    grep -qE '^ro\.dalvik\.vm\.native\.bridge=(libhoudini|libndk_translation)\.so' "$OVER_PROP" 2>/dev/null
 }
 
 cpu_translator() {

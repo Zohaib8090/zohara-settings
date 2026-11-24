@@ -52,8 +52,13 @@ have_image() { [ -f "$IMG" ]; }
 
 image_id() { stat -c '%s-%Y' "$IMG" "$VENDOR_IMG" 2>/dev/null | tr '\n' '-'; }
 
-# The same text with the developer-build markers turned into a release build, and back.
-to_release() { sed -e 's/test-keys/release-keys/g' -e 's/userdebug/user/g'; }
+# The same text with the developer-build tag turned into a release tag, and back. ONLY the tag changes ("test-keys" ->
+# "release-keys"): apps that refuse "rooted devices" read the tags. The build TYPE stays "userdebug" on purpose: with
+# "user" Android's own interface check (libvintf) becomes strict, Waydroid's device manifest fails it, and Android shows
+# "There's an internal problem with your device. Contact your manufacturer" at every start (found 2026-11-24 by moving the
+# overlay aside: the untouched Waydroid logs no "Vendor interface is incompatible"). `to_dev` also undoes what the first version
+# of this helper wrote (it changed the type to "user" too).
+to_release() { sed -e 's#:user/release-keys#:userdebug/release-keys#g' -e 's#^\(ro\.[a-z_.]*build\.type=\)user$#\1userdebug#' -e 's#-user \([0-9]\)#-userdebug \1#' -e 's/test-keys/release-keys/g'; }
 to_dev() { sed -e 's/release-keys/test-keys/g' -e 's#:user/test-keys#:userdebug/test-keys#g' -e 's#^\(ro\.[a-z_.]*build\.type=\)user$#\1userdebug#' -e 's#-user \([0-9]\)#-userdebug \1#'; }
 
 # Calls `$3` (a function) with the root folder of an image, mounted read-only for the call (so this works while Waydroid is
@@ -79,7 +84,7 @@ write_from_root() {
         # an overlay file that is already there (written by an earlier version, or edited by the ARM translator) is the source
         # and is remembered as ours, even when it has no marker left
         if [ -f "$out" ]; then src="$out"; echo "$out" >> "$MANAGED"; else src="$f"; fi
-        grep -qE 'test-keys|userdebug' "$src" 2>/dev/null || continue
+        grep -qE 'test-keys|:user/release-keys|^ro\.[a-z_.]*build\.type=user$' "$src" 2>/dev/null || continue
         to_release < "$src" > "$tmp"
         install -D -m 644 "$tmp" "$out" && echo "$out" >> "$MANAGED"
     done < <(find "$root" -maxdepth 4 -name build.prop -type f 2>/dev/null | sort)
@@ -93,7 +98,9 @@ disguise() {
     now=$(image_id)
     old=$(cat "$STATE/image-id" 2>/dev/null)
     # a new image (a Waydroid update), or the first run: the old overlay files belong to the old images, so start again
-    if [ ! -s "$MANAGED" ] || [ "$old" != "$now" ]; then
+    local missing=0
+    if [ -s "$MANAGED" ]; then while IFS= read -r f; do [ -f "$f" ] || missing=1; done < "$MANAGED"; fi
+    if [ ! -s "$MANAGED" ] || [ "$old" != "$now" ] || [ "$missing" = 1 ]; then
         if [ -s "$MANAGED" ]; then while IFS= read -r f; do rm -f "$f"; done < "$MANAGED"; fi
         : > "$MANAGED"; rm -f "$STATE/arm-done"
         OVERLAY_BASE="$W/overlay"          with_image_root "$IMG" "${ZOHARA_WAYDROID_SYSTEM_ROOT:-}" write_from_root

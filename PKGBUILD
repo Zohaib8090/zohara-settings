@@ -143,6 +143,12 @@ package() {
   install -Dm644 "$startdir/data/zohara-waydroid-arm.service" "$pkgdir/usr/lib/systemd/system/zohara-waydroid-arm.service"
   install -Dm644 "$startdir/docs/WAYDROID-ARM-AND-ROOT.md" "$pkgdir/usr/share/doc/zohara-settings/WAYDROID-ARM-AND-ROOT.md"
 
+  # Opening an Android app from the menu in one step: the launcher and the user path unit that points Waydroid's menu entries at it.
+  install -Dm755 "$startdir/data/zohara-android-launch" "$pkgdir/usr/lib/zohara/zohara-android-launch"
+  install -Dm755 "$startdir/data/zohara-android-menu" "$pkgdir/usr/lib/zohara/zohara-android-menu"
+  install -Dm644 "$startdir/data/zohara-android-menu.path" "$pkgdir/usr/lib/systemd/user/zohara-android-menu.path"
+  install -Dm644 "$startdir/data/zohara-android-menu.service" "$pkgdir/usr/lib/systemd/user/zohara-android-menu.service"
+
   # The login lock that gets stricter when it is abused (docs/LOGIN-LOCK.md): the helper PAM calls, the installer that puts it into
   # system-auth, and the pacman hook that puts it back after each update of pambase (which owns that file).
   install -Dm755 "$startdir/data/zohara-faillock-policy" "$pkgdir/usr/lib/zohara/zohara-faillock-policy"

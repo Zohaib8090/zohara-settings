@@ -1,0 +1,10 @@
+[Unit]
+Description=Zohara: point the menu entries of Android apps at the launcher
+
+[Path]
+PathExistsGlob=%h/.local/share/applications/waydroid.*.desktop
+PathChanged=%h/.local/share/applications
+Unit=zohara-android-menu.service
+
+[Install]
+WantedBy=default.target

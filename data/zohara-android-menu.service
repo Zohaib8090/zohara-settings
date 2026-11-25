@@ -1,0 +1,6 @@
+[Unit]
+Description=Zohara: point the menu entries of Android apps at the launcher
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/zohara/zohara-android-menu

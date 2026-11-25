@@ -1,0 +1,15 @@
+#!/bin/bash
+# Points the menu entries Waydroid makes for Android apps (~/.local/share/applications/waydroid.<package>.desktop) at
+# zohara-android-launch. Waydroid rewrites those files whenever apps change, so a user path unit runs this each time the folder
+# changes. Only entries whose Exec line is exactly `waydroid app launch <package>` are touched.
+set -u
+DIR="${ZOHARA_APPS_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/applications}"
+LAUNCH="${ZOHARA_ANDROID_LAUNCH:-/usr/lib/zohara/zohara-android-launch}"
+[ -d "$DIR" ] || exit 0
+for f in "$DIR"/waydroid.*.desktop; do
+    [ -f "$f" ] || continue
+    grep -qE '^Exec=waydroid app launch [A-Za-z][A-Za-z0-9_.]*$' "$f" || continue
+    tmp=$(mktemp "$f.XXXXXX") || continue
+    sed -E "s#^Exec=waydroid app launch ([A-Za-z][A-Za-z0-9_.]*)\$#Exec=$LAUNCH \\1#" "$f" > "$tmp" && chmod --reference="$f" "$tmp" && mv -f "$tmp" "$f" || rm -f "$tmp"
+done
+exit 0

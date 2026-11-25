@@ -1,0 +1,46 @@
+#!/bin/bash
+# Opens an Android app from the Zohara menu in one step, whatever state Android is in.
+#   zohara-android-launch <android.package.name>
+#   zohara-android-launch --status        prints what it would do (mode, whether Android runs)
+#
+# Why: `waydroid app launch` does nothing when Android is not running yet, and on some computers (found 2026-11-25 on an Intel +
+# NVIDIA laptop) Waydroid's per-app window mode never gets its windows to the desktop. Waydroid's full Android window works
+# everywhere, so by default this starts Android if needed, waits until it answers, shows the full window and starts the app in it.
+# Mode (~/.config/zohara/android.conf, `mode=`): "window" (default: one Android window, the app in front) or "windows" (each app
+# in its own desktop window, for computers where Waydroid's window mode works).
+# Tests: ZOHARA_ANDROID_CONF, ZOHARA_WAYDROID (the waydroid program), ZOHARA_ANDROID_WAIT (seconds to wait for Android).
+set -u
+WD="${ZOHARA_WAYDROID:-waydroid}"
+CONF="${ZOHARA_ANDROID_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/zohara/android.conf}"
+WAIT="${ZOHARA_ANDROID_WAIT:-90}"
+
+conf() { grep -E "^$1=" "$CONF" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' \r'; }
+mode() { case "$(conf mode)" in windows) echo windows ;; *) echo window ;; esac; }
+running() { "$WD" status 2>/dev/null | grep -qE '^Session:[[:space:]]+RUNNING'; }
+# Android answers requests only when it is fully up: listing apps is the cheapest question
+ready() { "$WD" app list >/dev/null 2>&1; }
+say() { command -v notify-send >/dev/null 2>&1 && notify-send -a "Zohara" -i phone "$1" "${2:-}" 2>/dev/null; return 0; }
+
+if [ "${1:-}" = "--status" ]; then
+    echo "mode=$(mode)"; running && echo "android=running" || echo "android=stopped"; exit 0
+fi
+
+PKG="${1:-}"
+[[ "$PKG" =~ ^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$ ]] || { echo "usage: $0 <android.package.name>" >&2; exit 2; }
+
+if ! running; then
+    say "Starting Android…" "$PKG opens when it is ready"
+    ( setsid nohup "$WD" session start >/dev/null 2>&1 & )
+fi
+t=0
+until running && ready; do
+    t=$((t + 2)); [ "$t" -gt "$WAIT" ] && { say "Android did not start" "Try again, or open Waydroid from the menu."; exit 1; }
+    sleep 2
+done
+
+if [ "$(mode)" = window ]; then
+    # the one Android window (a second call only brings it to the front), then the app inside it
+    ( setsid nohup "$WD" show-full-ui >/dev/null 2>&1 & )
+    sleep 2
+fi
+exec "$WD" app launch "$PKG"

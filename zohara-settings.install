@@ -3,6 +3,8 @@
 post_install() {
     systemctl --global enable zohara-settings-update-check.timer >/dev/null 2>&1 || true
     systemctl --global enable zohara-settings-timezone.timer >/dev/null 2>&1 || true
+    # Android apps: their menu entries open them in one step (zohara-android-launch)
+    systemctl --global enable zohara-android-menu.path >/dev/null 2>&1 || true
     # Android apps (Waydroid): the build-marker fix runs before each container start; ARM support only when turned on in Settings
     /usr/lib/zohara/zohara-faillock-install apply >/dev/null 2>&1 || true
     systemctl enable zohara-waydroid-fix.service zohara-waydroid-arm.service >/dev/null 2>&1 || true

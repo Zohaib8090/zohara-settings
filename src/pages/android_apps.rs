@@ -45,6 +45,35 @@ pub fn parse_status(text: &str) -> Status {
     s
 }
 
+/// How the menu opens Android apps (`~/.config/zohara/android.conf`, `mode=`): one Android window with the app in front (the
+/// default, works everywhere) or each app in its own desktop window (only where Waydroid's window mode works).
+pub fn mode_text(windows: bool) -> String {
+    format!("mode={}\n", if windows { "windows" } else { "window" })
+}
+
+pub fn mode_is_windows(conf: &str) -> bool {
+    conf.lines().rev().find_map(|l| l.trim().strip_prefix("mode=")).map(|v| v.trim() == "windows").unwrap_or(false)
+}
+
+/// The shapes of the Android screen in the single Android window: (label, width, height); automatic is 0x0 (follows the window).
+pub const SHAPES: [(&str, u32, u32); 4] = [("Automatic (follows the window)", 0, 0), ("Phone", 450, 960), ("Tablet", 1100, 700), ("Large", 1600, 960)];
+
+/// The `waydroid prop set` arguments for a shape: the two properties and their values ("" clears one).
+pub fn shape_props(index: usize) -> [(&'static str, String); 2] {
+    let (_, w, h) = SHAPES.get(index).copied().unwrap_or(SHAPES[0]);
+    let v = |n: u32| if n == 0 { String::new() } else { n.to_string() };
+    [("persist.waydroid.width", v(w)), ("persist.waydroid.height", v(h))]
+}
+
+fn android_conf_path() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))).unwrap_or_default();
+    base.join("zohara/android.conf")
+}
+
+fn prop_set(name: &str, value: &str) {
+    let _ = Command::new("waydroid").args(["prop", "set", name, value]).stderr(std::process::Stdio::null()).status();
+}
+
 /// A value from /etc/zohara/waydroid.conf (`key=value`), or `default`.
 pub fn conf_value(text: &str, key: &str, default: bool) -> bool {
     text.lines().rev().find_map(|l| l.trim().strip_prefix(&format!("{key}="))).map(|v| v.trim() == "1").unwrap_or(default)
@@ -102,6 +131,39 @@ pub fn open(parent: &gtk4::Widget) {
     let group = adw::PreferencesGroup::new();
     group.set_title("Android apps (Waydroid)");
     group.set_description(Some("Settings for apps that run in Zohara's Android container. They apply the next time Android starts"));
+
+    // Where and how Android apps open
+    let windows = adw::SwitchRow::new();
+    windows.set_title("Each Android app in its own window");
+    windows.set_subtitle("Off (recommended): the menu opens one Android window with the app in front. On: every app gets a desktop window of its own. It only works where Waydroid's window mode works on your graphics, and it applies the next time Android starts");
+    let shape = adw::ComboRow::new();
+    shape.set_title("Android screen shape");
+    shape.set_subtitle("The size Android thinks its screen is: Phone makes apps look like on a phone. Applies the next time Android starts");
+    shape.set_model(Some(&gtk4::StringList::new(&SHAPES.map(|s| s.0))));
+    group.add(&windows);
+    group.add(&shape);
+    {
+        let conf = android_conf_path();
+        let now = mode_is_windows(&std::fs::read_to_string(&conf).unwrap_or_default());
+        windows.set_active(now);
+        windows.connect_active_notify(move |r| {
+            let on = r.is_active();
+            if let Some(dir) = conf.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&conf, mode_text(on));
+            let v = if on { "true" } else { "false" };
+            std::thread::spawn(move || prop_set("persist.waydroid.multi_windows", v));
+        });
+        shape.connect_selected_notify(|r| {
+            let props = shape_props(r.selected() as usize);
+            std::thread::spawn(move || {
+                for (n, v) in props {
+                    prop_set(n, &v);
+                }
+            });
+        });
+    }
 
     let disguise = adw::SwitchRow::new();
     disguise.set_title("Look like a normal phone");
@@ -189,6 +251,19 @@ pub fn open(parent: &gtk4::Widget) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_mode_and_screen_shape_are_stored_as_the_launcher_reads_them() {
+        assert_eq!(mode_text(true), "mode=windows\n");
+        assert_eq!(mode_text(false), "mode=window\n");
+        assert!(mode_is_windows("mode=windows\n") && !mode_is_windows("mode=window\n") && !mode_is_windows(""));
+        assert!(mode_is_windows("mode=window\nmode=windows\n"), "the last line wins");
+        let phone = shape_props(1);
+        assert_eq!((phone[0].1.as_str(), phone[1].1.as_str()), ("450", "960"));
+        let auto = shape_props(0);
+        assert!(auto[0].1.is_empty() && auto[1].1.is_empty(), "automatic clears both");
+        assert_eq!(shape_props(99)[0].1, "", "an unknown shape means automatic");
+    }
 
     #[test]
     fn the_status_file_is_read() {

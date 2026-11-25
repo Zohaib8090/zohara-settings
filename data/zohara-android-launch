@@ -12,7 +12,7 @@
 set -u
 WD="${ZOHARA_WAYDROID:-waydroid}"
 CONF="${ZOHARA_ANDROID_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/zohara/android.conf}"
-WAIT="${ZOHARA_ANDROID_WAIT:-90}"
+WAIT="${ZOHARA_ANDROID_WAIT:-240}"   # the first start after an image change can take minutes (Android optimises its apps)
 
 conf() { grep -E "^$1=" "$CONF" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' \r'; }
 mode() { case "$(conf mode)" in windows) echo windows ;; *) echo window ;; esac; }
@@ -29,7 +29,7 @@ PKG="${1:-}"
 [[ "$PKG" =~ ^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$ ]] || { echo "usage: $0 <android.package.name>" >&2; exit 2; }
 
 if ! running; then
-    say "Starting Android…" "$PKG opens when it is ready"
+    say "Starting Android…" "$PKG opens when it is ready. The first start after an update can take a few minutes."
     ( setsid nohup "$WD" session start >/dev/null 2>&1 & )
 fi
 t=0

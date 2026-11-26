@@ -43,8 +43,11 @@ jobs:
           [ -n "$D" ] || { echo "::error::could not read approved_date from zohara-pipeline"; exit 1; }
           echo "Building against Arch as of $D"
           echo "Server = https://archive.archlinux.org/repos/$D/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist
-          pacman -Syuu --noconfirm
-          pacman -S --noconfirm --needed \
+          # archive.archlinux.org is often slow ("Operation too slow", 2026-11-26: two builds in a row failed on it): try again,
+          # pacman keeps the files it already got, so each round goes further
+          retry() { n=0; until "$@"; do n=$((n + 1)); [ "$n" -ge 5 ] && return 1; echo "::warning::download failed, trying again ($n/5)"; sleep 20; done; }
+          retry pacman -Syuu --noconfirm
+          retry pacman -S --noconfirm --needed \
             base-devel git rust gtk4 libadwaita dbus pkgconf sudo
           # makepkg refuses to run as root, so create a build user. The
           # build artifacts (target/release/zohara-settings) live in the

@@ -44,3 +44,15 @@ With the overlay moved aside the untouched Waydroid logged no `Vendor interface 
 2. **Looks rooted**: remove the developer-build markers (build tags/type/fingerprint/model) only through props Waydroid loads at start; whether ro.* values from waydroid_base.prop win over the image's own build.prop must be tested first (Android sets ro.* once). If it does not work that way the fallback is what waydroid_script's Magisk Delta does (resetprop), which adds real root-like tooling and is NOT acceptable as a default. Never install Magisk to hide root.
 3. A Settings page "Android apps (Waydroid)": ARM support (switch + status), "Look like a normal phone" (switch + undo), what each one changes, a note that banking apps that use Play Integrity will still refuse.
 4. Test in the lab VM first (owner's rule), with a real ARM-only APK and two root-checker apps, before this reaches alpha.
+
+## 2026-11-26: tested in the VM (not on the laptop)
+
+Fresh Waydroid in the test VM (system 20260927 GAPPS, vendor 20261022, the newest pair), the real package from the alpha channel:
+
+* The disguise works on the newest pair: `ro.build.tags=release-keys`, type `userdebug`, 0 "Vendor interface is incompatible" messages.
+* `zohara-android-launch` from a stopped Android: started Android, showed the Android window and opened the app, with no manual step.
+* The menu rewriter works once its user path unit runs. The unit is enabled by the package, so it starts at the **next login**; right after an update, log out and in once (or `systemctl --user start zohara-android-menu.path`).
+* Waydroid's own updater (`org.lineageos.waydroidupdater`) was still there on a fresh install: nothing in the repo hid it (it had only been disabled by hand on one laptop). The helper now lays an overlay **whiteout** (a character device 0:0) over `system/system_ext/priv-app/WaydroidUpdater`; Android then reports no such package. It is removed again when the disguise is switched off; `status` prints `updater=hidden|shown`.
+* The screen shape and window mode chosen in Settings were lost when Android was stopped (`waydroid prop set` only works while it runs). They are now written to `~/.config/zohara/android.conf` (`mode=`, `shape=450x960`) and the launcher applies them at every start. Checked: stopped Android, saved `shape=450x960`, ran the launcher, `persist.waydroid.width/height` = 450/960 and the app opened in a portrait window. (On an 800 px high screen the 960 px Phone shape is cut off at the bottom: a later refinement is to size the shapes from the screen.)
+* A locked screen freezes the container (`Container: FROZEN`): a launch while the screen is locked shows no window; run it again after unlocking.
+* Not reproducible in a VM: the Intel + NVIDIA laptop's window problem (the VM has no GPU).

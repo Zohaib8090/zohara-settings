@@ -28,3 +28,10 @@ A correct password puts everything back to round 1, and so do 24 hours without a
 - ssh failures count like any other; a remote guesser can push the owner's account into a stricter round (capped at one hour).
 - A correct password given during a lock is still refused (stock behaviour) but resets the rounds.
 - Not tested on a real desktop login (SDDM) or the administrator pop-up; a Settings page for the numbers is not built.
+
+## 2026-11-26: tested with real PAM in the VM (ssh as a throwaway user)
+
+* 5 wrong passwords lock the account; the right password is then refused until the lock ends.
+* After the 5 minutes: the next round is 4 tries / 10 minutes (`deny = 4`, `unlock_time = 600`), checked in `faillock.conf`.
+* **Bug found and fixed**: PAM runs the `success` step even when the right password is typed *during* a lock (pam_faillock refuses the login but the stack still passes through `authsucc`). That reset the escalation to round 1. The helper now ignores a `success` while the account is locked (a real success has no failures left in the tally, so it still resets).
+* `su` does not use `system-auth` at all (it only calls `pam_unix`), so it is not locked by this; test with `ssh`, `sudo`, `login` or the sign-in screen.

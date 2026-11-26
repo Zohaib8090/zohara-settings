@@ -72,5 +72,17 @@ printf 'AuthenticAMD\n' > "$T/cpu"; bash "$F" status | grep -q 'translator=libnd
 printf 'ARM\n' > "$T/cpu"; bash "$F" status | grep -q 'translator=none'; ok $? "another processor gets none"
 printf "[waydroid]\nmount_overlays = False\n" > "$T/w/waydroid.cfg"; bash "$F" status | grep -q "overlays=off" && bash "$F" status | grep -q "error=Waydroid has its overlays switched off"; ok $? "status warns when Waydroid has its overlays switched off"
 printf "[waydroid]\nmount_overlays = True\n" > "$T/w/waydroid.cfg"; bash "$F" status | grep -q "overlays=on"; ok $? "and says on when they are"
+# Waydroid's own updater is hidden with an overlay whiteout (character device 0:0); mknod needs root, so this runs as root only
+if [ "$(id -u)" = 0 ]; then
+    rm -f "$T/waydroid.conf"; bash "$F" disguise
+    [ -c "$O/system/system_ext/priv-app/WaydroidUpdater" ]; ok $? "Waydroid's own updater is hidden by a whiteout"
+    bash "$F" status | grep -q 'updater=hidden'; ok $? "status says the updater is hidden"
+    bash "$F" disguise; [ -c "$O/system/system_ext/priv-app/WaydroidUpdater" ]; ok $? "running it again keeps it hidden"
+    printf 'disguise=0\n' > "$T/waydroid.conf"; bash "$F" disguise
+    [ ! -e "$O/system/system_ext/priv-app/WaydroidUpdater" ] && bash "$F" status | grep -q 'updater=shown'; ok $? "switching the disguise off shows the updater again"
+    rm -f "$T/waydroid.conf"
+else
+    echo "skip updater whiteout checks (need root for mknod)"
+fi
 rm -rf "$T/w/images"; bash "$F" disguise; echo "$?" | grep -q '^0$'; ok $? "no Waydroid image: quietly nothing"
 [ "$fails" = 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }

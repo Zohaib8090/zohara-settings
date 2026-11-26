@@ -91,6 +91,25 @@ write_from_root() {
     rm -f "$tmp"
 }
 
+# Waydroid's own updater app (org.lineageos.waydroidupdater) pops up "update available" notices that fetch images behind
+# Zohara Update's back. Hide it with an overlay whiteout (a character device 0:0 laid over the app folder), which the
+# overlay filesystem treats as "this file is deleted"; the image is not touched. Found 2026-11-26 in the VM: Android then
+# reports no such package. Needs root (mknod); without root nothing happens.
+UPDATER_DIR="$W/overlay/system/system_ext/priv-app/WaydroidUpdater"
+hide_updater() {
+    [ -d "$W/overlay/system" ] || return 0
+    [ -c "$UPDATER_DIR" ] && return 0
+    rm -rf "$UPDATER_DIR" 2>/dev/null
+    mkdir -p "$(dirname "$UPDATER_DIR")" 2>/dev/null || return 0
+    mknod "$UPDATER_DIR" c 0 0 2>/dev/null && : > "$STATE/restart-needed"
+    return 0
+}
+show_updater() {
+    [ -c "$UPDATER_DIR" ] || return 0
+    rm -f "$UPDATER_DIR" && : > "$STATE/restart-needed"
+    return 0
+}
+
 disguise() {
     have_image || return 0
     if [ "$(setting disguise 1)" != 1 ]; then undo_disguise; return 0; fi
@@ -120,11 +139,13 @@ disguise() {
         done < "$MANAGED"
         rm -f "$tmp"
     fi
+    hide_updater
     echo "$now" > "$STATE/image-id"
 }
 
 undo_disguise() {
     local f tmp
+    show_updater
     [ -s "$MANAGED" ] || return 0
     tmp=$(mktemp) || return 0
     while IFS= read -r f; do
@@ -183,6 +204,7 @@ status() {
         echo "arm_wanted=$(setting arm 0)"
         echo "disguise_wanted=$(setting disguise 1)"
         echo "translator=$(cpu_translator)"
+        [ -c "$UPDATER_DIR" ] && echo "updater=hidden" || echo "updater=shown"
         # Waydroid switches overlays off for good in waydroid.cfg when an overlay mount fails once (moving the overlay folder
         # does it); with overlays off it ignores every file this helper writes
         if grep -qE '^mount_overlays *= *False' "$W/waydroid.cfg" 2>/dev/null; then echo "overlays=off"; else echo "overlays=on"; fi

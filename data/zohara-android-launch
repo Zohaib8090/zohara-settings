@@ -6,6 +6,7 @@
 # Why: `waydroid app launch` does nothing when Android is not running yet, and on some computers (found 2026-11-25 on an Intel +
 # NVIDIA laptop) Waydroid's per-app window mode never gets its windows to the desktop. Waydroid's full Android window works
 # everywhere, so by default this starts Android if needed, waits until it answers, shows the full window and starts the app in it.
+# Screen shape (`shape=450x960`, none = automatic) is applied to Android each time.
 # Mode (~/.config/zohara/android.conf, `mode=`): "window" (default: one Android window, the app in front) or "windows" (each app
 # in its own desktop window, for computers where Waydroid's window mode works).
 # Tests: ZOHARA_ANDROID_CONF, ZOHARA_WAYDROID (the waydroid program), ZOHARA_ANDROID_WAIT (seconds to wait for Android).
@@ -37,6 +38,14 @@ until running && ready; do
     t=$((t + 2)); [ "$t" -gt "$WAIT" ] && { say "Android did not start" "Try again, or open Waydroid from the menu."; exit 1; }
     sleep 2
 done
+
+# The screen shape and window mode chosen in Settings. They are kept in android.conf and applied here, every time, because
+# `waydroid prop set` only works while Android runs and it usually was stopped when the person chose (found 2026-11-26).
+setprop() { [ "$("$WD" prop get "$1" 2>/dev/null)" = "$2" ] || "$WD" prop set "$1" "$2" >/dev/null 2>&1; }
+W=""; H=""
+if [[ "$(conf shape)" =~ ^([0-9]{3,4})x([0-9]{3,4})$ ]]; then W="${BASH_REMATCH[1]}"; H="${BASH_REMATCH[2]}"; fi
+setprop persist.waydroid.width "$W"; setprop persist.waydroid.height "$H"
+[ "$(mode)" = windows ] && setprop persist.waydroid.multi_windows true || setprop persist.waydroid.multi_windows false
 
 if [ "$(mode)" = window ]; then
     # the one Android window (a second call only brings it to the front), then the app inside it

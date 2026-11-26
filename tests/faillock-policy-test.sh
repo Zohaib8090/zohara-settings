@@ -35,6 +35,12 @@ NOW=$((NOW+90000)); FAKE_COUNT=0 FAKE_AGE=0 run; check "$(conf)" "deny=5 unlock_
 # a success puts it back at once
 NOW=$((NOW+10)); FAKE_COUNT=5 FAKE_AGE=1 run; NOW=$((NOW+400)); FAKE_COUNT=5 FAKE_AGE=410 run; check "$(state_tier)" "1" "second round reached"
 run success; check "$(state_tier)" "0" "a correct password resets the rounds"; check "$(conf)" "deny=5 unlock_time=300 " "and the numbers"
+# the right password typed WHILE locked is refused by pam_faillock, but the success step still runs: it must not reset the rounds
+NOW=$((NOW+10)); FAKE_COUNT=5 FAKE_AGE=1 run; NOW=$((NOW+400)); FAKE_COUNT=0 FAKE_AGE=0 run; check "$(state_tier)" "1" "round 2 reached again"
+NOW=$((NOW+5)); FAKE_COUNT=4 FAKE_AGE=1 run                                   # locked in round 2 (4 tries)
+FAKE_COUNT=4 FAKE_AGE=1 run success; check "$(state_tier)" "1" "the right password during a lock does not reset the rounds"; check "$(conf)" "deny=4 unlock_time=600 " "nor the numbers"
+NOW=$((NOW+700)); FAKE_COUNT=0 FAKE_AGE=0 run; check "$(state_tier)" "2" "when that lock ends the next round is stricter"
+FAKE_COUNT=0 run success; check "$(state_tier)" "0" "a real success (no failures left) still resets"
 # settings
 printf 'tries=7\nminutes=3\n' > "$T/s"; export ZOHARA_FAILLOCK_SETTINGS="$T/s"; rm -f "$T/state/tester"
 NOW=$((NOW+10)); FAKE_COUNT=0 run; check "$(conf)" "deny=7 unlock_time=180 " "the first round follows the settings"

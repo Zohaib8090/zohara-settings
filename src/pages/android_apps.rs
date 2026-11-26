@@ -51,6 +51,36 @@ pub fn mode_text(windows: bool) -> String {
     format!("mode={}\n", if windows { "windows" } else { "window" })
 }
 
+/// `text` (the lines of android.conf) with `key` set to `value`, or removed when `value` is None; the other lines stay.
+pub fn conf_set(text: &str, key: &str, value: Option<&str>) -> String {
+    let prefix = format!("{key}=");
+    let mut out: String = text.lines().filter(|l| !l.trim().starts_with(&prefix)).map(|l| format!("{l}\n")).collect();
+    if let Some(v) = value {
+        out.push_str(&format!("{key}={v}\n"));
+    }
+    out
+}
+
+/// The `shape=` value of android.conf for a shape: "450x960", or None for automatic.
+pub fn shape_conf_value(index: usize) -> Option<String> {
+    let (_, w, h) = SHAPES.get(index).copied().unwrap_or(SHAPES[0]);
+    (w > 0 && h > 0).then(|| format!("{w}x{h}"))
+}
+
+/// Writes one key of android.conf, keeping the others (the window mode and the screen shape live in the same file).
+fn conf_write(key: &str, value: Option<&str>) {
+    let path = android_conf_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let old = std::fs::read_to_string(&path).unwrap_or_default();
+    let _ = std::fs::write(&path, conf_set(&old, key, value));
+}
+
+pub fn shape_in_conf(conf: &str) -> Option<String> {
+    conf.lines().rev().find_map(|l| l.trim().strip_prefix("shape=")).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
 pub fn mode_is_windows(conf: &str) -> bool {
     conf.lines().rev().find_map(|l| l.trim().strip_prefix("mode=")).map(|v| v.trim() == "windows").unwrap_or(false)
 }
@@ -144,18 +174,20 @@ pub fn open(parent: &gtk4::Widget) {
     group.add(&shape);
     {
         let conf = android_conf_path();
-        let now = mode_is_windows(&std::fs::read_to_string(&conf).unwrap_or_default());
-        windows.set_active(now);
+        let text = std::fs::read_to_string(&conf).unwrap_or_default();
+        windows.set_active(mode_is_windows(&text));
+        if let Some(i) = (0..SHAPES.len() as u32).find(|&i| shape_conf_value(i as usize) == shape_in_conf(&text)) {
+            shape.set_selected(i);
+        }
         windows.connect_active_notify(move |r| {
             let on = r.is_active();
-            if let Some(dir) = conf.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            let _ = std::fs::write(&conf, mode_text(on));
+            conf_write("mode", Some(if on { "windows" } else { "window" }));
             let v = if on { "true" } else { "false" };
             std::thread::spawn(move || prop_set("persist.waydroid.multi_windows", v));
         });
         shape.connect_selected_notify(|r| {
+            // saved in the config (the launcher applies it every time Android starts) and set now if Android runs
+            conf_write("shape", shape_conf_value(r.selected() as usize).as_deref());
             let props = shape_props(r.selected() as usize);
             std::thread::spawn(move || {
                 for (n, v) in props {
@@ -263,6 +295,13 @@ mod tests {
         let auto = shape_props(0);
         assert!(auto[0].1.is_empty() && auto[1].1.is_empty(), "automatic clears both");
         assert_eq!(shape_props(99)[0].1, "", "an unknown shape means automatic");
+        assert_eq!(shape_conf_value(1).as_deref(), Some("450x960"));
+        assert_eq!(shape_conf_value(0), None);
+        assert_eq!(conf_set("mode=windows\nshape=450x960\n", "shape", Some("1100x700")), "mode=windows\nshape=1100x700\n", "one key changes, the other stays");
+        assert_eq!(conf_set("mode=windows\nshape=450x960\n", "shape", None), "mode=windows\n", "automatic removes the shape");
+        assert_eq!(conf_set("", "mode", Some("window")), "mode=window\n");
+        assert_eq!(shape_in_conf("mode=window\nshape=450x960\n").as_deref(), Some("450x960"));
+        assert_eq!(shape_in_conf("mode=window\n"), None);
     }
 
     #[test]

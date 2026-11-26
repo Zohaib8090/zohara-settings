@@ -32,6 +32,15 @@ reset; : > "$T/up"; printf 'mode=windows\n' > "$T/android.conf"; bash "$L" com.a
 ! grep -q '^show-full-ui' "$T/calls" && grep -q '^app launch com.android.chrome' "$T/calls"; ok $? "mode windows: no full window, the app on its own"
 rm -f "$T/android.conf"
 
+reset; : > "$T/up"; printf 'mode=window\nshape=450x960\n' > "$T/android.conf"; bash "$L" com.android.chrome
+grep -q '^prop set persist.waydroid.width 450$' "$T/calls" && grep -q '^prop set persist.waydroid.height 960$' "$T/calls"; ok $? "a chosen screen shape is applied to Android at launch (Android was stopped when it was chosen)"
+[ "$(grep -n '^prop set persist.waydroid.width' "$T/calls" | head -1 | cut -d: -f1)" -lt "$(grep -n '^app launch' "$T/calls" | head -1 | cut -d: -f1)" ]; ok $? "and before the app opens"
+reset; : > "$T/up"; printf 'shape=450x960; rm -rf /\n' > "$T/android.conf"; bash "$L" com.android.chrome
+! grep -q 'width 450' "$T/calls"; ok $? "a shape that is not WIDTHxHEIGHT is ignored"
+reset; : > "$T/up"; printf 'mode=windows\n' > "$T/android.conf"; bash "$L" com.android.chrome
+grep -q '^prop set persist.waydroid.multi_windows true$' "$T/calls"; ok $? "window mode follows the setting too"
+rm -f "$T/android.conf"
+
 reset; : > "$T/up"; bash "$L" 'x; rm -rf /' 2>/dev/null; [ "$?" = 2 ]; ok $? "a package name with shell characters is refused"
 bash "$L" 2>/dev/null; [ "$?" = 2 ]; ok $? "no package name is refused"
 bash "$L" 'noDots' 2>/dev/null; [ "$?" = 2 ]; ok $? "a name without dots is refused"
